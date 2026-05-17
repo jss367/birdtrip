@@ -172,6 +172,9 @@ async function runSearch() {
     if (!params.token) {
       setStatus("Token needed", "Route loaded. Add an eBird API token to rank live birding stops.");
       els.resultContext.textContent = "Route loaded, but live bird data needs an eBird token.";
+      els.resultsList.className = "results-list empty";
+      els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add an eBird API token to rank live birding stops.</p></div>';
+      if (window.lucide) window.lucide.createIcons();
       return;
     }
 
