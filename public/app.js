@@ -55,6 +55,7 @@ function init() {
   els.closeDetails.addEventListener("click", () => {
     els.detailsPanel.hidden = true;
     state.selectedId = null;
+    updateSelectedCard();
   });
 
   if (window.lucide) window.lucide.createIcons();
@@ -422,6 +423,9 @@ function renderResults() {
 
   state.results.forEach((candidate, index) => {
     const node = els.resultTemplate.content.cloneNode(true);
+    const card = node.querySelector(".stop-card");
+    card.dataset.id = candidate.id;
+    if (candidate.id === state.selectedId) card.classList.add("is-selected");
     node.querySelector(".rank").textContent = String(index + 1);
     node.querySelector(".stop-name").textContent = candidate.name;
     node.querySelector(".stop-preview").textContent = speciesPreview(candidate);
@@ -430,7 +434,9 @@ function renderResults() {
     node.querySelector(".metric-species").textContent = candidate.species.size;
     node.querySelector(".metric-notable").textContent = uniqueNotableCount(candidate);
     node.querySelector(".metric-targets").textContent = candidate.targetMatches.length;
-    node.querySelector(".stop-main").addEventListener("click", () => selectCandidate(candidate.id));
+    const mainButton = node.querySelector(".stop-main");
+    mainButton.setAttribute("aria-label", `View ${candidate.name}`);
+    mainButton.addEventListener("click", () => selectCandidate(candidate.id));
     els.resultsList.appendChild(node);
   });
 
@@ -460,6 +466,7 @@ function selectCandidate(id) {
   state.selectedId = id;
   renderDetails(candidate);
   els.detailsPanel.hidden = false;
+  updateSelectedCard();
   state.map.flyTo([candidate.lat, candidate.lng], Math.max(state.map.getZoom(), 11), { duration: 0.6 });
 }
 
@@ -484,13 +491,13 @@ function renderDetails(candidate) {
     </div>
     <section class="score-line">
       <h4>Score</h4>
-      <ul>
-        <li>Species: ${candidate.scoreParts.species.toFixed(1)}</li>
-        <li>Activity: ${candidate.scoreParts.activity.toFixed(1)}</li>
-        <li>Notable birds: ${candidate.scoreParts.notable.toFixed(1)}</li>
-        <li>Targets: ${candidate.scoreParts.targets.toFixed(1)}</li>
-        <li>Route practicality: ${candidate.scoreParts.practicality.toFixed(1)}</li>
-      </ul>
+      <div class="score-bars">
+        ${scoreRow("Species", candidate.scoreParts.species, 45)}
+        ${scoreRow("Activity", candidate.scoreParts.activity, 15)}
+        ${scoreRow("Notable", candidate.scoreParts.notable, 20)}
+        ${scoreRow("Targets", candidate.scoreParts.targets, 15)}
+        ${scoreRow("Route", candidate.scoreParts.practicality, 20)}
+      </div>
     </section>
     ${candidate.targetMatches.length ? `
       <section class="species-list">
@@ -511,6 +518,25 @@ function renderDetails(candidate) {
     <div class="detail-actions">
       <a href="${mapsUrl}" target="_blank" rel="noreferrer">Directions</a>
       <a href="${ebirdUrl}" target="_blank" rel="noreferrer">eBird</a>
+    </div>
+  `;
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function updateSelectedCard() {
+  els.resultsList.querySelectorAll(".stop-card").forEach((card) => {
+    card.classList.toggle("is-selected", card.dataset.id === state.selectedId);
+  });
+}
+
+function scoreRow(label, value, max) {
+  const safeValue = Number.isFinite(value) ? value : 0;
+  const width = Math.max(0, Math.min(100, safeValue / max * 100));
+  return `
+    <div class="score-row">
+      <span>${escapeHtml(label)}</span>
+      <span class="score-track"><span style="width: ${width.toFixed(0)}%"></span></span>
+      <b>${safeValue.toFixed(1)}</b>
     </div>
   `;
 }
