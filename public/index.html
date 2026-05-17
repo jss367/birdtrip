@@ -28,10 +28,12 @@
           <label>
             <span>Origin</span>
             <input id="origin" name="origin" autocomplete="street-address" value="Yuma, AZ" required>
+            <small class="field-error" id="originError" hidden></small>
           </label>
           <label>
             <span>Destination</span>
             <input id="destination" name="destination" autocomplete="street-address" value="Phoenix, AZ" required>
+            <small class="field-error" id="destinationError" hidden></small>
           </label>
         </section>
 
@@ -81,6 +83,10 @@
             <span>eBird API token</span>
             <input id="apiToken" name="apiToken" type="password" placeholder="Paste token or use EBIRD_API_KEY">
           </label>
+          <label class="check-line">
+            <input id="rememberToken" name="rememberToken" type="checkbox">
+            <span>Remember token in this browser</span>
+          </label>
 
           <label>
             <span>Target species</span>
@@ -111,6 +117,14 @@
           <div id="progressTitle">Ready</div>
         </div>
         <p id="progressMessage">Enter a route and run a search.</p>
+      </section>
+
+      <section class="warning" id="warningPanel" role="status" hidden>
+        <div class="warning-heading">
+          <i data-lucide="triangle-alert"></i>
+          <span>Partial data</span>
+        </div>
+        <p id="warningMessage"></p>
       </section>
 
       <section class="summary-panel">
@@ -165,6 +179,8 @@
     </main>
   </div>
 
+  <section id="report" class="report" aria-hidden="true"></section>
+
   <template id="resultTemplate">
     <article class="stop-card">
       <button class="stop-main" type="button">
@@ -176,10 +192,15 @@
         <span class="score-pill"></span>
       </button>
       <div class="stop-metrics">
-        <span><i data-lucide="clock-3"></i><b class="metric-detour"></b></span>
-        <span><i data-lucide="feather"></i><b class="metric-species"></b></span>
-        <span><i data-lucide="sparkles"></i><b class="metric-notable"></b></span>
-        <span><i data-lucide="target"></i><b class="metric-targets"></b></span>
+        <span title="Added drive time"><i data-lucide="clock-3"></i><b class="metric-detour"></b></span>
+        <span title="Approx. distance off route"><i data-lucide="ruler"></i><b class="metric-offroute"></b></span>
+        <span title="Recent species"><i data-lucide="feather"></i><b class="metric-species"></b></span>
+        <span title="Notable species"><i data-lucide="sparkles"></i><b class="metric-notable"></b></span>
+        <span title="Target matches"><i data-lucide="target"></i><b class="metric-targets"></b></span>
+      </div>
+      <div class="stop-links">
+        <a class="stop-dir" target="_blank" rel="noreferrer"><i data-lucide="navigation"></i>Directions</a>
+        <a class="stop-ebird" target="_blank" rel="noreferrer"><i data-lucide="external-link"></i>eBird</a>
       </div>
     </article>
   </template>

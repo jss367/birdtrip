@@ -5,7 +5,11 @@ const state = {
   route: null,
   routeName: "",
   results: [],
-  selectedId: null
+  selectedId: null,
+  warnings: [],
+  params: null,
+  origin: null,
+  destination: null
 };
 
 const els = {
@@ -17,7 +21,13 @@ const els = {
   radiusKm: document.querySelector("#radiusKm"),
   maxStops: document.querySelector("#maxStops"),
   apiToken: document.querySelector("#apiToken"),
+  rememberToken: document.querySelector("#rememberToken"),
   targets: document.querySelector("#targets"),
+  originError: document.querySelector("#originError"),
+  destinationError: document.querySelector("#destinationError"),
+  warningPanel: document.querySelector("#warningPanel"),
+  warningMessage: document.querySelector("#warningMessage"),
+  report: document.querySelector("#report"),
   sampleButton: document.querySelector("#sampleButton"),
   clearButton: document.querySelector("#clearButton"),
   printButton: document.querySelector("#printButton"),
@@ -33,6 +43,8 @@ const els = {
   detailsContent: document.querySelector("#detailsContent"),
   closeDetails: document.querySelector("#closeDetails")
 };
+
+const PREF_FIELDS = ["origin", "destination", "maxDetour", "recentDays", "radiusKm", "maxStops", "targets"];
 
 init();
 
@@ -51,7 +63,17 @@ function init() {
   });
   els.sampleButton.addEventListener("click", useSampleRoute);
   els.clearButton.addEventListener("click", clearResults);
-  els.printButton.addEventListener("click", () => window.print());
+  // Revoke or grant token persistence the moment the choice changes,
+  // not only on the next search submit.
+  els.rememberToken.addEventListener("change", savePreferences);
+  els.apiToken.addEventListener("change", () => {
+    if (els.rememberToken.checked) savePreferences();
+  });
+  els.printButton.addEventListener("click", () => {
+    renderReport();
+    window.print();
+  });
+  window.addEventListener("beforeprint", renderReport);
   els.closeDetails.addEventListener("click", () => {
     els.detailsPanel.hidden = true;
     state.selectedId = null;
@@ -62,16 +84,29 @@ function init() {
 }
 
 function restorePreferences() {
-  const saved = JSON.parse(localStorage.getItem("routeBirdingPrefs") || "{}");
-  for (const [key, value] of Object.entries(saved)) {
-    if (els[key] && typeof value === "string") els[key].value = value;
+  let saved = {};
+  try {
+    const parsed = JSON.parse(localStorage.getItem("routeBirdingPrefs") || "{}");
+    if (parsed && typeof parsed === "object") saved = parsed;
+  } catch {
+    localStorage.removeItem("routeBirdingPrefs");
+  }
+  for (const field of PREF_FIELDS) {
+    if (typeof saved[field] === "string") els[field].value = saved[field];
+  }
+  els.rememberToken.checked = saved.rememberToken === true;
+  // The token is only ever restored when the user previously opted in.
+  if (saved.rememberToken === true && typeof saved.apiToken === "string") {
+    els.apiToken.value = saved.apiToken;
   }
 }
 
 function savePreferences() {
-  const fields = ["origin", "destination", "maxDetour", "recentDays", "radiusKm", "maxStops", "apiToken", "targets"];
   const payload = {};
-  for (const field of fields) payload[field] = els[field].value;
+  for (const field of PREF_FIELDS) payload[field] = els[field].value;
+  const remember = els.rememberToken.checked;
+  payload.rememberToken = remember;
+  if (remember) payload.apiToken = els.apiToken.value;
   localStorage.setItem("routeBirdingPrefs", JSON.stringify(payload));
 }
 
@@ -89,8 +124,13 @@ function clearResults() {
   state.results = [];
   state.route = null;
   state.selectedId = null;
+  state.params = null;
+  state.warnings = [];
   if (state.routeLayer) state.map.removeLayer(state.routeLayer);
   state.markerLayer.clearLayers();
+  clearFieldErrors();
+  clearWarning();
+  els.report.innerHTML = "";
   els.resultsList.className = "results-list empty";
   els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="binoculars"></i><p>Results will appear here after the first search.</p></div>';
   els.resultContext.textContent = "No route searched yet.";
@@ -107,18 +147,20 @@ async function runSearch() {
   const params = readParams();
   setBusy(true);
   clearSearchArtifacts();
+  state.params = params;
 
   try {
     setStatus("Geocoding", "Resolving origin and destination.");
-    const [originMatches, destinationMatches] = await Promise.all([
-      apiJson(`/api/geocode?q=${encodeURIComponent(params.origin)}`),
-      apiJson(`/api/geocode?q=${encodeURIComponent(params.destination)}`)
+    const [originResult, destinationResult] = await Promise.allSettled([
+      geocodeField("origin", params.origin),
+      geocodeField("destination", params.destination)
     ]);
-    if (!originMatches.length) throw new Error(`Could not geocode origin: ${params.origin}`);
-    if (!destinationMatches.length) throw new Error(`Could not geocode destination: ${params.destination}`);
-
-    const origin = originMatches[0];
-    const destination = destinationMatches[0];
+    if (originResult.status === "rejected") throw originResult.reason;
+    if (destinationResult.status === "rejected") throw destinationResult.reason;
+    const origin = originResult.value;
+    const destination = destinationResult.value;
+    state.origin = origin;
+    state.destination = destination;
     state.routeName = `${shortName(origin.name)} to ${shortName(destination.name)}`;
 
     setStatus("Routing", "Drawing the direct route.");
@@ -141,6 +183,7 @@ async function runSearch() {
     if (!candidates.length) {
       setStatus("No candidates", "No hotspot observations were found. Try a wider radius or longer recent window.");
       els.resultContext.textContent = "No birding locations matched the current route settings.";
+      renderWarnings();
       return;
     }
 
@@ -150,6 +193,7 @@ async function runSearch() {
     if (!practical.length) {
       setStatus("No stops within budget", "Try increasing the maximum added time or route radius.");
       els.resultContext.textContent = "Candidate birding locations were outside the detour budget.";
+      renderWarnings();
       return;
     }
 
@@ -164,6 +208,8 @@ async function runSearch() {
 
     renderResults();
     renderMarkers();
+    renderReport();
+    renderWarnings();
     setStatus("Complete", `Found ${state.results.length} stops within the detour budget.`);
   } catch (error) {
     setStatus("Search failed", error.message || "Something went wrong.");
@@ -192,6 +238,14 @@ function readParams() {
 function clearSearchArtifacts() {
   state.results = [];
   state.selectedId = null;
+  state.warnings = [];
+  state.route = null;
+  state.routeName = "";
+  state.origin = null;
+  state.destination = null;
+  clearFieldErrors();
+  clearWarning();
+  els.report.innerHTML = "";
   els.detailsPanel.hidden = true;
   state.markerLayer.clearLayers();
   if (state.routeLayer) {
@@ -223,9 +277,92 @@ async function apiJson(url, options = {}) {
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(payload.error || response.statusText || "Request failed");
+    const base = payload.error || response.statusText || "Request failed";
+    const detail = detailText(payload.details);
+    const error = new Error(detail ? `${base} — ${detail}` : base);
+    error.status = response.status;
+    error.details = payload.details;
+    throw error;
   }
   return payload;
+}
+
+function detailText(details) {
+  if (!details) return "";
+  if (typeof details === "string") return truncate(details, 240);
+  if (typeof details === "object") {
+    if (typeof details.message === "string" && details.message) return truncate(details.message, 240);
+    if (typeof details.code === "string" && details.code) return details.code;
+    try {
+      return truncate(JSON.stringify(details), 240);
+    } catch {
+      return "";
+    }
+  }
+  return truncate(String(details), 240);
+}
+
+function truncate(value, max) {
+  const text = String(value);
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+async function geocodeField(field, query) {
+  let matches;
+  try {
+    matches = await apiJson(`/api/geocode?q=${encodeURIComponent(query)}`);
+  } catch (error) {
+    setFieldError(field, `Lookup failed: ${error.message}`);
+    throw new Error(`${field === "origin" ? "Origin" : "Destination"} lookup failed`);
+  }
+  if (!matches.length) {
+    setFieldError(field, `No match for "${query}". Try a more specific place or "City, ST".`);
+    throw new Error(`Could not geocode ${field}: ${query}`);
+  }
+  return matches[0];
+}
+
+function setFieldError(field, message) {
+  const errorEl = els[`${field}Error`];
+  const inputEl = els[field];
+  if (!errorEl) return;
+  errorEl.textContent = message;
+  errorEl.hidden = false;
+  errorEl.setAttribute("role", "alert");
+  if (inputEl) {
+    inputEl.setAttribute("aria-invalid", "true");
+    inputEl.setAttribute("aria-describedby", `${field}Error`);
+  }
+}
+
+function clearFieldErrors() {
+  for (const field of ["origin", "destination"]) {
+    const errorEl = els[`${field}Error`];
+    const inputEl = els[field];
+    if (errorEl) {
+      errorEl.textContent = "";
+      errorEl.hidden = true;
+    }
+    if (inputEl) {
+      inputEl.removeAttribute("aria-invalid");
+      inputEl.removeAttribute("aria-describedby");
+    }
+  }
+}
+
+function addWarning(message) {
+  if (message && !state.warnings.includes(message)) state.warnings.push(message);
+}
+
+function renderWarnings() {
+  if (!state.warnings.length) return clearWarning();
+  els.warningMessage.textContent = state.warnings.join(" ");
+  els.warningPanel.hidden = false;
+}
+
+function clearWarning() {
+  els.warningMessage.textContent = "";
+  els.warningPanel.hidden = true;
 }
 
 function routeUrl(path, origin, destination, via) {
@@ -295,6 +432,10 @@ async function fetchRecentForSamples(samples, params) {
     }));
     all.push(...batch);
   }
+  const failed = all.filter((entry) => entry.error).length;
+  if (failed) {
+    addWarning(`${failed} of ${all.length} recent-observation requests failed; ranking uses the data that loaded.`);
+  }
   return all;
 }
 
@@ -313,6 +454,7 @@ function buildCandidates(observationsBySample, samples, params) {
           lat: obs.lat,
           lng: obs.lng,
           observations: [],
+          seen: new Set(),
           species: new Map(),
           notable: [],
           nearestSample: sample,
@@ -321,6 +463,11 @@ function buildCandidates(observationsBySample, samples, params) {
         });
       }
       const candidate = byKey.get(key);
+      const obsKey = obs.subId && obs.speciesCode
+        ? `${obs.subId}|${obs.speciesCode}`
+        : `${normalizeName(obs.comName || obs.sciName)}|${obs.obsDt || ""}|${obs.howMany ?? ""}`;
+      if (candidate.seen.has(obsKey)) continue;
+      candidate.seen.add(obsKey);
       candidate.observations.push(obs);
       const speciesKey = normalizeName(obs.comName || obs.sciName || "Unknown species");
       if (speciesKey && !candidate.species.has(speciesKey)) {
@@ -355,6 +502,7 @@ function preliminaryScore(candidate) {
 
 async function evaluateDetours(candidates, origin, destination, baseDurationSeconds, params) {
   const practical = [];
+  let failed = 0;
   for (let i = 0; i < candidates.length; i += 1) {
     const candidate = candidates[i];
     setStatus("Checking detours", `Evaluating ${i + 1} of ${candidates.length}: ${candidate.name}`);
@@ -366,13 +514,18 @@ async function evaluateDetours(candidates, origin, destination, baseDurationSeco
       if (candidate.addedMinutes <= params.maxDetour) practical.push(candidate);
     } catch (error) {
       candidate.routeError = error.message;
+      failed += 1;
     }
+  }
+  if (failed) {
+    addWarning(`${failed} of ${candidates.length} detour estimates failed and those stops were skipped.`);
   }
   return practical;
 }
 
 async function addNotableObservations(candidates, params) {
   const top = candidates.slice(0, Math.max(params.maxStops, 6));
+  let failed = 0;
   for (let i = 0; i < top.length; i += 1) {
     const candidate = top[i];
     setStatus("Adding notable birds", `Checking notable reports ${i + 1} of ${top.length}.`);
@@ -383,7 +536,11 @@ async function addNotableObservations(candidates, params) {
       );
     } catch {
       candidate.notable = [];
+      failed += 1;
     }
+  }
+  if (failed) {
+    addWarning(`${failed} of ${top.length} notable-report lookups failed; notable counts may be understated.`);
   }
 }
 
@@ -431,9 +588,17 @@ function renderResults() {
     node.querySelector(".stop-preview").textContent = speciesPreview(candidate);
     node.querySelector(".score-pill").textContent = candidate.score;
     node.querySelector(".metric-detour").textContent = `+${Math.round(candidate.addedMinutes)}m`;
+    node.querySelector(".metric-offroute").textContent = `${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi`;
     node.querySelector(".metric-species").textContent = candidate.species.size;
     node.querySelector(".metric-notable").textContent = uniqueNotableCount(candidate);
     node.querySelector(".metric-targets").textContent = candidate.targetMatches.length;
+    const links = candidateLinks(candidate);
+    const dir = node.querySelector(".stop-dir");
+    const ebird = node.querySelector(".stop-ebird");
+    dir.href = links.mapsUrl;
+    ebird.href = links.ebirdUrl;
+    dir.setAttribute("aria-label", `Directions to ${candidate.name}`);
+    ebird.setAttribute("aria-label", `${candidate.name} on eBird`);
     const mainButton = node.querySelector(".stop-main");
     mainButton.setAttribute("aria-label", `View ${candidate.name}`);
     mainButton.addEventListener("click", () => selectCandidate(candidate.id));
@@ -471,24 +636,28 @@ function selectCandidate(id) {
 }
 
 function renderDetails(candidate) {
-  const species = Array.from(candidate.species.values())
-    .sort((a, b) => String(a.comName).localeCompare(String(b.comName)))
-    .slice(0, 60);
+  const species = groupSpecies(candidate).slice(0, 80);
   const notable = candidate.notable.slice(0, 20);
-  const ebirdUrl = candidate.locId
-    ? `https://ebird.org/hotspot/${encodeURIComponent(candidate.locId)}`
-    : `https://ebird.org/map?lat=${candidate.lat}&lng=${candidate.lng}`;
-  const mapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${candidate.lat},${candidate.lng}`;
+  const links = candidateLinks(candidate);
+  const offRouteMi = formatMiles(kmToMiles(candidate.routeDistanceKm));
 
   els.detailsContent.innerHTML = `
     <h3>${escapeHtml(candidate.name)}</h3>
-    <p class="detail-subtitle">${candidate.score} score; +${Math.round(candidate.addedMinutes)} min and +${candidate.addedMiles.toFixed(1)} mi.</p>
+    <p class="detail-subtitle">${candidate.score} score; +${Math.round(candidate.addedMinutes)} min and +${candidate.addedMiles.toFixed(1)} mi detour.</p>
     <div class="detail-grid">
       <div><b>${candidate.species.size}</b><small>recent species</small></div>
       <div><b>${candidate.observations.length}</b><small>records</small></div>
       <div><b>${uniqueNotableCount(candidate)}</b><small>notable species</small></div>
       <div><b>${candidate.targetMatches.length}</b><small>target matches</small></div>
     </div>
+    <section class="score-line">
+      <h4>Route impact</h4>
+      <div class="impact-list">
+        <div class="impact-row"><span>Added time</span><b>+${Math.round(candidate.addedMinutes)} min</b></div>
+        <div class="impact-row"><span>Added distance</span><b>+${candidate.addedMiles.toFixed(1)} mi</b></div>
+        <div class="impact-row"><span>Off route (approx.)</span><b>~${offRouteMi} mi</b></div>
+      </div>
+    </section>
     <section class="score-line">
       <h4>Score</h4>
       <div class="score-bars">
@@ -512,12 +681,12 @@ function renderDetails(candidate) {
       </section>
     ` : ""}
     <section class="species-list">
-      <h4>Recent Species</h4>
-      <ul>${species.map((obs) => `<li>${escapeHtml(obs.comName || obs.sciName || "Unknown species")} <small>${escapeHtml(obs.obsDt || "")}</small></li>`).join("")}</ul>
+      <h4>Recent Species <small>(${candidate.species.size} grouped by common name)</small></h4>
+      <ul>${species.map((sp) => `<li>${escapeHtml(sp.name)} <small>×${sp.count}${sp.latest ? ` · ${escapeHtml(sp.latest)}` : ""}</small></li>`).join("")}</ul>
     </section>
     <div class="detail-actions">
-      <a href="${mapsUrl}" target="_blank" rel="noreferrer">Directions</a>
-      <a href="${ebirdUrl}" target="_blank" rel="noreferrer">eBird</a>
+      <a href="${links.mapsUrl}" target="_blank" rel="noreferrer">Directions</a>
+      <a href="${links.ebirdUrl}" target="_blank" rel="noreferrer">eBird</a>
     </div>
   `;
   if (window.lucide) window.lucide.createIcons();
@@ -569,6 +738,106 @@ function formatMinutes(minutes) {
 
 function miles(meters) {
   return meters / 1609.344;
+}
+
+function kmToMiles(km) {
+  return Number.isFinite(km) ? km / 1.609344 : 0;
+}
+
+function formatMiles(value) {
+  if (!Number.isFinite(value)) return "0";
+  return value < 10 ? value.toFixed(1) : String(Math.round(value));
+}
+
+function candidateLinks(candidate) {
+  return {
+    ebirdUrl: candidate.locId
+      ? `https://ebird.org/hotspot/${encodeURIComponent(candidate.locId)}`
+      : `https://ebird.org/map?lat=${candidate.lat}&lng=${candidate.lng}`,
+    mapsUrl: `https://www.google.com/maps/dir/?api=1&destination=${candidate.lat},${candidate.lng}`
+  };
+}
+
+function groupSpecies(candidate) {
+  const groups = new Map();
+  for (const obs of candidate.observations) {
+    const name = obs.comName || obs.sciName || "Unknown species";
+    const norm = normalizeName(name);
+    let group = groups.get(norm);
+    if (!group) {
+      group = { name, count: 0, latest: "" };
+      groups.set(norm, group);
+    }
+    group.count += 1;
+    const when = obs.obsDt || "";
+    if (when > group.latest) group.latest = when;
+  }
+  return Array.from(groups.values()).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function renderReport() {
+  if (!els.report) return;
+  if (!state.route || !state.params) {
+    els.report.innerHTML = "";
+    return;
+  }
+  const p = state.params;
+  const route = state.route;
+  const generated = new Date().toLocaleString();
+  const param = (label, value) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd></div>`;
+
+  const paramsBlock = `
+    <h2>Search parameters</h2>
+    <dl class="report-params">
+      ${param("Origin", p.origin)}
+      ${param("Destination", p.destination)}
+      ${param("Max added", `${p.maxDetour} min`)}
+      ${param("Corridor radius", `${p.radiusKm} km`)}
+      ${param("Recent window", `${p.recentDays} days`)}
+      ${param("Max stops", p.maxStops)}
+      ${param("Targets", p.targets.length ? p.targets.join(", ") : "none")}
+    </dl>`;
+
+  const routeBlock = `
+    <h2>Route summary</h2>
+    <dl class="report-route">
+      ${param("Route", state.routeName || `${p.origin} to ${p.destination}`)}
+      ${param("Distance", `${miles(route.distanceMeters).toFixed(0)} mi`)}
+      ${param("Drive time", formatMinutes(route.durationSeconds / 60))}
+      ${param("Ranked stops", state.results.length)}
+    </dl>`;
+
+  const stopsBlock = state.results.length
+    ? `<h2>Ranked stops</h2>${state.results.map((candidate, index) => {
+        const species = groupSpecies(candidate).slice(0, 40);
+        const notable = candidate.notable.slice(0, 12);
+        return `
+          <div class="report-stop">
+            <h3>${index + 1}. ${escapeHtml(candidate.name)}</h3>
+            <p class="report-stop-meta">
+              Score ${candidate.score} ·
+              +${Math.round(candidate.addedMinutes)} min ·
+              +${candidate.addedMiles.toFixed(1)} mi detour ·
+              ~${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi off route ·
+              ${candidate.species.size} species ·
+              ${uniqueNotableCount(candidate)} notable ·
+              ${candidate.targetMatches.length} targets
+            </p>
+            ${candidate.targetMatches.length ? `<h4>Target matches</h4><ul>${candidate.targetMatches.map((obs) => `<li>${escapeHtml(obs.comName || obs.sciName || "")}</li>`).join("")}</ul>` : ""}
+            ${notable.length ? `<h4>Notable</h4><ul>${notable.map((obs) => `<li>${escapeHtml(obs.comName || obs.sciName || "")} <small>${escapeHtml(obs.obsDt || "")}</small></li>`).join("")}</ul>` : ""}
+            <h4>Recent species</h4>
+            <ul>${species.map((sp) => `<li>${escapeHtml(sp.name)} <small>×${sp.count}</small></li>`).join("")}</ul>
+          </div>`;
+      }).join("")}`
+    : `<h2>Ranked stops</h2><p>No stops within the current detour budget.</p>`;
+
+  els.report.innerHTML = `
+    <h1>Route Birding Planner — Trip Report</h1>
+    <p class="report-sub">${escapeHtml(state.routeName || "")} · Generated ${escapeHtml(generated)}</p>
+    ${paramsBlock}
+    ${routeBlock}
+    ${stopsBlock}
+  `;
 }
 
 function haversineKm(a, b) {
