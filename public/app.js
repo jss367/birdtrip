@@ -103,7 +103,7 @@ function init() {
     els.origin.focus();
   });
   els.modalExploreButton.addEventListener("click", () => {
-    useSampleRoute();
+    setStatus("Explore without setup", "Enter a route to preview distance and drive time. Add an eBird token when you want live bird rankings.");
     closeQuickStart();
     els.origin.focus();
   });
@@ -299,6 +299,7 @@ function updateSetupStatus() {
   els.setupStatus.innerHTML = hasToken
     ? '<i data-lucide="check-circle-2"></i>Ready to Search'
     : '<i data-lucide="circle-alert"></i>Setup Required';
+  renderInsights();
   if (window.lucide) window.lucide.createIcons();
 }
 
@@ -656,7 +657,7 @@ function scoreCandidates(candidates, params) {
 
 function renderResults() {
   els.candidateCount.textContent = String(state.results.length);
-  els.hotspotCount.textContent = String(state.results.length);
+  els.hotspotCount.textContent = String(state.results.filter(isHotspot).length);
   els.notableCount.textContent = String(state.results.reduce((sum, candidate) => sum + uniqueNotableCount(candidate), 0));
   els.resultContext.textContent = `${state.routeName}; ${state.results.length} stops within budget.`;
   renderInsights();
@@ -807,7 +808,7 @@ function scoreRow(label, value, max) {
 function markerClass(candidate) {
   if (candidate.targetMatches.length) return "marker-low";
   if (uniqueNotableCount(candidate)) return "marker-mid";
-  return "marker-high";
+  return isHotspot(candidate) ? "marker-high" : "marker-standard";
 }
 
 function speciesPreview(candidate) {
@@ -822,8 +823,12 @@ function candidateChips(candidate) {
   const chips = [];
   if (candidate.targetMatches.length) chips.push(`<span class="stop-chip chip-target">${candidate.targetMatches.length} target</span>`);
   if (uniqueNotableCount(candidate)) chips.push(`<span class="stop-chip chip-notable">${uniqueNotableCount(candidate)} notable</span>`);
-  if (candidate.score >= 65 || candidate.species.size >= 40) chips.push('<span class="stop-chip chip-hotspot">top hotspot</span>');
+  if (isHotspot(candidate)) chips.push('<span class="stop-chip chip-hotspot">top hotspot</span>');
   return chips.join("");
+}
+
+function isHotspot(candidate) {
+  return candidate.score >= 65 || candidate.species.size >= 40;
 }
 
 function uniqueNotableCount(candidate) {
@@ -831,14 +836,16 @@ function uniqueNotableCount(candidate) {
 }
 
 function renderInsights() {
+  const liveDetour = clamp(Number(els.maxDetour.value || 60), 0, 240);
+  const liveTargets = parseTargetsInput();
+  const hasToken = Boolean(els.apiToken.value.trim());
   const routeText = state.route
-    ? `${state.routeName}: ${miles(state.route.distanceMeters).toFixed(0)} miles, ${formatMinutes(state.route.durationSeconds / 60)} drive time, ${state.params?.maxDetour ?? els.maxDetour.value} min detour budget.`
+    ? `${state.routeName}: ${miles(state.route.distanceMeters).toFixed(0)} miles, ${formatMinutes(state.route.durationSeconds / 60)} drive time, ${liveDetour} min detour budget.`
     : "Set a route to compare drive time, detour budget, and ranked birding stops.";
   els.tripPlanSummary.textContent = routeText;
 
-  const targets = state.params?.targets.length ? state.params.targets : parseTargetsInput();
-  els.targetSpeciesSummary.textContent = targets.length
-    ? `${targets.length} target species queued: ${targets.slice(0, 3).join(", ")}${targets.length > 3 ? ", ..." : ""}.`
+  els.targetSpeciesSummary.textContent = liveTargets.length
+    ? `${liveTargets.length} target species queued: ${liveTargets.slice(0, 3).join(", ")}${liveTargets.length > 3 ? ", ..." : ""}.`
     : "Add targets to highlight matching reports along the corridor.";
 
   if (state.results.length) {
@@ -846,7 +853,7 @@ function renderInsights() {
     const notableCount = state.results.reduce((sum, candidate) => sum + uniqueNotableCount(candidate), 0);
     els.sightingSummary.textContent = `${speciesCount} recent species across ${state.results.length} ranked stops, including ${notableCount} notable species.`;
   } else {
-    els.sightingSummary.textContent = state.route && !state.params?.token
+    els.sightingSummary.textContent = state.route && !hasToken
       ? "Route is ready. Add an eBird token to load recent sightings and notable reports."
       : "Recent eBird activity and notable reports appear after search.";
   }
