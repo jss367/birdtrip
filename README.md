@@ -5,7 +5,6 @@ A local web app for finding birding stops along a driving route within a maximum
 ## Run
 
 ```sh
-cd route_birding_planner
 npm start
 ```
 
