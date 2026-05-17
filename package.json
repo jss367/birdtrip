@@ -1,5 +1,5 @@
 {
-  "name": "route-birding-planner",
+  "name": "birdtrip",
   "version": "0.1.0",
   "private": true,
   "description": "A local route-corridor birding planner using OSRM, Nominatim, Leaflet, and eBird.",

@@ -832,7 +832,7 @@ function renderReport() {
     : `<h2>Ranked stops</h2><p>No stops within the current detour budget.</p>`;
 
   els.report.innerHTML = `
-    <h1>Route Birding Planner — Trip Report</h1>
+    <h1>Birdtrip Trip Report</h1>
     <p class="report-sub">${escapeHtml(state.routeName || "")} · Generated ${escapeHtml(generated)}</p>
     ${paramsBlock}
     ${routeBlock}

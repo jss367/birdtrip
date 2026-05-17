@@ -69,7 +69,7 @@ async function fetchJson(url, headers = {}) {
   const response = await fetch(url, {
     headers: {
       "accept": "application/json",
-      "user-agent": "route-birding-planner/0.1 local personal app",
+      "user-agent": "birdtrip/0.1 local personal app",
       ...headers
     }
   });
@@ -214,5 +214,5 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Route Birding Planner running at http://localhost:${PORT}`);
+  console.log(`Birdtrip running at http://localhost:${PORT}`);
 });

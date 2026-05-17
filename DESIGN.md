@@ -1,4 +1,4 @@
-# Route Birding Planner Design
+# Birdtrip Design
 
 ## Goal
 
