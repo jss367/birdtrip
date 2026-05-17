@@ -16,6 +16,14 @@ const contentTypes = {
   ".png": "image/png"
 };
 
+function logApiRequest(req, res, url) {
+  const started = Date.now();
+  res.on("finish", () => {
+    const elapsed = Date.now() - started;
+    console.log(`[api] ${req.method} ${url.pathname}${url.search} ${res.statusCode} ${elapsed}ms`);
+  });
+}
+
 function sendJson(res, status, payload) {
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
@@ -207,6 +215,7 @@ function serveStatic(req, res, url) {
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
   if (url.pathname.startsWith("/api/")) {
+    logApiRequest(req, res, url);
     handleApi(req, res, url);
     return;
   }

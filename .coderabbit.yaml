@@ -3,7 +3,6 @@
 # well-named functions and no JSDoc convention. An 80% docstring-coverage
 # gate adds boilerplate without value here, so disable that pre-merge check.
 # ESLint (see eslint.config.js) is the real static-analysis signal.
-version: 2
 reviews:
   pre_merge_checks:
     docstrings:
