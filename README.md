@@ -1,4 +1,4 @@
-# Route Birding Planner
+# Birdtrip
 
 A local web app for finding birding stops along a driving route within a maximum detour budget.
 
