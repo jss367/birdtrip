@@ -63,6 +63,12 @@ function init() {
   });
   els.sampleButton.addEventListener("click", useSampleRoute);
   els.clearButton.addEventListener("click", clearResults);
+  // Revoke or grant token persistence the moment the choice changes,
+  // not only on the next search submit.
+  els.rememberToken.addEventListener("change", savePreferences);
+  els.apiToken.addEventListener("change", () => {
+    if (els.rememberToken.checked) savePreferences();
+  });
   els.printButton.addEventListener("click", () => {
     renderReport();
     window.print();
@@ -78,7 +84,13 @@ function init() {
 }
 
 function restorePreferences() {
-  const saved = JSON.parse(localStorage.getItem("routeBirdingPrefs") || "{}");
+  let saved = {};
+  try {
+    const parsed = JSON.parse(localStorage.getItem("routeBirdingPrefs") || "{}");
+    if (parsed && typeof parsed === "object") saved = parsed;
+  } catch {
+    localStorage.removeItem("routeBirdingPrefs");
+  }
   for (const field of PREF_FIELDS) {
     if (typeof saved[field] === "string") els[field].value = saved[field];
   }
@@ -227,6 +239,10 @@ function clearSearchArtifacts() {
   state.results = [];
   state.selectedId = null;
   state.warnings = [];
+  state.route = null;
+  state.routeName = "";
+  state.origin = null;
+  state.destination = null;
   clearFieldErrors();
   clearWarning();
   els.report.innerHTML = "";
@@ -307,17 +323,30 @@ async function geocodeField(field, query) {
 }
 
 function setFieldError(field, message) {
-  const el = els[`${field}Error`];
-  if (!el) return;
-  el.textContent = message;
-  el.hidden = false;
+  const errorEl = els[`${field}Error`];
+  const inputEl = els[field];
+  if (!errorEl) return;
+  errorEl.textContent = message;
+  errorEl.hidden = false;
+  errorEl.setAttribute("role", "alert");
+  if (inputEl) {
+    inputEl.setAttribute("aria-invalid", "true");
+    inputEl.setAttribute("aria-describedby", `${field}Error`);
+  }
 }
 
 function clearFieldErrors() {
-  for (const el of [els.originError, els.destinationError]) {
-    if (!el) continue;
-    el.textContent = "";
-    el.hidden = true;
+  for (const field of ["origin", "destination"]) {
+    const errorEl = els[`${field}Error`];
+    const inputEl = els[field];
+    if (errorEl) {
+      errorEl.textContent = "";
+      errorEl.hidden = true;
+    }
+    if (inputEl) {
+      inputEl.removeAttribute("aria-invalid");
+      inputEl.removeAttribute("aria-describedby");
+    }
   }
 }
 
