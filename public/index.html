@@ -12,63 +12,81 @@
   <div class="app-shell">
     <aside class="sidebar">
       <header class="brand">
-        <div class="brand-mark" aria-hidden="true">RB</div>
+        <div class="brand-mark" aria-hidden="true"><i data-lucide="binoculars"></i></div>
         <div>
           <h1>Route Birding Planner</h1>
-          <p>Find birding stops that fit the drive.</p>
+          <p>Field stops for the road ahead.</p>
         </div>
       </header>
 
       <form id="searchForm" class="search-form">
-        <label>
-          <span>Origin</span>
-          <input id="origin" name="origin" autocomplete="street-address" value="Yuma, AZ" required>
-        </label>
-        <label>
-          <span>Destination</span>
-          <input id="destination" name="destination" autocomplete="street-address" value="Phoenix, AZ" required>
-        </label>
+        <section class="form-group">
+          <div class="group-label">
+            <i data-lucide="route"></i>
+            <span>Route</span>
+          </div>
+          <label>
+            <span>Origin</span>
+            <input id="origin" name="origin" autocomplete="street-address" value="Yuma, AZ" required>
+          </label>
+          <label>
+            <span>Destination</span>
+            <input id="destination" name="destination" autocomplete="street-address" value="Phoenix, AZ" required>
+          </label>
+        </section>
 
-        <div class="control-grid">
-          <label>
-            <span>Max added</span>
-            <div class="number-field">
-              <input id="maxDetour" name="maxDetour" type="number" min="0" max="240" value="60">
-              <small>min</small>
-            </div>
-          </label>
-          <label>
-            <span>Recent</span>
-            <div class="number-field">
-              <input id="recentDays" name="recentDays" type="number" min="1" max="30" value="14">
-              <small>days</small>
-            </div>
-          </label>
-          <label>
-            <span>Radius</span>
-            <div class="number-field">
-              <input id="radiusKm" name="radiusKm" type="number" min="1" max="50" value="25">
-              <small>km</small>
-            </div>
-          </label>
-          <label>
-            <span>Stops</span>
-            <div class="number-field">
-              <input id="maxStops" name="maxStops" type="number" min="3" max="20" value="10">
-              <small>max</small>
-            </div>
-          </label>
-        </div>
+        <section class="form-group">
+          <div class="group-label">
+            <i data-lucide="sliders-horizontal"></i>
+            <span>Search Window</span>
+          </div>
+          <div class="control-grid">
+            <label>
+              <span>Max added</span>
+              <div class="number-field">
+                <input id="maxDetour" name="maxDetour" type="number" min="0" max="240" value="60">
+                <small>min</small>
+              </div>
+            </label>
+            <label>
+              <span>Recent</span>
+              <div class="number-field">
+                <input id="recentDays" name="recentDays" type="number" min="1" max="30" value="14">
+                <small>days</small>
+              </div>
+            </label>
+            <label>
+              <span>Radius</span>
+              <div class="number-field">
+                <input id="radiusKm" name="radiusKm" type="number" min="1" max="50" value="25">
+                <small>km</small>
+              </div>
+            </label>
+            <label>
+              <span>Stops</span>
+              <div class="number-field">
+                <input id="maxStops" name="maxStops" type="number" min="3" max="20" value="10">
+                <small>max</small>
+              </div>
+            </label>
+          </div>
+        </section>
 
-        <label>
-          <span>eBird API token</span>
-          <input id="apiToken" name="apiToken" type="password" placeholder="Paste token or use EBIRD_API_KEY">
-        </label>
+        <section class="form-group">
+          <div class="group-label">
+            <i data-lucide="feather"></i>
+            <span>Birding</span>
+          </div>
+          <label>
+            <span>eBird API token</span>
+            <input id="apiToken" name="apiToken" type="password" placeholder="Paste token or use EBIRD_API_KEY">
+          </label>
 
-        <label>
-          <span>Target species</span>
-          <textarea id="targets" name="targets" rows="4" placeholder="One common name per line"></textarea>
-        </label>
+          <label>
+            <span>Target species</span>
+            <textarea id="targets" name="targets" rows="4" placeholder="One common name per line"></textarea>
+          </label>
+        </section>
 
         <div class="actions">
           <button class="primary" type="submit">
@@ -88,7 +106,10 @@
       </form>
 
       <section class="status-panel" aria-live="polite">
-        <div id="progressTitle">Ready</div>
+        <div class="status-heading">
+          <i data-lucide="activity"></i>
+          <div id="progressTitle">Ready</div>
+        </div>
         <p id="progressMessage">Enter a route and run a search.</p>
       </section>
 
@@ -111,6 +132,10 @@
     <main class="workspace">
       <section class="map-region">
         <div id="map"></div>
+        <div class="map-glass" aria-hidden="true">
+          <span><i data-lucide="map"></i> Route Map</span>
+          <span><i data-lucide="navigation"></i> Corridor Scan</span>
+        </div>
       </section>
 
       <section class="results-region">
