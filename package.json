@@ -1,0 +1,12 @@
+{
+  "name": "route-birding-planner",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A local route-corridor birding planner using OSRM, Nominatim, Leaflet, and eBird.",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
