@@ -344,7 +344,15 @@ function clearSearchArtifacts() {
 }
 
 function setBusy(isBusy) {
-  els.form.querySelectorAll("button, input, textarea").forEach((control) => {
+  const controls = [
+    ...els.form.querySelectorAll("button, input, textarea"),
+    els.quickStartButton,
+    els.settingsButton,
+    els.modalSampleButton,
+    els.modalExploreButton
+  ];
+
+  controls.forEach((control) => {
     if (control.dataset.staticDisabled === "true") {
       control.disabled = true;
       return;
