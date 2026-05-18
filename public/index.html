@@ -10,16 +10,50 @@
 </head>
 <body>
   <div class="app-shell">
-    <aside class="sidebar">
-      <header class="brand">
+    <header class="app-header">
+      <div class="app-brand">
         <div class="brand-mark" aria-hidden="true"><i data-lucide="binoculars"></i></div>
         <div>
           <h1>Birdtrip</h1>
-          <p>Field stops for the road ahead.</p>
+          <p>Guided birding stops along your drive.</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button type="button" id="quickStartButton" class="ghost-button">
+          <i data-lucide="sparkles"></i>
+          Quick Start
+        </button>
+        <span id="setupStatus" class="setup-badge setup-needed" role="status" aria-live="polite">
+          <i data-lucide="circle-alert"></i>
+          Setup Required
+        </span>
+        <button type="button" id="settingsButton" class="icon-button" title="Search settings">
+          <i data-lucide="settings"></i>
+        </button>
+      </div>
+    </header>
+
+    <aside class="sidebar">
+      <header class="brand">
+        <div class="brand-mark mini" aria-hidden="true"><i data-lucide="route"></i></div>
+        <div>
+          <h2>Trip Planner</h2>
+          <p>Route-first birding search.</p>
         </div>
       </header>
 
       <form id="searchForm" class="search-form">
+        <div class="mode-switch" role="group" aria-label="Search mode">
+          <button type="button" class="is-active">
+            <i data-lucide="route"></i>
+            Route
+          </button>
+          <button type="button" disabled data-static-disabled="true" title="Area mode is planned">
+            <i data-lucide="map"></i>
+            Area
+          </button>
+        </div>
+
         <section class="form-group">
           <div class="group-label">
             <i data-lucide="route"></i>
@@ -40,7 +74,7 @@
         <section class="form-group">
           <div class="group-label">
             <i data-lucide="sliders-horizontal"></i>
-            <span>Search Window</span>
+            <span>Search Settings</span>
           </div>
           <div class="control-grid">
             <label>
@@ -77,11 +111,12 @@
         <section class="form-group">
           <div class="group-label">
             <i data-lucide="feather"></i>
-            <span>Birding</span>
+            <span>Birding Data</span>
           </div>
           <label>
             <span>eBird API token</span>
             <input id="apiToken" name="apiToken" type="password" placeholder="Paste token or use EBIRD_API_KEY">
+            <small class="field-hint">Powered by eBird recent observations.</small>
           </label>
           <label class="check-line">
             <input id="rememberToken" name="rememberToken" type="checkbox">
@@ -128,17 +163,29 @@
       </section>
 
       <section class="summary-panel">
-        <div>
-          <span id="routeDistance">-</span>
-          <small>route miles</small>
+        <div class="summary-tile tile-targets">
+          <small>Target Species</small>
+          <span id="targetCount">0</span>
         </div>
-        <div>
-          <span id="routeDuration">-</span>
-          <small>drive time</small>
+        <div class="summary-tile tile-notable">
+          <small>Notable Birds</small>
+          <span id="notableCount">-</span>
         </div>
-        <div>
+        <div class="summary-tile tile-hotspots">
+          <small>Top Hotspots</small>
+          <span id="hotspotCount">-</span>
+        </div>
+        <div class="summary-tile tile-ranked">
+          <small>Ranked Stops</small>
           <span id="candidateCount">-</span>
-          <small>ranked stops</small>
+        </div>
+        <div class="summary-tile tile-route">
+          <small>Route Miles</small>
+          <span id="routeDistance">-</span>
+        </div>
+        <div class="summary-tile tile-budget">
+          <small>Added Time Budget</small>
+          <span id="maxAdded">60m</span>
         </div>
       </section>
     </aside>
@@ -147,8 +194,10 @@
       <section class="map-region">
         <div id="map"></div>
         <div class="map-glass" aria-hidden="true">
-          <span><i data-lucide="map"></i> Route Map</span>
-          <span><i data-lucide="navigation"></i> Corridor Scan</span>
+          <span><b class="legend-dot target"></b> Target species</span>
+          <span><b class="legend-dot notable"></b> Notable birds</span>
+          <span><b class="legend-dot hotspot"></b> Ranked hotspot</span>
+          <span><b class="legend-line route"></b> Route corridor</span>
         </div>
       </section>
 
@@ -159,10 +208,24 @@
             <p id="resultContext">No route searched yet.</p>
           </div>
           <div class="legend">
-            <span><b class="tier high"></b>High</span>
-            <span><b class="tier mid"></b>Good</span>
-            <span><b class="tier low"></b>Scout</span>
+            <span><b class="tier high"></b>Top hotspot</span>
+            <span><b class="tier mid"></b>Notable birds</span>
+            <span><b class="tier low"></b>Target match</span>
           </div>
+        </div>
+        <div class="insight-strip">
+          <section class="insight-panel">
+            <div><i data-lucide="route"></i><span>Trip Plan</span></div>
+            <p id="tripPlanSummary">Set a route to compare drive time, detour budget, and ranked birding stops.</p>
+          </section>
+          <section class="insight-panel">
+            <div><i data-lucide="target"></i><span>Target Species</span></div>
+            <p id="targetSpeciesSummary">Add targets to highlight matching reports along the corridor.</p>
+          </section>
+          <section class="insight-panel">
+            <div><i data-lucide="sparkles"></i><span>Recent Sightings</span></div>
+            <p id="sightingSummary">Recent eBird activity and notable reports appear after search.</p>
+          </section>
         </div>
         <div id="resultsList" class="results-list empty">
           <div class="empty-state">
@@ -188,6 +251,7 @@
         <span class="stop-copy">
           <strong class="stop-name"></strong>
           <small class="stop-preview"></small>
+          <span class="stop-chips"></span>
         </span>
         <span class="score-pill"></span>
       </button>
@@ -204,6 +268,45 @@
       </div>
     </article>
   </template>
+
+  <div id="quickStartModal" class="modal-backdrop" hidden>
+    <section class="quick-start-modal" role="dialog" aria-modal="true" aria-labelledby="quickStartTitle">
+      <button type="button" id="closeQuickStart" class="icon-button close-modal" title="Close">
+        <i data-lucide="x"></i>
+      </button>
+      <div class="modal-kicker">
+        <i data-lucide="sparkles"></i>
+        Quick Start
+      </div>
+      <h2 id="quickStartTitle">Plan a birding route in minutes</h2>
+      <div class="quick-steps">
+        <div>
+          <b>1</b>
+          <span>Add a route</span>
+          <p>Start with origin and destination. The sample route is ready for a fast trial.</p>
+        </div>
+        <div>
+          <b>2</b>
+          <span>Connect bird data</span>
+          <p>Paste an eBird token or use the server EBIRD_API_KEY for live recent sightings.</p>
+        </div>
+        <div>
+          <b>3</b>
+          <span>Choose targets</span>
+          <p>Targets improve the ranking by surfacing lifers and wanted species.</p>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="modalSampleButton" class="primary">
+          <i data-lucide="map-pinned"></i>
+          Use Sample Route
+        </button>
+        <button type="button" id="modalExploreButton">
+          Explore Without Setup
+        </button>
+      </div>
+    </section>
+  </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>

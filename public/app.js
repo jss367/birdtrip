@@ -13,6 +13,9 @@ const state = {
 };
 
 const els = {
+  quickStartButton: document.querySelector("#quickStartButton"),
+  settingsButton: document.querySelector("#settingsButton"),
+  setupStatus: document.querySelector("#setupStatus"),
   form: document.querySelector("#searchForm"),
   origin: document.querySelector("#origin"),
   destination: document.querySelector("#destination"),
@@ -33,15 +36,25 @@ const els = {
   printButton: document.querySelector("#printButton"),
   progressTitle: document.querySelector("#progressTitle"),
   progressMessage: document.querySelector("#progressMessage"),
+  targetCount: document.querySelector("#targetCount"),
+  notableCount: document.querySelector("#notableCount"),
+  hotspotCount: document.querySelector("#hotspotCount"),
   routeDistance: document.querySelector("#routeDistance"),
-  routeDuration: document.querySelector("#routeDuration"),
+  maxAdded: document.querySelector("#maxAdded"),
   candidateCount: document.querySelector("#candidateCount"),
   resultContext: document.querySelector("#resultContext"),
+  tripPlanSummary: document.querySelector("#tripPlanSummary"),
+  targetSpeciesSummary: document.querySelector("#targetSpeciesSummary"),
+  sightingSummary: document.querySelector("#sightingSummary"),
   resultsList: document.querySelector("#resultsList"),
   resultTemplate: document.querySelector("#resultTemplate"),
   detailsPanel: document.querySelector("#detailsPanel"),
   detailsContent: document.querySelector("#detailsContent"),
-  closeDetails: document.querySelector("#closeDetails")
+  closeDetails: document.querySelector("#closeDetails"),
+  quickStartModal: document.querySelector("#quickStartModal"),
+  closeQuickStart: document.querySelector("#closeQuickStart"),
+  modalSampleButton: document.querySelector("#modalSampleButton"),
+  modalExploreButton: document.querySelector("#modalExploreButton")
 };
 
 const PREF_FIELDS = ["origin", "destination", "maxDetour", "recentDays", "radiusKm", "maxStops", "targets"];
@@ -50,6 +63,8 @@ init();
 
 function init() {
   restorePreferences();
+  updateSetupStatus();
+  updateInputSummaries();
   state.map = L.map("map", { zoomControl: true }).setView([33.45, -112.07], 7);
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19,
@@ -68,6 +83,29 @@ function init() {
   els.rememberToken.addEventListener("change", savePreferences);
   els.apiToken.addEventListener("change", () => {
     if (els.rememberToken.checked) savePreferences();
+    updateSetupStatus();
+  });
+  els.apiToken.addEventListener("input", updateSetupStatus);
+  els.targets.addEventListener("input", updateInputSummaries);
+  els.maxDetour.addEventListener("input", updateInputSummaries);
+  els.quickStartButton.addEventListener("click", openQuickStart);
+  els.settingsButton.addEventListener("click", () => {
+    els.maxDetour.scrollIntoView({ block: "center", behavior: "smooth" });
+    els.maxDetour.focus();
+  });
+  els.closeQuickStart.addEventListener("click", closeQuickStart);
+  els.quickStartModal.addEventListener("click", (event) => {
+    if (event.target === els.quickStartModal) closeQuickStart();
+  });
+  els.modalSampleButton.addEventListener("click", () => {
+    useSampleRoute();
+    closeQuickStart();
+    els.origin.focus();
+  });
+  els.modalExploreButton.addEventListener("click", () => {
+    setStatus("Explore without setup", "Enter a route to preview distance and drive time. Add an eBird token when you want live bird rankings.");
+    closeQuickStart();
+    els.origin.focus();
   });
   els.printButton.addEventListener("click", () => {
     renderReport();
@@ -78,6 +116,7 @@ function init() {
     els.detailsPanel.hidden = true;
     state.selectedId = null;
     updateSelectedCard();
+    renderMarkers();
   });
 
   if (window.lucide) window.lucide.createIcons();
@@ -118,6 +157,7 @@ function useSampleRoute() {
   els.radiusKm.value = "25";
   els.maxStops.value = "10";
   els.targets.value = "Gilded Flicker\nAbert's Towhee\nRosy-faced Lovebird\nBendire's Thrasher";
+  updateInputSummaries();
 }
 
 function clearResults() {
@@ -135,8 +175,11 @@ function clearResults() {
   els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="binoculars"></i><p>Results will appear here after the first search.</p></div>';
   els.resultContext.textContent = "No route searched yet.";
   els.routeDistance.textContent = "-";
-  els.routeDuration.textContent = "-";
+  els.notableCount.textContent = "-";
+  els.hotspotCount.textContent = "-";
   els.candidateCount.textContent = "-";
+  updateInputSummaries();
+  renderInsights();
   els.detailsPanel.hidden = true;
   setStatus("Ready", "Enter a route and run a search.");
   if (window.lucide) window.lucide.createIcons();
@@ -238,6 +281,42 @@ function readParams() {
   };
 }
 
+function openQuickStart() {
+  els.quickStartModal.hidden = false;
+  if (window.lucide) window.lucide.createIcons();
+  els.closeQuickStart.focus();
+}
+
+function closeQuickStart() {
+  els.quickStartModal.hidden = true;
+  els.quickStartButton.focus();
+}
+
+function updateSetupStatus() {
+  const hasToken = Boolean(els.apiToken.value.trim());
+  els.setupStatus.classList.toggle("setup-ready", hasToken);
+  els.setupStatus.classList.toggle("setup-needed", !hasToken);
+  els.setupStatus.innerHTML = hasToken
+    ? '<i data-lucide="check-circle-2"></i>Ready to Search'
+    : '<i data-lucide="circle-alert"></i>Setup Required';
+  renderInsights();
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function updateInputSummaries() {
+  const targets = parseTargetsInput();
+  els.targetCount.textContent = String(targets.length);
+  els.maxAdded.textContent = `${clamp(Number(els.maxDetour.value || 60), 0, 240)}m`;
+  renderInsights();
+}
+
+function parseTargetsInput() {
+  return els.targets.value
+    .split(/\n|,/)
+    .map((target) => normalizeName(target))
+    .filter(Boolean);
+}
+
 function clearSearchArtifacts() {
   state.results = [];
   state.selectedId = null;
@@ -257,11 +336,27 @@ function clearSearchArtifacts() {
   }
   els.resultsList.className = "results-list empty";
   els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="loader"></i><p>Searching route corridor...</p></div>';
+  els.notableCount.textContent = "-";
+  els.hotspotCount.textContent = "-";
+  els.candidateCount.textContent = "-";
+  renderInsights();
   if (window.lucide) window.lucide.createIcons();
 }
 
 function setBusy(isBusy) {
-  els.form.querySelectorAll("button, input, textarea").forEach((control) => {
+  const controls = [
+    ...els.form.querySelectorAll("button, input, textarea"),
+    els.quickStartButton,
+    els.settingsButton,
+    els.modalSampleButton,
+    els.modalExploreButton
+  ];
+
+  controls.forEach((control) => {
+    if (control.dataset.staticDisabled === "true") {
+      control.disabled = true;
+      return;
+    }
     control.disabled = isBusy;
   });
 }
@@ -379,16 +474,16 @@ function routeUrl(path, origin, destination, via) {
 function renderRoute(coordinates) {
   const latLngs = coordinates.map(([lng, lat]) => [lat, lng]);
   state.routeLayer = L.polyline(latLngs, {
-    color: "#276b49",
+    color: "#3b82f6",
     weight: 5,
-    opacity: 0.82
+    opacity: 0.86
   }).addTo(state.map);
   state.map.fitBounds(state.routeLayer.getBounds(), { padding: [34, 34] });
 }
 
 function updateRouteSummary(route) {
   els.routeDistance.textContent = miles(route.distanceMeters).toFixed(0);
-  els.routeDuration.textContent = formatMinutes(route.durationSeconds / 60);
+  renderInsights();
 }
 
 function sampleRoute(coordinates, routeMeters, maxSamples) {
@@ -570,7 +665,10 @@ function scoreCandidates(candidates, params) {
 
 function renderResults() {
   els.candidateCount.textContent = String(state.results.length);
+  els.hotspotCount.textContent = String(state.results.filter(isHotspot).length);
+  els.notableCount.textContent = String(state.results.reduce((sum, candidate) => sum + uniqueNotableCount(candidate), 0));
   els.resultContext.textContent = `${state.routeName}; ${state.results.length} stops within budget.`;
+  renderInsights();
   els.resultsList.className = "results-list";
   els.resultsList.innerHTML = "";
 
@@ -589,6 +687,7 @@ function renderResults() {
     node.querySelector(".rank").textContent = String(index + 1);
     node.querySelector(".stop-name").textContent = candidate.name;
     node.querySelector(".stop-preview").textContent = speciesPreview(candidate);
+    node.querySelector(".stop-chips").innerHTML = candidateChips(candidate);
     node.querySelector(".score-pill").textContent = candidate.score;
     node.querySelector(".metric-detour").textContent = `+${Math.round(candidate.addedMinutes)}m`;
     node.querySelector(".metric-offroute").textContent = `${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi`;
@@ -613,19 +712,19 @@ function renderResults() {
 
 function renderMarkers() {
   state.markerLayer.clearLayers();
-  for (const candidate of state.results) {
+  state.results.forEach((candidate, index) => {
     const marker = L.marker([candidate.lat, candidate.lng], {
       icon: L.divIcon({
         className: "",
-        html: `<div class="bird-marker ${markerClass(candidate)}"></div>`,
-        iconSize: [28, 28],
-        iconAnchor: [14, 14]
+        html: `<div class="bird-marker ${markerClass(candidate)} ${candidate.id === state.selectedId ? "marker-selected" : ""}">${index + 1}</div>`,
+        iconSize: [32, 32],
+        iconAnchor: [16, 16]
       })
     });
     marker.bindPopup(`<strong>${escapeHtml(candidate.name)}</strong><br>${candidate.score} score; +${Math.round(candidate.addedMinutes)} min<br>${candidate.species.size} recent species`);
     marker.on("click", () => selectCandidate(candidate.id));
     marker.addTo(state.markerLayer);
-  }
+  });
 }
 
 function selectCandidate(id) {
@@ -635,6 +734,7 @@ function selectCandidate(id) {
   renderDetails(candidate);
   els.detailsPanel.hidden = false;
   updateSelectedCard();
+  renderMarkers();
   state.map.flyTo([candidate.lat, candidate.lng], Math.max(state.map.getZoom(), 11), { duration: 0.6 });
 }
 
@@ -714,9 +814,9 @@ function scoreRow(label, value, max) {
 }
 
 function markerClass(candidate) {
-  if (candidate.score >= 65) return "marker-high";
-  if (candidate.score >= 42) return "marker-mid";
-  return "marker-low";
+  if (candidate.targetMatches.length) return "marker-low";
+  if (uniqueNotableCount(candidate)) return "marker-mid";
+  return isHotspot(candidate) ? "marker-high" : "marker-standard";
 }
 
 function speciesPreview(candidate) {
@@ -727,8 +827,44 @@ function speciesPreview(candidate) {
   return names.length ? names.join(", ") : "Recent observations available";
 }
 
+function candidateChips(candidate) {
+  const chips = [];
+  if (candidate.targetMatches.length) chips.push(`<span class="stop-chip chip-target">${candidate.targetMatches.length} target</span>`);
+  if (uniqueNotableCount(candidate)) chips.push(`<span class="stop-chip chip-notable">${uniqueNotableCount(candidate)} notable</span>`);
+  if (isHotspot(candidate)) chips.push('<span class="stop-chip chip-hotspot">top hotspot</span>');
+  return chips.join("");
+}
+
+function isHotspot(candidate) {
+  return candidate.score >= 65 || candidate.species.size >= 40;
+}
+
 function uniqueNotableCount(candidate) {
   return new Set(candidate.notable.map((obs) => normalizeName(obs.comName || obs.sciName))).size;
+}
+
+function renderInsights() {
+  const liveDetour = clamp(Number(els.maxDetour.value || 60), 0, 240);
+  const liveTargets = parseTargetsInput();
+  const hasToken = Boolean(els.apiToken.value.trim());
+  const routeText = state.route
+    ? `${state.routeName}: ${miles(state.route.distanceMeters).toFixed(0)} miles, ${formatMinutes(state.route.durationSeconds / 60)} drive time, ${liveDetour} min detour budget.`
+    : "Set a route to compare drive time, detour budget, and ranked birding stops.";
+  els.tripPlanSummary.textContent = routeText;
+
+  els.targetSpeciesSummary.textContent = liveTargets.length
+    ? `${liveTargets.length} target species queued: ${liveTargets.slice(0, 3).join(", ")}${liveTargets.length > 3 ? ", ..." : ""}.`
+    : "Add targets to highlight matching reports along the corridor.";
+
+  if (state.results.length) {
+    const speciesCount = state.results.reduce((sum, candidate) => sum + candidate.species.size, 0);
+    const notableCount = state.results.reduce((sum, candidate) => sum + uniqueNotableCount(candidate), 0);
+    els.sightingSummary.textContent = `${speciesCount} recent species across ${state.results.length} ranked stops, including ${notableCount} notable species.`;
+  } else {
+    els.sightingSummary.textContent = state.route && !hasToken
+      ? "Route is ready. Add an eBird token to load recent sightings and notable reports."
+      : "Recent eBird activity and notable reports appear after search.";
+  }
 }
 
 function formatMinutes(minutes) {
