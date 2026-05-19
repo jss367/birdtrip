@@ -139,13 +139,13 @@ The score is a planning heuristic, not an objective quality rating. Stops over t
 ## Route-Corridor Algorithm
 
 1. Geocode origin and destination.
-2. Request an OSRM driving route.
+2. Request a driving route from the selected routing provider.
 3. Sample points along the route at roughly even intervals.
 4. For each sampled point, request nearby eBird observations within the corridor radius.
 5. Group observations into candidate locations by eBird location ID when available, otherwise by rounded coordinates.
 6. For each candidate:
    - Estimate route distance from sampled route point.
-   - Request an OSRM route origin -> candidate -> destination.
+   - Request a route from the selected provider for origin -> candidate -> destination.
    - Compute added minutes against the direct route.
    - Fetch notable observations near the candidate.
    - Score and rank.

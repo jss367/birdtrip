@@ -5,6 +5,7 @@ const path = require("path");
 const PORT = Number(process.env.PORT || 4177);
 const PUBLIC_DIR = path.join(__dirname, "public");
 const CACHE_TTL_MS = 10 * 60 * 1000;
+const UPSTREAM_TIMEOUT_MS = 15000;
 const MAP_PROVIDERS = new Set(["osm", "google"]);
 const DEFAULT_MAP_PROVIDER = MAP_PROVIDERS.has(process.env.MAP_PROVIDER)
   ? process.env.MAP_PROVIDER
@@ -112,16 +113,32 @@ async function postJson(url, payload, headers = {}) {
   const hit = cached(cacheKey);
   if (hit) return hit;
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "accept": "application/json",
-      "content-type": "application/json",
-      "user-agent": "birdtrip/0.1 local personal app",
-      ...headers
-    },
-    body: JSON.stringify(payload)
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+  let response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "user-agent": "birdtrip/0.1 local personal app",
+        ...headers
+      },
+      body: JSON.stringify(payload)
+    });
+  } catch (error) {
+    if (error.name === "AbortError") {
+      const timeoutError = new Error("Upstream request timed out");
+      timeoutError.status = 504;
+      timeoutError.details = { timeoutMs: UPSTREAM_TIMEOUT_MS };
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   const text = await response.text();
   let body;
@@ -236,9 +253,9 @@ function googleWaypoint(point) {
 }
 
 function parseGoogleDuration(value) {
-  if (typeof value !== "string") return 0;
+  if (typeof value !== "string" || !/^\d+(\.\d+)?s$/.test(value)) return null;
   const seconds = Number(value.replace(/s$/, ""));
-  return Number.isFinite(seconds) ? seconds : 0;
+  return Number.isFinite(seconds) ? seconds : null;
 }
 
 async function routeGoogle(origin, destination, via) {
@@ -271,6 +288,14 @@ async function routeGoogle(origin, destination, via) {
     throw error;
   }
   const route = result.routes[0];
+  const distanceMeters = Number(route.distanceMeters);
+  const durationSeconds = parseGoogleDuration(route.duration);
+  if (!Number.isFinite(distanceMeters) || distanceMeters <= 0 || !Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    const error = new Error("Google route did not include usable distance/duration");
+    error.status = 502;
+    error.details = result;
+    throw error;
+  }
   const coordinates = route.polyline?.geoJsonLinestring?.coordinates;
   if (!Array.isArray(coordinates) || coordinates.length < 2) {
     const error = new Error("Google route did not include a usable geometry");
@@ -279,8 +304,8 @@ async function routeGoogle(origin, destination, via) {
     throw error;
   }
   return {
-    distanceMeters: route.distanceMeters,
-    durationSeconds: parseGoogleDuration(route.duration),
+    distanceMeters,
+    durationSeconds,
     geometry: {
       type: "LineString",
       coordinates

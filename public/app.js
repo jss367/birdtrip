@@ -184,7 +184,11 @@ function setupProviderControl() {
 }
 
 function canUseGoogle() {
-  return Boolean(state.config.providers.google?.enabled && state.config.providers.google?.browserKey);
+  return Boolean(
+    state.config.providers.google?.enabled &&
+    state.config.providers.google?.browserKey &&
+    state.config.providers.google?.serverConfigured
+  );
 }
 
 function providerFromInput() {
@@ -280,7 +284,11 @@ function loadGoogleMapsScript(key) {
     script.async = true;
     script.defer = true;
     script.onload = resolve;
-    script.onerror = () => reject(new Error("Maps JavaScript API failed to load"));
+    script.onerror = () => {
+      script.remove();
+      window.googleMapsLoading = null;
+      reject(new Error("Maps JavaScript API failed to load"));
+    };
     document.head.appendChild(script);
   });
   return window.googleMapsLoading;
@@ -331,8 +339,8 @@ async function runSearch() {
   try {
     setStatus("Geocoding", "Resolving origin and destination.");
     const [originResult, destinationResult] = await Promise.allSettled([
-      geocodeField("origin", params.origin),
-      geocodeField("destination", params.destination)
+      geocodeField("origin", params.origin, params.mapProvider),
+      geocodeField("destination", params.destination, params.mapProvider)
     ]);
     if (originResult.status === "rejected") throw originResult.reason;
     if (destinationResult.status === "rejected") throw destinationResult.reason;
@@ -343,7 +351,7 @@ async function runSearch() {
     state.routeName = `${shortName(origin.name)} to ${shortName(destination.name)}`;
 
     setStatus("Routing", "Drawing the direct route.");
-    const route = await apiJson(routeUrl("/api/route", origin, destination));
+    const route = await apiJson(routeUrl("/api/route", origin, destination, null, params.mapProvider));
     state.route = { ...route, origin, destination };
     renderRoute(route.geometry.coordinates);
     updateRouteSummary(route);
@@ -538,10 +546,10 @@ function truncate(value, max) {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
-async function geocodeField(field, query) {
+async function geocodeField(field, query, provider) {
   let matches;
   try {
-    matches = await apiJson(`/api/geocode?q=${encodeURIComponent(query)}&provider=${state.provider}`);
+    matches = await apiJson(`/api/geocode?q=${encodeURIComponent(query)}&provider=${provider}`);
   } catch (error) {
     setFieldError(field, `Lookup failed: ${error.message}`);
     throw new Error(`${field === "origin" ? "Origin" : "Destination"} lookup failed`);
@@ -596,12 +604,12 @@ function clearWarning() {
   els.warningPanel.hidden = true;
 }
 
-function routeUrl(path, origin, destination, via) {
+function routeUrl(path, origin, destination, via, provider) {
   const url = new URL(path, window.location.origin);
   url.searchParams.set("origin", `${origin.lng},${origin.lat}`);
   url.searchParams.set("destination", `${destination.lng},${destination.lat}`);
   if (via) url.searchParams.set("via", `${via.lng},${via.lat}`);
-  url.searchParams.set("provider", state.provider);
+  url.searchParams.set("provider", provider);
   return `${url.pathname}${url.search}`;
 }
 
@@ -733,7 +741,7 @@ async function evaluateDetours(candidates, origin, destination, baseDurationSeco
     const candidate = candidates[i];
     setStatus("Checking detours", `Evaluating ${i + 1} of ${candidates.length}: ${candidate.name}`);
     try {
-      const viaRoute = await apiJson(routeUrl("/api/route-via", origin, destination, candidate));
+      const viaRoute = await apiJson(routeUrl("/api/route-via", origin, destination, candidate, params.mapProvider));
       candidate.viaRoute = viaRoute;
       candidate.addedMinutes = Math.max(0, (viaRoute.durationSeconds - baseDurationSeconds) / 60);
       candidate.addedMiles = Math.max(0, miles(viaRoute.distanceMeters - state.route.distanceMeters));
@@ -1005,7 +1013,8 @@ function formatMiles(value) {
 }
 
 function candidateLinks(candidate) {
-  const mapsUrl = state.provider === "google"
+  const provider = state.params?.mapProvider || state.provider;
+  const mapsUrl = provider === "google"
     ? `https://www.google.com/maps/dir/?api=1&destination=${candidate.lat},${candidate.lng}`
     : osmDirectionsUrl(candidate);
   return {
@@ -1018,8 +1027,11 @@ function candidateLinks(candidate) {
 
 function osmDirectionsUrl(candidate) {
   const url = new URL("https://www.openstreetmap.org/directions");
-  if (state.origin) url.searchParams.set("from", `${state.origin.lat},${state.origin.lng}`);
-  url.searchParams.set("to", `${candidate.lat},${candidate.lng}`);
+  if (state.origin) {
+    url.searchParams.set("route", `${state.origin.lat},${state.origin.lng};${candidate.lat},${candidate.lng}`);
+  } else {
+    url.searchParams.set("to", `${candidate.lat},${candidate.lng}`);
+  }
   return url.toString();
 }
 
