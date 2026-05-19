@@ -10,6 +10,27 @@ npm start
 
 Then open `http://localhost:4177`.
 
+## Map Services
+
+Birdtrip can run on OpenStreetMap services or Google Maps.
+
+OpenStreetMap is the default and does not need a map key:
+
+```sh
+npm start
+```
+
+Google Maps mode needs a browser key for the Maps JavaScript API and a server key for Geocoding API and Routes API requests:
+
+```sh
+MAP_PROVIDER=google \
+GOOGLE_MAPS_BROWSER_KEY=... \
+GOOGLE_MAPS_SERVER_KEY=... \
+npm start
+```
+
+For local experimentation, `GOOGLE_MAPS_API_KEY=...` can be used as a single key for both browser and server requests. Production deployments should use restricted keys.
+
 ## Bird Data
 
 Live bird data uses the eBird API. Either:
@@ -17,4 +38,4 @@ Live bird data uses the eBird API. Either:
 - paste an eBird API token into the app, or
 - start the server with `EBIRD_API_KEY=... npm start`.
 
-The app uses public OpenStreetMap/Nominatim and OSRM demo endpoints for geocoding and routing. That is fine for local experimentation, but a production deployment should use a provider with explicit quotas.
+OpenStreetMap mode uses public Nominatim and OSRM demo endpoints for geocoding and routing. That is fine for local experimentation, but a production deployment should use services with explicit quotas.

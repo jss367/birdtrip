@@ -69,6 +69,14 @@
             <input id="destination" name="destination" autocomplete="street-address" value="Phoenix, AZ" required>
             <small class="field-error" id="destinationError" hidden></small>
           </label>
+          <label>
+            <span>Map service</span>
+            <select id="mapProvider" name="mapProvider" aria-describedby="mapProviderHint">
+              <option value="osm">OpenStreetMap</option>
+              <option value="google">Google Maps</option>
+            </select>
+            <small class="field-hint" id="mapProviderHint">OpenStreetMap routing and map tiles.</small>
+          </label>
         </section>
 
         <section class="form-group">
