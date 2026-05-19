@@ -1,7 +1,5 @@
 const state = {
-  map: null,
-  routeLayer: null,
-  markerLayer: null,
+  mapAdapter: null,
   route: null,
   routeName: "",
   results: [],
@@ -9,7 +7,15 @@ const state = {
   warnings: [],
   params: null,
   origin: null,
-  destination: null
+  destination: null,
+  provider: "osm",
+  config: {
+    defaultMapProvider: "osm",
+    providers: {
+      osm: { enabled: true },
+      google: { enabled: false, browserKey: "", serverConfigured: false }
+    }
+  }
 };
 
 const els = {
@@ -19,6 +25,8 @@ const els = {
   form: document.querySelector("#searchForm"),
   origin: document.querySelector("#origin"),
   destination: document.querySelector("#destination"),
+  mapProvider: document.querySelector("#mapProvider"),
+  mapProviderHint: document.querySelector("#mapProviderHint"),
   maxDetour: document.querySelector("#maxDetour"),
   recentDays: document.querySelector("#recentDays"),
   radiusKm: document.querySelector("#radiusKm"),
@@ -57,20 +65,17 @@ const els = {
   modalExploreButton: document.querySelector("#modalExploreButton")
 };
 
-const PREF_FIELDS = ["origin", "destination", "maxDetour", "recentDays", "radiusKm", "maxStops", "targets"];
-
-init();
+const PREF_FIELDS = ["origin", "destination", "mapProvider", "maxDetour", "recentDays", "radiusKm", "maxStops", "targets"];
 
 function init() {
-  restorePreferences();
+  const saved = restorePreferences();
+  const preferredProvider = typeof saved.mapProvider === "string" ? providerFromInput() : null;
+  state.provider = preferredProvider || "osm";
+  setupProviderControl();
   updateSetupStatus();
   updateInputSummaries();
-  state.map = L.map("map", { zoomControl: true }).setView([33.45, -112.07], 7);
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 19,
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-  }).addTo(state.map);
-  state.markerLayer = L.layerGroup().addTo(state.map);
+  setMapProvider("osm", { persist: false, preserveData: false });
+  loadAppConfig(preferredProvider);
 
   els.form.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -86,6 +91,7 @@ function init() {
     updateSetupStatus();
   });
   els.apiToken.addEventListener("input", updateSetupStatus);
+  els.mapProvider.addEventListener("change", () => setMapProvider(providerFromInput()));
   els.targets.addEventListener("input", updateInputSummaries);
   els.maxDetour.addEventListener("input", updateInputSummaries);
   els.quickStartButton.addEventListener("click", openQuickStart);
@@ -138,6 +144,7 @@ function restorePreferences() {
   if (saved.rememberToken === true && typeof saved.apiToken === "string") {
     els.apiToken.value = saved.apiToken;
   }
+  return saved;
 }
 
 function savePreferences() {
@@ -147,6 +154,136 @@ function savePreferences() {
   payload.rememberToken = remember;
   if (remember) payload.apiToken = els.apiToken.value;
   localStorage.setItem("routeBirdingPrefs", JSON.stringify(payload));
+}
+
+async function loadAppConfig(preferredProvider) {
+  try {
+    const config = await apiJson("/api/config");
+    state.config = {
+      ...state.config,
+      ...config,
+      providers: {
+        ...state.config.providers,
+        ...(config.providers || {})
+      }
+    };
+  } catch (error) {
+    addWarning(`Map service setup could not be checked: ${error.message}`);
+    renderWarnings();
+  }
+  setupProviderControl();
+  await setMapProvider(resolveProvider(preferredProvider || state.config.defaultMapProvider || providerFromInput()), { persist: false });
+}
+
+function setupProviderControl() {
+  const googleOption = els.mapProvider.querySelector('option[value="google"]');
+  if (googleOption) googleOption.disabled = !canUseGoogle();
+  const resolved = resolveProvider(providerFromInput());
+  if (els.mapProvider.value !== resolved) els.mapProvider.value = resolved;
+  updateProviderHint();
+}
+
+function canUseGoogle() {
+  return Boolean(state.config.providers.google?.enabled && state.config.providers.google?.browserKey);
+}
+
+function providerFromInput() {
+  return els.mapProvider.value === "google" ? "google" : "osm";
+}
+
+function resolveProvider(provider) {
+  if (provider === "google" && !canUseGoogle()) return "osm";
+  return provider === "google" ? "google" : "osm";
+}
+
+function providerLabel(provider) {
+  return provider === "google" ? "Google Maps" : "OpenStreetMap";
+}
+
+function updateProviderHint() {
+  if (els.mapProvider.value === "google") {
+    els.mapProviderHint.textContent = "Google Maps routing, geocoding, and map display.";
+  } else if (state.config.providers.google?.serverConfigured || state.config.providers.google?.browserKey) {
+    els.mapProviderHint.textContent = canUseGoogle()
+      ? "OpenStreetMap routing and map tiles."
+      : "Google Maps needs both browser and server keys.";
+  } else {
+    els.mapProviderHint.textContent = "OpenStreetMap routing and map tiles.";
+  }
+}
+
+async function setMapProvider(provider, options = {}) {
+  const { persist = true, preserveData = true } = options;
+  const nextProvider = resolveProvider(provider);
+  els.mapProvider.value = nextProvider;
+  updateProviderHint();
+
+  if (state.provider === nextProvider && state.mapAdapter) {
+    if (persist) savePreferences();
+    return;
+  }
+
+  state.provider = nextProvider;
+  try {
+    await initializeMap(nextProvider, { preserveData });
+    if (persist) savePreferences();
+  } catch (error) {
+    if (nextProvider === "google") {
+      addWarning(`Google Maps could not be loaded: ${error.message}. Falling back to OpenStreetMap.`);
+      state.provider = "osm";
+      els.mapProvider.value = "osm";
+      updateProviderHint();
+      await initializeMap("osm", { preserveData });
+    } else {
+      throw error;
+    }
+  }
+}
+
+async function initializeMap(provider, options = {}) {
+  const { preserveData = true } = options;
+  const container = document.querySelector("#map");
+  const routeCoordinates = preserveData ? state.route?.geometry?.coordinates : null;
+  const results = preserveData ? state.results : [];
+  const selectedId = preserveData ? state.selectedId : null;
+
+  if (state.mapAdapter) {
+    state.mapAdapter.destroy();
+    state.mapAdapter = null;
+  }
+  container.innerHTML = "";
+
+  if (provider === "google") {
+    await loadGoogleMapsScript(state.config.providers.google.browserKey);
+    state.mapAdapter = new GoogleMapAdapter(container);
+  } else {
+    state.mapAdapter = new LeafletMapAdapter(container);
+  }
+  state.mapAdapter.init();
+  if (routeCoordinates) renderRoute(routeCoordinates);
+  if (results.length) {
+    state.selectedId = selectedId;
+    renderMarkers();
+  }
+}
+
+function loadGoogleMapsScript(key) {
+  if (window.google?.maps) return Promise.resolve();
+  if (window.googleMapsLoading) return window.googleMapsLoading;
+  const params = new URLSearchParams({
+    key,
+    v: "weekly"
+  });
+  window.googleMapsLoading = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = `https://maps.googleapis.com/maps/api/js?${params}`;
+    script.async = true;
+    script.defer = true;
+    script.onload = resolve;
+    script.onerror = () => reject(new Error("Maps JavaScript API failed to load"));
+    document.head.appendChild(script);
+  });
+  return window.googleMapsLoading;
 }
 
 function useSampleRoute() {
@@ -166,8 +303,7 @@ function clearResults() {
   state.selectedId = null;
   state.params = null;
   state.warnings = [];
-  if (state.routeLayer) state.map.removeLayer(state.routeLayer);
-  state.markerLayer.clearLayers();
+  if (state.mapAdapter) state.mapAdapter.clear();
   clearFieldErrors();
   clearWarning();
   els.report.innerHTML = "";
@@ -273,6 +409,7 @@ function readParams() {
     recentDays: clamp(Number(els.recentDays.value || 14), 1, 30),
     radiusKm: clamp(Number(els.radiusKm.value || 25), 1, 50),
     maxStops: clamp(Number(els.maxStops.value || 10), 3, 20),
+    mapProvider: state.provider,
     token: els.apiToken.value.trim(),
     targets: els.targets.value
       .split(/\n|,/)
@@ -329,11 +466,7 @@ function clearSearchArtifacts() {
   clearWarning();
   els.report.innerHTML = "";
   els.detailsPanel.hidden = true;
-  state.markerLayer.clearLayers();
-  if (state.routeLayer) {
-    state.map.removeLayer(state.routeLayer);
-    state.routeLayer = null;
-  }
+  if (state.mapAdapter) state.mapAdapter.clear();
   els.resultsList.className = "results-list empty";
   els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="loader"></i><p>Searching route corridor...</p></div>';
   els.notableCount.textContent = "-";
@@ -345,7 +478,7 @@ function clearSearchArtifacts() {
 
 function setBusy(isBusy) {
   const controls = [
-    ...els.form.querySelectorAll("button, input, textarea"),
+    ...els.form.querySelectorAll("button, input, select, textarea"),
     els.quickStartButton,
     els.settingsButton,
     els.modalSampleButton,
@@ -408,7 +541,7 @@ function truncate(value, max) {
 async function geocodeField(field, query) {
   let matches;
   try {
-    matches = await apiJson(`/api/geocode?q=${encodeURIComponent(query)}`);
+    matches = await apiJson(`/api/geocode?q=${encodeURIComponent(query)}&provider=${state.provider}`);
   } catch (error) {
     setFieldError(field, `Lookup failed: ${error.message}`);
     throw new Error(`${field === "origin" ? "Origin" : "Destination"} lookup failed`);
@@ -468,17 +601,12 @@ function routeUrl(path, origin, destination, via) {
   url.searchParams.set("origin", `${origin.lng},${origin.lat}`);
   url.searchParams.set("destination", `${destination.lng},${destination.lat}`);
   if (via) url.searchParams.set("via", `${via.lng},${via.lat}`);
+  url.searchParams.set("provider", state.provider);
   return `${url.pathname}${url.search}`;
 }
 
 function renderRoute(coordinates) {
-  const latLngs = coordinates.map(([lng, lat]) => [lat, lng]);
-  state.routeLayer = L.polyline(latLngs, {
-    color: "#3b82f6",
-    weight: 5,
-    opacity: 0.86
-  }).addTo(state.map);
-  state.map.fitBounds(state.routeLayer.getBounds(), { padding: [34, 34] });
+  if (state.mapAdapter) state.mapAdapter.setRoute(coordinates);
 }
 
 function updateRouteSummary(route) {
@@ -711,20 +839,8 @@ function renderResults() {
 }
 
 function renderMarkers() {
-  state.markerLayer.clearLayers();
-  state.results.forEach((candidate, index) => {
-    const marker = L.marker([candidate.lat, candidate.lng], {
-      icon: L.divIcon({
-        className: "",
-        html: `<div class="bird-marker ${markerClass(candidate)} ${candidate.id === state.selectedId ? "marker-selected" : ""}">${index + 1}</div>`,
-        iconSize: [32, 32],
-        iconAnchor: [16, 16]
-      })
-    });
-    marker.bindPopup(`<strong>${escapeHtml(candidate.name)}</strong><br>${candidate.score} score; +${Math.round(candidate.addedMinutes)} min<br>${candidate.species.size} recent species`);
-    marker.on("click", () => selectCandidate(candidate.id));
-    marker.addTo(state.markerLayer);
-  });
+  if (!state.mapAdapter) return;
+  state.mapAdapter.setMarkers(state.results, state.selectedId, selectCandidate);
 }
 
 function selectCandidate(id) {
@@ -735,7 +851,7 @@ function selectCandidate(id) {
   els.detailsPanel.hidden = false;
   updateSelectedCard();
   renderMarkers();
-  state.map.flyTo([candidate.lat, candidate.lng], Math.max(state.map.getZoom(), 11), { duration: 0.6 });
+  if (state.mapAdapter) state.mapAdapter.flyTo(candidate, 11);
 }
 
 function renderDetails(candidate) {
@@ -889,12 +1005,22 @@ function formatMiles(value) {
 }
 
 function candidateLinks(candidate) {
+  const mapsUrl = state.provider === "google"
+    ? `https://www.google.com/maps/dir/?api=1&destination=${candidate.lat},${candidate.lng}`
+    : osmDirectionsUrl(candidate);
   return {
     ebirdUrl: candidate.locId
       ? `https://ebird.org/hotspot/${encodeURIComponent(candidate.locId)}`
       : `https://ebird.org/map?lat=${candidate.lat}&lng=${candidate.lng}`,
-    mapsUrl: `https://www.google.com/maps/dir/?api=1&destination=${candidate.lat},${candidate.lng}`
+    mapsUrl
   };
+}
+
+function osmDirectionsUrl(candidate) {
+  const url = new URL("https://www.openstreetmap.org/directions");
+  if (state.origin) url.searchParams.set("from", `${state.origin.lat},${state.origin.lng}`);
+  url.searchParams.set("to", `${candidate.lat},${candidate.lng}`);
+  return url.toString();
 }
 
 function groupSpecies(candidate) {
@@ -930,6 +1056,7 @@ function renderReport() {
     <dl class="report-params">
       ${param("Origin", p.origin)}
       ${param("Destination", p.destination)}
+      ${param("Map service", providerLabel(p.mapProvider))}
       ${param("Max added", `${p.maxDetour} min`)}
       ${param("Corridor radius", `${p.radiusKm} km`)}
       ${param("Recent window", `${p.recentDays} days`)}
@@ -979,6 +1106,202 @@ function renderReport() {
   `;
 }
 
+class LeafletMapAdapter {
+  constructor(container) {
+    this.provider = "osm";
+    this.container = container;
+    this.map = null;
+    this.routeLayer = null;
+    this.markerLayer = null;
+  }
+
+  init() {
+    this.map = L.map(this.container, { zoomControl: true }).setView([33.45, -112.07], 7);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+    }).addTo(this.map);
+    this.markerLayer = L.layerGroup().addTo(this.map);
+  }
+
+  setRoute(coordinates) {
+    if (this.routeLayer) this.map.removeLayer(this.routeLayer);
+    const latLngs = coordinates.map(([lng, lat]) => [lat, lng]);
+    this.routeLayer = L.polyline(latLngs, {
+      color: "#3b82f6",
+      weight: 5,
+      opacity: 0.86
+    }).addTo(this.map);
+    this.map.fitBounds(this.routeLayer.getBounds(), { padding: [34, 34] });
+  }
+
+  setMarkers(results, selectedId, onSelect) {
+    this.markerLayer.clearLayers();
+    results.forEach((candidate, index) => {
+      const marker = L.marker([candidate.lat, candidate.lng], {
+        icon: L.divIcon({
+          className: "",
+          html: markerHtml(candidate, index, selectedId),
+          iconSize: [32, 32],
+          iconAnchor: [16, 16]
+        })
+      });
+      marker.bindPopup(markerPopup(candidate));
+      marker.on("click", () => onSelect(candidate.id));
+      marker.addTo(this.markerLayer);
+    });
+  }
+
+  flyTo(candidate, minZoom) {
+    this.map.flyTo([candidate.lat, candidate.lng], Math.max(this.map.getZoom(), minZoom), { duration: 0.6 });
+  }
+
+  clear() {
+    if (this.routeLayer) {
+      this.map.removeLayer(this.routeLayer);
+      this.routeLayer = null;
+    }
+    if (this.markerLayer) this.markerLayer.clearLayers();
+  }
+
+  destroy() {
+    this.clear();
+    if (this.map) {
+      this.map.remove();
+      this.map = null;
+    }
+  }
+}
+
+class GoogleMapAdapter {
+  constructor(container) {
+    this.provider = "google";
+    this.container = container;
+    this.map = null;
+    this.routeLayer = null;
+    this.markers = [];
+    this.infoWindow = null;
+  }
+
+  init() {
+    const maps = window.google.maps;
+    this.map = new maps.Map(this.container, {
+      center: { lat: 33.45, lng: -112.07 },
+      zoom: 7,
+      mapTypeControl: false,
+      fullscreenControl: false,
+      streetViewControl: false
+    });
+    this.infoWindow = new maps.InfoWindow();
+  }
+
+  setRoute(coordinates) {
+    if (this.routeLayer) this.routeLayer.setMap(null);
+    const path = coordinates.map(([lng, lat]) => ({ lat, lng }));
+    const maps = window.google.maps;
+    this.routeLayer = new maps.Polyline({
+      path,
+      geodesic: true,
+      strokeColor: "#3b82f6",
+      strokeOpacity: 0.86,
+      strokeWeight: 5,
+      map: this.map
+    });
+    const bounds = new maps.LatLngBounds();
+    path.forEach((point) => bounds.extend(point));
+    this.map.fitBounds(bounds, 34);
+  }
+
+  setMarkers(results, selectedId, onSelect) {
+    this.markers.forEach((marker) => marker.setMap(null));
+    const HtmlMarker = ensureGoogleHtmlMarkerClass();
+    this.markers = results.map((candidate, index) => {
+      const marker = new HtmlMarker({
+        position: { lat: candidate.lat, lng: candidate.lng },
+        html: markerHtml(candidate, index, selectedId),
+        onClick: () => {
+          this.infoWindow.setContent(markerPopup(candidate));
+          this.infoWindow.setPosition({ lat: candidate.lat, lng: candidate.lng });
+          this.infoWindow.open({ map: this.map });
+          onSelect(candidate.id);
+        }
+      });
+      marker.setMap(this.map);
+      return marker;
+    });
+  }
+
+  flyTo(candidate, minZoom) {
+    this.map.panTo({ lat: candidate.lat, lng: candidate.lng });
+    if (this.map.getZoom() < minZoom) this.map.setZoom(minZoom);
+  }
+
+  clear() {
+    if (this.routeLayer) {
+      this.routeLayer.setMap(null);
+      this.routeLayer = null;
+    }
+    this.markers.forEach((marker) => marker.setMap(null));
+    this.markers = [];
+    if (this.infoWindow) this.infoWindow.close();
+  }
+
+  destroy() {
+    this.clear();
+    this.map = null;
+    this.container.innerHTML = "";
+  }
+}
+
+let GoogleHtmlMarkerClass = null;
+
+function ensureGoogleHtmlMarkerClass() {
+  if (GoogleHtmlMarkerClass) return GoogleHtmlMarkerClass;
+  GoogleHtmlMarkerClass = class extends window.google.maps.OverlayView {
+    constructor({ position, html, onClick }) {
+      super();
+      this.position = position;
+      this.html = html;
+      this.onClick = onClick;
+      this.el = null;
+    }
+
+    onAdd() {
+      this.el = document.createElement("button");
+      this.el.type = "button";
+      this.el.className = "google-html-marker";
+      this.el.innerHTML = this.html;
+      this.el.addEventListener("click", this.onClick);
+      this.getPanes().overlayMouseTarget.appendChild(this.el);
+    }
+
+    draw() {
+      if (!this.el) return;
+      const position = new window.google.maps.LatLng(this.position.lat, this.position.lng);
+      const point = this.getProjection().fromLatLngToDivPixel(position);
+      if (!point) return;
+      this.el.style.left = `${point.x}px`;
+      this.el.style.top = `${point.y}px`;
+    }
+
+    onRemove() {
+      if (!this.el) return;
+      this.el.removeEventListener("click", this.onClick);
+      this.el.remove();
+      this.el = null;
+    }
+  };
+  return GoogleHtmlMarkerClass;
+}
+
+function markerHtml(candidate, index, selectedId) {
+  return `<div class="bird-marker ${markerClass(candidate)} ${candidate.id === selectedId ? "marker-selected" : ""}">${index + 1}</div>`;
+}
+
+function markerPopup(candidate) {
+  return `<strong>${escapeHtml(candidate.name)}</strong><br>${candidate.score} score; +${Math.round(candidate.addedMinutes)} min<br>${candidate.species.size} recent species`;
+}
+
 function haversineKm(a, b) {
   const radiusKm = 6371;
   const dLat = toRadians(b.lat - a.lat);
@@ -1017,3 +1340,5 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
 }
+
+init();

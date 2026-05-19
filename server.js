@@ -5,6 +5,12 @@ const path = require("path");
 const PORT = Number(process.env.PORT || 4177);
 const PUBLIC_DIR = path.join(__dirname, "public");
 const CACHE_TTL_MS = 10 * 60 * 1000;
+const MAP_PROVIDERS = new Set(["osm", "google"]);
+const DEFAULT_MAP_PROVIDER = MAP_PROVIDERS.has(process.env.MAP_PROVIDER)
+  ? process.env.MAP_PROVIDER
+  : "osm";
+const GOOGLE_MAPS_BROWSER_KEY = process.env.GOOGLE_MAPS_BROWSER_KEY || process.env.GOOGLE_MAPS_API_KEY || "";
+const GOOGLE_MAPS_SERVER_KEY = process.env.GOOGLE_MAPS_SERVER_KEY || process.env.GOOGLE_MAPS_API_KEY || "";
 const cache = new Map();
 
 const contentTypes = {
@@ -101,51 +107,228 @@ async function fetchJson(url, headers = {}) {
   return setCached(cacheKey, body);
 }
 
+async function postJson(url, payload, headers = {}) {
+  const cacheKey = `${url} ${JSON.stringify(headers)} ${JSON.stringify(payload)}`;
+  const hit = cached(cacheKey);
+  if (hit) return hit;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "accept": "application/json",
+      "content-type": "application/json",
+      "user-agent": "birdtrip/0.1 local personal app",
+      ...headers
+    },
+    body: JSON.stringify(payload)
+  });
+
+  const text = await response.text();
+  let body;
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    body = text;
+  }
+
+  if (!response.ok) {
+    const message = typeof body === "object" && body && body.error?.message
+      ? body.error.message
+      : response.statusText;
+    const error = new Error(message || "Upstream request failed");
+    error.status = response.status;
+    error.details = body;
+    throw error;
+  }
+
+  return setCached(cacheKey, body);
+}
+
+function mapProviderFrom(url) {
+  const provider = String(url.searchParams.get("provider") || DEFAULT_MAP_PROVIDER).toLowerCase();
+  return MAP_PROVIDERS.has(provider) ? provider : DEFAULT_MAP_PROVIDER;
+}
+
+function requireGoogleServerKey() {
+  if (!GOOGLE_MAPS_SERVER_KEY) {
+    const error = new Error("Google Maps server key is not configured");
+    error.status = 400;
+    error.details = "Set GOOGLE_MAPS_SERVER_KEY or GOOGLE_MAPS_API_KEY before using Google geocoding or routing.";
+    throw error;
+  }
+  return GOOGLE_MAPS_SERVER_KEY;
+}
+
+async function geocodeOsm(q) {
+  const endpoint = new URL("https://nominatim.openstreetmap.org/search");
+  endpoint.searchParams.set("format", "jsonv2");
+  endpoint.searchParams.set("limit", "5");
+  endpoint.searchParams.set("addressdetails", "1");
+  endpoint.searchParams.set("q", q);
+  const results = await fetchJson(endpoint.toString());
+  return results.map((item) => ({
+    name: item.display_name,
+    lat: Number(item.lat),
+    lng: Number(item.lon),
+    type: item.type,
+    importance: item.importance,
+    provider: "osm"
+  }));
+}
+
+async function geocodeGoogle(q) {
+  const endpoint = new URL("https://maps.googleapis.com/maps/api/geocode/json");
+  endpoint.searchParams.set("address", q);
+  endpoint.searchParams.set("key", requireGoogleServerKey());
+  const result = await fetchJson(endpoint.toString());
+  if (result.status !== "OK" && result.status !== "ZERO_RESULTS") {
+    const error = new Error(result.error_message || result.status || "Google geocoding failed");
+    error.status = 502;
+    error.details = result;
+    throw error;
+  }
+  return (result.results || []).slice(0, 5).map((item) => ({
+    name: item.formatted_address,
+    lat: Number(item.geometry?.location?.lat),
+    lng: Number(item.geometry?.location?.lng),
+    type: Array.isArray(item.types) ? item.types[0] : "",
+    importance: item.geometry?.location_type === "ROOFTOP" ? 1 : 0.7,
+    placeId: item.place_id,
+    provider: "google"
+  })).filter((item) => Number.isFinite(item.lat) && Number.isFinite(item.lng));
+}
+
+async function routeOsm(origin, destination, via) {
+  const coords = [`${origin.lng},${origin.lat}`];
+  if (via) coords.push(`${via.lng},${via.lat}`);
+  coords.push(`${destination.lng},${destination.lat}`);
+
+  const endpoint = new URL(`https://router.project-osrm.org/route/v1/driving/${coords.join(";")}`);
+  endpoint.searchParams.set("overview", "full");
+  endpoint.searchParams.set("geometries", "geojson");
+  endpoint.searchParams.set("steps", "false");
+  endpoint.searchParams.set("alternatives", "false");
+  const result = await fetchJson(endpoint.toString());
+  if (result.code !== "Ok" || !result.routes?.length) {
+    const error = new Error("No route found");
+    error.status = 502;
+    error.details = result;
+    throw error;
+  }
+  const route = result.routes[0];
+  return {
+    distanceMeters: route.distance,
+    durationSeconds: route.duration,
+    geometry: route.geometry,
+    provider: "osm"
+  };
+}
+
+function googleWaypoint(point) {
+  return {
+    location: {
+      latLng: {
+        latitude: point.lat,
+        longitude: point.lng
+      }
+    }
+  };
+}
+
+function parseGoogleDuration(value) {
+  if (typeof value !== "string") return 0;
+  const seconds = Number(value.replace(/s$/, ""));
+  return Number.isFinite(seconds) ? seconds : 0;
+}
+
+async function routeGoogle(origin, destination, via) {
+  const payload = {
+    origin: googleWaypoint(origin),
+    destination: googleWaypoint(destination),
+    travelMode: "DRIVE",
+    routingPreference: "TRAFFIC_UNAWARE",
+    computeAlternativeRoutes: false,
+    polylineQuality: "HIGH_QUALITY",
+    polylineEncoding: "GEO_JSON_LINESTRING",
+    units: "IMPERIAL"
+  };
+  if (via) {
+    payload.intermediates = [{ ...googleWaypoint(via), via: true }];
+  }
+
+  const result = await postJson(
+    "https://routes.googleapis.com/directions/v2:computeRoutes",
+    payload,
+    {
+      "x-goog-api-key": requireGoogleServerKey(),
+      "x-goog-fieldmask": "routes.duration,routes.distanceMeters,routes.polyline.geoJsonLinestring"
+    }
+  );
+  if (!result.routes?.length) {
+    const error = new Error("No route found");
+    error.status = 502;
+    error.details = result;
+    throw error;
+  }
+  const route = result.routes[0];
+  const coordinates = route.polyline?.geoJsonLinestring?.coordinates;
+  if (!Array.isArray(coordinates) || coordinates.length < 2) {
+    const error = new Error("Google route did not include a usable geometry");
+    error.status = 502;
+    error.details = result;
+    throw error;
+  }
+  return {
+    distanceMeters: route.distanceMeters,
+    durationSeconds: parseGoogleDuration(route.duration),
+    geometry: {
+      type: "LineString",
+      coordinates
+    },
+    provider: "google"
+  };
+}
+
 async function handleApi(req, res, url) {
   try {
+    if (url.pathname === "/api/config") {
+      return sendJson(res, 200, {
+        defaultMapProvider: DEFAULT_MAP_PROVIDER,
+        providers: {
+          osm: {
+            enabled: true
+          },
+          google: {
+            enabled: Boolean(GOOGLE_MAPS_BROWSER_KEY && GOOGLE_MAPS_SERVER_KEY),
+            browserKey: GOOGLE_MAPS_BROWSER_KEY || "",
+            serverConfigured: Boolean(GOOGLE_MAPS_SERVER_KEY)
+          }
+        }
+      });
+    }
+
     if (url.pathname === "/api/geocode") {
       const q = String(url.searchParams.get("q") || "").trim();
       if (q.length < 2) return sendError(res, 400, "Search text is too short");
-      const endpoint = new URL("https://nominatim.openstreetmap.org/search");
-      endpoint.searchParams.set("format", "jsonv2");
-      endpoint.searchParams.set("limit", "5");
-      endpoint.searchParams.set("addressdetails", "1");
-      endpoint.searchParams.set("q", q);
-      const results = await fetchJson(endpoint.toString());
-      return sendJson(res, 200, results.map((item) => ({
-        name: item.display_name,
-        lat: Number(item.lat),
-        lng: Number(item.lon),
-        type: item.type,
-        importance: item.importance
-      })));
+      const provider = mapProviderFrom(url);
+      const results = provider === "google"
+        ? await geocodeGoogle(q)
+        : await geocodeOsm(q);
+      return sendJson(res, 200, results);
     }
 
     if (url.pathname === "/api/route" || url.pathname === "/api/route-via") {
       const origin = parseCoordPair(url.searchParams.get("origin"), "origin");
       const destination = parseCoordPair(url.searchParams.get("destination"), "destination");
-      const coords = [`${origin.lng},${origin.lat}`];
+      let via = null;
       if (url.pathname === "/api/route-via") {
-        const via = parseCoordPair(url.searchParams.get("via"), "via");
-        coords.push(`${via.lng},${via.lat}`);
+        via = parseCoordPair(url.searchParams.get("via"), "via");
       }
-      coords.push(`${destination.lng},${destination.lat}`);
-
-      const endpoint = new URL(`https://router.project-osrm.org/route/v1/driving/${coords.join(";")}`);
-      endpoint.searchParams.set("overview", "full");
-      endpoint.searchParams.set("geometries", "geojson");
-      endpoint.searchParams.set("steps", "false");
-      endpoint.searchParams.set("alternatives", "false");
-      const result = await fetchJson(endpoint.toString());
-      if (result.code !== "Ok" || !result.routes?.length) {
-        return sendError(res, 502, "No route found", result);
-      }
-      const route = result.routes[0];
-      return sendJson(res, 200, {
-        distanceMeters: route.distance,
-        durationSeconds: route.duration,
-        geometry: route.geometry
-      });
+      const provider = mapProviderFrom(url);
+      const route = provider === "google"
+        ? await routeGoogle(origin, destination, via)
+        : await routeOsm(origin, destination, via);
+      return sendJson(res, 200, route);
     }
 
     if (url.pathname === "/api/ebird/recent" || url.pathname === "/api/ebird/notable") {

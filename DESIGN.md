@@ -37,9 +37,14 @@ The first version should be useful for real trip planning without requiring paid
 
 ### Routing and Geocoding
 
-- Geocoding: OpenStreetMap Nominatim public endpoint through the local server.
-- Routing: OSRM public route endpoint through the local server.
-- Map: Leaflet with OpenStreetMap tiles.
+- OpenStreetMap mode:
+  - Geocoding: Nominatim public endpoint through the local server.
+  - Routing: OSRM public route endpoint through the local server.
+  - Map: Leaflet with OpenStreetMap tiles.
+- Google Maps mode:
+  - Geocoding: Google Geocoding API through the local server.
+  - Routing: Google Routes API through the local server.
+  - Map: Google Maps JavaScript API in the browser.
 
 The public endpoints are appropriate for local/personal use and demos. A production deployment should switch to a provider with clear quotas and service guarantees.
 
