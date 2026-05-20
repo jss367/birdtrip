@@ -1,6 +1,6 @@
 # Birdtrip
 
-A local web app for finding birding stops along a driving route within a maximum detour budget.
+A route-first birding planner for [birdtrip.org](https://birdtrip.org). Birdtrip finds birding stops along a driving route within a maximum detour budget, then ranks them using recent eBird observations, notable sightings, target species, and route impact.
 
 ## Run
 
@@ -9,6 +9,10 @@ npm start
 ```
 
 Then open `http://localhost:4177`.
+
+## Launch
+
+See [DEPLOY.md](./DEPLOY.md) for production hosting, DNS, Docker, and environment-variable notes.
 
 ## Map Services
 

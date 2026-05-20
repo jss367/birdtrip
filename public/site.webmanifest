@@ -1,0 +1,17 @@
+{
+  "name": "Birdtrip",
+  "short_name": "Birdtrip",
+  "description": "Route-first birding stop planner powered by recent eBird observations.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#10b981",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
