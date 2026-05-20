@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: birdtrip
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    autoDeployTrigger: commit
+    healthCheckPath: /healthz
+    domains:
+      - birdtrip.org
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: EBIRD_API_KEY
+        sync: false
