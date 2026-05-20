@@ -9,5 +9,9 @@ RUN npm ci --omit=dev
 COPY public ./public
 COPY server.js ./
 
+RUN addgroup -S birdtrip && adduser -S birdtrip -G birdtrip \
+  && chown -R birdtrip:birdtrip /app
+USER birdtrip
+
 EXPOSE 4177
 CMD ["node", "server.js"]

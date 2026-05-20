@@ -41,6 +41,7 @@ After DNS is set, confirm:
 ```sh
 dig +short birdtrip.org
 dig +short www.birdtrip.org
+# Use http:// instead until TLS is configured.
 curl -I https://birdtrip.org/healthz
 ```
 
