@@ -28,6 +28,18 @@ GOOGLE_MAPS_SERVER_KEY=...
 
 If `EBIRD_API_KEY` is unset, visitors can paste their own eBird token in the app. For a public launch, a server-side token makes the first run smoother, but monitor eBird API usage and quotas.
 
+## Render Blueprint
+
+This repo includes `render.yaml`, which defines a Render web service named `birdtrip` on the free plan with:
+
+- `npm install` as the build command.
+- `npm start` as the start command.
+- `/healthz` as the health check path.
+- `birdtrip.org` as the custom domain.
+- `EBIRD_API_KEY` as a manual secret value.
+
+In Render, create a new Blueprint from this repository and provide `EBIRD_API_KEY` when prompted. After Render creates the service, open the service's Custom Domains page to copy the exact DNS records for your registrar.
+
 ## DNS For birdtrip.org
 
 The domain does not need any app code changes. Point DNS at the host you choose:
