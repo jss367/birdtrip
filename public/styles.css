@@ -1369,20 +1369,30 @@ select {
 }
 
 .report .report-params,
-.report .report-route {
+.report .report-route,
+.report .report-stop-route {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px 18px;
   margin: 0;
 }
 
+.report .report-stop-route {
+  grid-template-columns: minmax(120px, 0.6fr) repeat(2, minmax(0, 1fr));
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
 .report .report-params div,
-.report .report-route div {
+.report .report-route div,
+.report .report-stop-route div {
   font-size: 0.9rem;
 }
 
 .report .report-params dt,
-.report .report-route dt {
+.report .report-route dt,
+.report .report-stop-route dt {
   color: var(--muted);
   font-size: 0.72rem;
   text-transform: uppercase;
@@ -1390,9 +1400,15 @@ select {
 }
 
 .report .report-params dd,
-.report .report-route dd {
+.report .report-route dd,
+.report .report-stop-route dd {
   margin: 1px 0 0;
   font-weight: 700;
+}
+
+.report .report-stop-route a {
+  color: var(--accent-strong);
+  overflow-wrap: anywhere;
 }
 
 .report .report-stop {
@@ -1426,6 +1442,18 @@ select {
   font-size: 0.82rem;
   text-transform: uppercase;
   color: var(--muted);
+}
+
+@media (max-width: 700px) {
+  .report .report-params,
+  .report .report-route,
+  .report .report-stop-route {
+    grid-template-columns: 1fr;
+  }
+
+  .report .report-stop ul {
+    columns: 1;
+  }
 }
 
 @media print {

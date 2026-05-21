@@ -20,6 +20,7 @@ const state = {
 
 const els = {
   quickStartButton: document.querySelector("#quickStartButton"),
+  downloadReportButton: document.querySelector("#downloadReportButton"),
   settingsButton: document.querySelector("#settingsButton"),
   setupStatus: document.querySelector("#setupStatus"),
   form: document.querySelector("#searchForm"),
@@ -95,6 +96,7 @@ function init() {
   els.targets.addEventListener("input", updateInputSummaries);
   els.maxDetour.addEventListener("input", updateInputSummaries);
   els.quickStartButton.addEventListener("click", openQuickStart);
+  els.downloadReportButton.addEventListener("click", downloadHtmlReport);
   els.settingsButton.addEventListener("click", () => {
     els.maxDetour.scrollIntoView({ block: "center", behavior: "smooth" });
     els.maxDetour.focus();
@@ -488,6 +490,7 @@ function setBusy(isBusy) {
   const controls = [
     ...els.form.querySelectorAll("button, input, select, textarea"),
     els.quickStartButton,
+    els.downloadReportButton,
     els.settingsButton,
     els.modalSampleButton,
     els.modalExploreButton
@@ -1058,10 +1061,17 @@ function renderReport() {
     els.report.innerHTML = "";
     return;
   }
+  els.report.innerHTML = buildReportMarkup();
+}
+
+function buildReportMarkup() {
   const p = state.params;
   const route = state.route;
   const generated = new Date().toLocaleString();
-  const param = (label, value) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd></div>`;
+  const param = (label, value, options = {}) => {
+    const renderedValue = options.raw ? String(value) : escapeHtml(String(value));
+    return `<div><dt>${escapeHtml(label)}</dt><dd>${renderedValue}</dd></div>`;
+  };
 
   const paramsBlock = `
     <h2>Search parameters</h2>
@@ -1089,6 +1099,7 @@ function renderReport() {
     ? `<h2>Ranked stops</h2>${state.results.map((candidate, index) => {
         const species = groupSpecies(candidate).slice(0, 40);
         const notable = candidate.notable.slice(0, 12);
+        const links = candidateLinks(candidate);
         return `
           <div class="report-stop">
             <h3>${index + 1}. ${escapeHtml(candidate.name)}</h3>
@@ -1101,6 +1112,11 @@ function renderReport() {
               ${uniqueNotableCount(candidate)} notable ·
               ${candidate.targetMatches.length} targets
             </p>
+            <dl class="report-stop-route">
+              ${param("Coordinates", `${candidate.lat.toFixed(5)}, ${candidate.lng.toFixed(5)}`)}
+              ${param("Directions", `<a href="${escapeHtml(links.mapsUrl)}">${escapeHtml(links.mapsUrl)}</a>`, { raw: true })}
+              ${param("eBird", `<a href="${escapeHtml(links.ebirdUrl)}">${escapeHtml(links.ebirdUrl)}</a>`, { raw: true })}
+            </dl>
             ${candidate.targetMatches.length ? `<h4>Target matches</h4><ul>${candidate.targetMatches.map((obs) => `<li>${escapeHtml(obs.comName || obs.sciName || "")}</li>`).join("")}</ul>` : ""}
             ${notable.length ? `<h4>Notable</h4><ul>${notable.map((obs) => `<li>${escapeHtml(obs.comName || obs.sciName || "")} <small>${escapeHtml(obs.obsDt || "")}</small></li>`).join("")}</ul>` : ""}
             <h4>Recent species</h4>
@@ -1109,13 +1125,208 @@ function renderReport() {
       }).join("")}`
     : `<h2>Ranked stops</h2><p>No stops within the current detour budget.</p>`;
 
-  els.report.innerHTML = `
+  return `
     <h1>Birdtrip Trip Report</h1>
     <p class="report-sub">${escapeHtml(state.routeName || "")} · Generated ${escapeHtml(generated)}</p>
     ${paramsBlock}
     ${routeBlock}
     ${stopsBlock}
   `;
+}
+
+function downloadHtmlReport() {
+  if (!state.route || !state.params) {
+    setStatus("Nothing to export", "Run a route search before downloading a report.");
+    return;
+  }
+
+  renderReport();
+  const documentHtml = buildStandaloneReportDocument(buildReportMarkup());
+  const blob = new Blob([documentHtml], { type: "text/html;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = reportFileName();
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setStatus("Report downloaded", "Saved a standalone HTML trip report for offline reference.");
+}
+
+function buildStandaloneReportDocument(reportMarkup) {
+  const title = state.routeName ? `Birdtrip - ${state.routeName}` : "Birdtrip Trip Report";
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHtml(title)}</title>
+  <style>
+${reportDocumentCss()}
+  </style>
+</head>
+<body>
+  <main class="report">
+${reportMarkup}
+  </main>
+</body>
+</html>
+`;
+}
+
+function reportDocumentCss() {
+  return `
+:root {
+  --line: #d9e2ec;
+  --line-strong: #b8c4d2;
+  --text: #10201a;
+  --muted: #64748b;
+  --muted-strong: #405569;
+  --panel-soft: #f8fafc;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  color: var(--text);
+  background: #f8fafc;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  line-height: 1.45;
+}
+
+a {
+  color: #065f46;
+  overflow-wrap: anywhere;
+}
+
+.report {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 32px 22px 48px;
+  background: white;
+}
+
+.report h1 {
+  font-size: 1.5rem;
+  margin: 0 0 4px;
+}
+
+.report .report-sub {
+  color: var(--muted);
+  margin: 0 0 18px;
+}
+
+.report h2 {
+  font-size: 1.05rem;
+  margin: 22px 0 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.report .report-params,
+.report .report-route,
+.report .report-stop-route {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px 18px;
+  margin: 0;
+}
+
+.report .report-stop-route {
+  grid-template-columns: minmax(120px, 0.6fr) repeat(2, minmax(0, 1fr));
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.report dt {
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  font-weight: 800;
+}
+
+.report dd {
+  margin: 1px 0 0;
+  font-weight: 700;
+}
+
+.report .report-stop {
+  break-inside: avoid;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 10px 0;
+}
+
+.report .report-stop h3 {
+  margin: 0 0 4px;
+  font-size: 1rem;
+}
+
+.report .report-stop .report-stop-meta {
+  color: var(--muted-strong);
+  font-size: 0.85rem;
+  margin: 0 0 8px;
+}
+
+.report .report-stop ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font-size: 0.85rem;
+  columns: 2;
+}
+
+.report .report-stop h4 {
+  margin: 10px 0 2px;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+@media (max-width: 720px) {
+  .report .report-params,
+  .report .report-route,
+  .report .report-stop-route {
+    grid-template-columns: 1fr;
+  }
+
+  .report .report-stop ul {
+    columns: 1;
+  }
+}
+
+@media print {
+  body {
+    background: white;
+  }
+
+  .report {
+    max-width: none;
+    padding: 0;
+  }
+}
+`;
+}
+
+function reportFileName() {
+  const base = slugify(state.routeName || `${state.params.origin} to ${state.params.destination}`) || "trip-report";
+  const date = new Date().toISOString().slice(0, 10);
+  return `birdtrip-${base}-${date}.html`;
+}
+
+function slugify(value) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
 }
 
 class LeafletMapAdapter {
