@@ -374,13 +374,15 @@ function restoreTripState(trip) {
     : [];
   state.selectedId = savedState.selectedId || null;
   state.warnings = Array.isArray(savedState.warnings) ? savedState.warnings : [];
-  state.params = savedState.params ? { ...savedState.params, token: els.apiToken.value.trim() } : null;
+  state.params = isObjectRecord(savedState.params)
+    ? { ...savedState.params, mapProvider: state.provider, token: els.apiToken.value.trim() }
+    : null;
   state.origin = savedState.origin || state.route?.origin || null;
   state.destination = savedState.destination || state.route?.destination || null;
 
   if (state.mapAdapter) state.mapAdapter.clear();
   els.detailsPanel.hidden = true;
-  els.report.innerHTML = trip.reportHtml || "";
+  els.report.innerHTML = "";
 
   if (state.route?.geometry?.coordinates) {
     renderRoute(state.route.geometry.coordinates);
@@ -401,7 +403,7 @@ function restoreTripState(trip) {
   }
 
   renderWarnings();
-  if (!trip.reportHtml) renderReport();
+  renderReport();
   renderInsights();
   restoreSelectedStop();
   if (window.lucide) window.lucide.createIcons();
