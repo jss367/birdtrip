@@ -780,11 +780,14 @@ async function addNotableObservations(candidates, params) {
 
 function scoreCandidates(candidates, params) {
   for (const candidate of candidates) {
-    const uniqueNotable = new Set(candidate.notable.map((obs) => normalizeName(obs.comName))).size;
-    const speciesScore = Math.min(candidate.species.size, 90) / 90 * 45;
-    const activityScore = Math.min(candidate.observations.length, 250) / 250 * 15;
-    const notableScore = Math.min(uniqueNotable, 8) / 8 * 20;
-    const targetScore = Math.min(candidate.targetMatches.length, 5) / 5 * 15;
+    const weightedSpecies = weightedUniqueSpecies(candidate.observations, params.recentDays);
+    const weightedActivity = weightedObservationTotal(candidate.observations, params.recentDays);
+    const weightedNotable = weightedUniqueSpecies(candidate.notable, params.recentDays);
+    const weightedTargets = weightedTargetTotal(candidate.observations, params.targets, params.recentDays);
+    const speciesScore = Math.min(weightedSpecies, 90) / 90 * 45;
+    const activityScore = Math.min(weightedActivity, 250) / 250 * 15;
+    const notableScore = Math.min(weightedNotable, 8) / 8 * 20;
+    const targetScore = Math.min(weightedTargets, 5) / 5 * 15;
     const practicalityScore = params.maxDetour === 0
       ? 20
       : Math.max(0, 20 * (1 - candidate.addedMinutes / Math.max(params.maxDetour, 1)));
@@ -797,6 +800,63 @@ function scoreCandidates(candidates, params) {
     };
     candidate.score = Math.round(speciesScore + activityScore + notableScore + targetScore + practicalityScore);
   }
+}
+
+function weightedUniqueSpecies(observations, recentDays) {
+  const bySpecies = new Map();
+  for (const obs of observations) {
+    const species = normalizeName(obs.comName || obs.sciName);
+    if (!species) continue;
+    const weight = observationFreshnessWeight(obs.obsDt, recentDays);
+    bySpecies.set(species, Math.max(bySpecies.get(species) || 0, weight));
+  }
+  return Array.from(bySpecies.values()).reduce((sum, weight) => sum + weight, 0);
+}
+
+function weightedObservationTotal(observations, recentDays) {
+  return observations.reduce((sum, obs) => sum + observationFreshnessWeight(obs.obsDt, recentDays), 0);
+}
+
+function weightedTargetTotal(observations, targets, recentDays) {
+  if (!targets.length) return 0;
+  const targetSet = new Set(targets);
+  const byTarget = new Map();
+  for (const obs of observations) {
+    const species = normalizeName(obs.comName || obs.sciName);
+    if (!targetSet.has(species)) continue;
+    const weight = observationFreshnessWeight(obs.obsDt, recentDays);
+    byTarget.set(species, Math.max(byTarget.get(species) || 0, weight));
+  }
+  return Array.from(byTarget.values()).reduce((sum, weight) => sum + weight, 0);
+}
+
+function observationFreshnessWeight(obsDt, recentDays) {
+  const observedAt = parseObservationDate(obsDt);
+  if (!observedAt) return 0.5;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const observedDay = new Date(observedAt);
+  observedDay.setHours(0, 0, 0, 0);
+  const ageDays = Math.max(0, Math.floor((today - observedDay) / 86400000));
+  if (ageDays <= 1) return 1;
+  const searchWindow = Math.max(1, Number(recentDays) || 1);
+  const staleRatio = Math.min(ageDays, searchWindow) / searchWindow;
+  return clamp(1 - staleRatio * 0.75, 0.25, 1);
+}
+
+function parseObservationDate(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})(?:\s+(\d{1,2}):(\d{2}))?/);
+  if (!match) return null;
+  const [, year, month, day, hour = "0", minute = "0"] = match;
+  const parsed = new Date(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute)
+  );
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
 function renderResults() {
