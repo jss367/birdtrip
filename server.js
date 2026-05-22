@@ -218,9 +218,9 @@ async function geocodeGoogle(q) {
   })).filter((item) => Number.isFinite(item.lat) && Number.isFinite(item.lng));
 }
 
-async function routeOsm(origin, destination, via) {
+async function routeOsm(origin, destination, viaPoints = []) {
   const coords = [`${origin.lng},${origin.lat}`];
-  if (via) coords.push(`${via.lng},${via.lat}`);
+  viaPoints.forEach((via) => coords.push(`${via.lng},${via.lat}`));
   coords.push(`${destination.lng},${destination.lat}`);
 
   const endpoint = new URL(`https://router.project-osrm.org/route/v1/driving/${coords.join(";")}`);
@@ -261,7 +261,7 @@ function parseGoogleDuration(value) {
   return Number.isFinite(seconds) ? seconds : null;
 }
 
-async function routeGoogle(origin, destination, via) {
+async function routeGoogle(origin, destination, viaPoints = []) {
   const payload = {
     origin: googleWaypoint(origin),
     destination: googleWaypoint(destination),
@@ -272,8 +272,8 @@ async function routeGoogle(origin, destination, via) {
     polylineEncoding: "GEO_JSON_LINESTRING",
     units: "IMPERIAL"
   };
-  if (via) {
-    payload.intermediates = [{ ...googleWaypoint(via), via: true }];
+  if (viaPoints.length) {
+    payload.intermediates = viaPoints.map((via) => ({ ...googleWaypoint(via), via: true }));
   }
 
   const result = await postJson(
@@ -345,17 +345,23 @@ async function handleApi(req, res, url) {
       return sendJson(res, 200, results);
     }
 
-    if (url.pathname === "/api/route" || url.pathname === "/api/route-via") {
+    if (url.pathname === "/api/route" || url.pathname === "/api/route-via" || url.pathname === "/api/route-itinerary") {
       const origin = parseCoordPair(url.searchParams.get("origin"), "origin");
       const destination = parseCoordPair(url.searchParams.get("destination"), "destination");
-      let via = null;
+      let viaPoints = [];
       if (url.pathname === "/api/route-via") {
-        via = parseCoordPair(url.searchParams.get("via"), "via");
+        viaPoints = [parseCoordPair(url.searchParams.get("via"), "via")];
+      }
+      if (url.pathname === "/api/route-itinerary") {
+        viaPoints = url.searchParams.getAll("via").map((value, index) => parseCoordPair(value, `via ${index + 1}`));
+        if (viaPoints.length < 1 || viaPoints.length > 5) {
+          return sendError(res, 400, "Itinerary routes require 1 to 5 stops");
+        }
       }
       const provider = mapProviderFrom(url);
       const route = provider === "google"
-        ? await routeGoogle(origin, destination, via)
-        : await routeOsm(origin, destination, via);
+        ? await routeGoogle(origin, destination, viaPoints)
+        : await routeOsm(origin, destination, viaPoints);
       return sendJson(res, 200, route);
     }
 

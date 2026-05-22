@@ -4,6 +4,9 @@ const state = {
   routeName: "",
   results: [],
   selectedId: null,
+  pinnedIds: [],
+  itinerary: null,
+  itineraryRequestId: 0,
   warnings: [],
   params: null,
   origin: null,
@@ -54,6 +57,13 @@ const els = {
   tripPlanSummary: document.querySelector("#tripPlanSummary"),
   targetSpeciesSummary: document.querySelector("#targetSpeciesSummary"),
   sightingSummary: document.querySelector("#sightingSummary"),
+  itineraryBuilder: document.querySelector("#itineraryBuilder"),
+  itinerarySummary: document.querySelector("#itinerarySummary"),
+  itineraryList: document.querySelector("#itineraryList"),
+  itineraryStopCount: document.querySelector("#itineraryStopCount"),
+  itineraryAddedTime: document.querySelector("#itineraryAddedTime"),
+  itineraryTotalDrive: document.querySelector("#itineraryTotalDrive"),
+  clearItinerary: document.querySelector("#clearItinerary"),
   resultsList: document.querySelector("#resultsList"),
   resultTemplate: document.querySelector("#resultTemplate"),
   detailsPanel: document.querySelector("#detailsPanel"),
@@ -117,6 +127,7 @@ function init() {
     renderReport();
     window.print();
   });
+  els.clearItinerary.addEventListener("click", clearPinnedStops);
   window.addEventListener("beforeprint", renderReport);
   els.closeDetails.addEventListener("click", () => {
     els.detailsPanel.hidden = true;
@@ -125,6 +136,7 @@ function init() {
     renderMarkers();
   });
 
+  renderItineraryBuilder();
   if (window.lucide) window.lucide.createIcons();
 }
 
@@ -248,6 +260,7 @@ async function initializeMap(provider, options = {}) {
   const { preserveData = true } = options;
   const container = document.querySelector("#map");
   const routeCoordinates = preserveData ? state.route?.geometry?.coordinates : null;
+  const itineraryCoordinates = preserveData ? state.itinerary?.route?.geometry?.coordinates : null;
   const results = preserveData ? state.results : [];
   const selectedId = preserveData ? state.selectedId : null;
 
@@ -265,6 +278,7 @@ async function initializeMap(provider, options = {}) {
   }
   state.mapAdapter.init();
   if (routeCoordinates) renderRoute(routeCoordinates);
+  if (itineraryCoordinates) renderItineraryRoute(itineraryCoordinates);
   if (results.length) {
     state.selectedId = selectedId;
     renderMarkers();
@@ -309,6 +323,9 @@ function clearResults() {
   state.results = [];
   state.route = null;
   state.selectedId = null;
+  state.pinnedIds = [];
+  state.itinerary = null;
+  state.itineraryRequestId += 1;
   state.params = null;
   state.warnings = [];
   if (state.mapAdapter) state.mapAdapter.clear();
@@ -324,6 +341,7 @@ function clearResults() {
   els.candidateCount.textContent = "-";
   updateInputSummaries();
   renderInsights();
+  renderItineraryBuilder();
   els.detailsPanel.hidden = true;
   setStatus("Ready", "Enter a route and run a search.");
   if (window.lucide) window.lucide.createIcons();
@@ -465,6 +483,9 @@ function parseTargetsInput() {
 function clearSearchArtifacts() {
   state.results = [];
   state.selectedId = null;
+  state.pinnedIds = [];
+  state.itinerary = null;
+  state.itineraryRequestId += 1;
   state.warnings = [];
   state.route = null;
   state.routeName = "";
@@ -481,6 +502,7 @@ function clearSearchArtifacts() {
   els.hotspotCount.textContent = "-";
   els.candidateCount.textContent = "-";
   renderInsights();
+  renderItineraryBuilder();
   if (window.lucide) window.lucide.createIcons();
 }
 
@@ -490,7 +512,8 @@ function setBusy(isBusy) {
     els.quickStartButton,
     els.settingsButton,
     els.modalSampleButton,
-    els.modalExploreButton
+    els.modalExploreButton,
+    els.clearItinerary
   ];
 
   controls.forEach((control) => {
@@ -613,8 +636,25 @@ function routeUrl(path, origin, destination, via, provider) {
   return `${url.pathname}${url.search}`;
 }
 
+function itineraryRouteUrl(origin, destination, stops, provider) {
+  const url = new URL("/api/route-itinerary", window.location.origin);
+  url.searchParams.set("origin", `${origin.lng},${origin.lat}`);
+  url.searchParams.set("destination", `${destination.lng},${destination.lat}`);
+  stops.forEach((stop) => url.searchParams.append("via", `${stop.lng},${stop.lat}`));
+  url.searchParams.set("provider", provider);
+  return `${url.pathname}${url.search}`;
+}
+
 function renderRoute(coordinates) {
   if (state.mapAdapter) state.mapAdapter.setRoute(coordinates);
+}
+
+function renderItineraryRoute(coordinates) {
+  if (state.mapAdapter) state.mapAdapter.setItineraryRoute(coordinates);
+}
+
+function clearItineraryRoute() {
+  if (state.mapAdapter) state.mapAdapter.clearItineraryRoute();
 }
 
 function updateRouteSummary(route) {
@@ -799,7 +839,175 @@ function scoreCandidates(candidates, params) {
   }
 }
 
+function pinnedStops() {
+  const byId = new Map(state.results.map((candidate) => [candidate.id, candidate]));
+  const stops = state.pinnedIds.map((id) => byId.get(id)).filter(Boolean);
+  if (stops.length !== state.pinnedIds.length) {
+    state.pinnedIds = stops.map((stop) => stop.id);
+  }
+  return stops;
+}
+
+function isPinned(id) {
+  return state.pinnedIds.includes(id);
+}
+
+function togglePinned(id) {
+  const candidate = state.results.find((item) => item.id === id);
+  if (!candidate) return;
+  if (isPinned(id)) {
+    state.pinnedIds = state.pinnedIds.filter((pinnedId) => pinnedId !== id);
+  } else {
+    if (state.pinnedIds.length >= 5) {
+      setStatus("Itinerary full", "Remove a pinned stop before adding another.");
+      return;
+    }
+    state.pinnedIds.push(id);
+  }
+  state.itinerary = null;
+  renderResults();
+  renderItineraryBuilder();
+  renderMarkers();
+  updateVisibleDetails();
+  recalculateItinerary();
+}
+
+function clearPinnedStops() {
+  state.pinnedIds = [];
+  state.itinerary = null;
+  state.itineraryRequestId += 1;
+  clearItineraryRoute();
+  renderResults();
+  renderItineraryBuilder();
+  renderMarkers();
+  updateVisibleDetails();
+  renderInsights();
+  renderReport();
+}
+
+function movePinnedStop(id, direction) {
+  const index = state.pinnedIds.indexOf(id);
+  const nextIndex = index + direction;
+  if (index < 0 || nextIndex < 0 || nextIndex >= state.pinnedIds.length) return;
+  const next = [...state.pinnedIds];
+  [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+  state.pinnedIds = next;
+  state.itinerary = null;
+  renderItineraryBuilder();
+  renderResults();
+  renderMarkers();
+  updateVisibleDetails();
+  recalculateItinerary();
+}
+
+function removePinnedStop(id) {
+  if (!isPinned(id)) return;
+  state.pinnedIds = state.pinnedIds.filter((pinnedId) => pinnedId !== id);
+  state.itinerary = null;
+  renderItineraryBuilder();
+  renderResults();
+  renderMarkers();
+  updateVisibleDetails();
+  recalculateItinerary();
+}
+
+async function recalculateItinerary() {
+  const stops = pinnedStops();
+  const requestId = state.itineraryRequestId + 1;
+  state.itineraryRequestId = requestId;
+
+  if (!state.route || !state.origin || !state.destination || stops.length < 2) {
+    state.itinerary = null;
+    clearItineraryRoute();
+    renderItineraryBuilder();
+    renderInsights();
+    renderReport();
+    return;
+  }
+
+  state.itinerary = { status: "loading" };
+  renderItineraryBuilder();
+  renderInsights();
+
+  try {
+    const route = await apiJson(itineraryRouteUrl(state.origin, state.destination, stops, state.params?.mapProvider || state.provider));
+    if (requestId !== state.itineraryRequestId) return;
+    const addedMinutes = Math.max(0, (route.durationSeconds - state.route.durationSeconds) / 60);
+    const addedMiles = Math.max(0, miles(route.distanceMeters - state.route.distanceMeters));
+    state.itinerary = {
+      status: "ready",
+      route,
+      addedMinutes,
+      addedMiles
+    };
+    renderItineraryRoute(route.geometry.coordinates);
+  } catch (error) {
+    if (requestId !== state.itineraryRequestId) return;
+    state.itinerary = { status: "error", error: error.message || "Could not calculate the multi-stop route." };
+    clearItineraryRoute();
+  }
+
+  renderItineraryBuilder();
+  renderInsights();
+  renderReport();
+}
+
+function renderItineraryBuilder() {
+  const stops = pinnedStops();
+  els.itineraryStopCount.textContent = `${stops.length}/5`;
+  els.clearItinerary.hidden = stops.length === 0;
+
+  if (state.itinerary?.status === "ready") {
+    els.itineraryAddedTime.textContent = `+${formatMinutes(state.itinerary.addedMinutes)}`;
+    els.itineraryTotalDrive.textContent = formatMinutes(state.itinerary.route.durationSeconds / 60);
+    els.itinerarySummary.textContent = `${stops.length} stops pinned; full route adds ${formatMinutes(state.itinerary.addedMinutes)} and ${state.itinerary.addedMiles.toFixed(1)} mi.`;
+  } else if (state.itinerary?.status === "loading") {
+    els.itineraryAddedTime.textContent = "...";
+    els.itineraryTotalDrive.textContent = "...";
+    els.itinerarySummary.textContent = "Calculating the full ordered route.";
+  } else if (state.itinerary?.status === "error") {
+    els.itineraryAddedTime.textContent = "-";
+    els.itineraryTotalDrive.textContent = "-";
+    els.itinerarySummary.textContent = state.itinerary.error;
+  } else {
+    els.itineraryAddedTime.textContent = "-";
+    els.itineraryTotalDrive.textContent = "-";
+    els.itinerarySummary.textContent = stops.length === 1
+      ? "Pin one more stop to calculate the full multi-stop route."
+      : "Pin 2-5 ranked stops to build a full multi-stop route.";
+  }
+
+  if (!stops.length) {
+    els.itineraryList.innerHTML = '<div class="itinerary-empty">Pinned stops appear here in route order.</div>';
+  } else {
+    els.itineraryList.innerHTML = stops.map((stop, index) => `
+      <article class="itinerary-stop">
+        <span class="itinerary-rank">${index + 1}</span>
+        <button type="button" class="itinerary-name" data-select-id="${escapeHtml(stop.id)}">${escapeHtml(stop.name)}</button>
+        <span class="itinerary-stop-meta">single +${Math.round(stop.addedMinutes)}m</span>
+        <div class="itinerary-controls">
+          <button type="button" title="Move earlier" data-move-id="${escapeHtml(stop.id)}" data-direction="-1" ${index === 0 ? "disabled" : ""}><i data-lucide="arrow-up"></i></button>
+          <button type="button" title="Move later" data-move-id="${escapeHtml(stop.id)}" data-direction="1" ${index === stops.length - 1 ? "disabled" : ""}><i data-lucide="arrow-down"></i></button>
+          <button type="button" title="Remove stop" data-remove-id="${escapeHtml(stop.id)}"><i data-lucide="x"></i></button>
+        </div>
+      </article>
+    `).join("");
+  }
+
+  els.itineraryList.querySelectorAll("[data-select-id]").forEach((button) => {
+    button.addEventListener("click", () => selectCandidate(button.dataset.selectId));
+  });
+  els.itineraryList.querySelectorAll("[data-move-id]").forEach((button) => {
+    button.addEventListener("click", () => movePinnedStop(button.dataset.moveId, Number(button.dataset.direction)));
+  });
+  els.itineraryList.querySelectorAll("[data-remove-id]").forEach((button) => {
+    button.addEventListener("click", () => removePinnedStop(button.dataset.removeId));
+  });
+  if (window.lucide) window.lucide.createIcons();
+}
+
 function renderResults() {
+  pinnedStops();
   els.candidateCount.textContent = String(state.results.length);
   els.hotspotCount.textContent = String(state.results.filter(isHotspot).length);
   els.notableCount.textContent = String(state.results.reduce((sum, candidate) => sum + uniqueNotableCount(candidate), 0));
@@ -820,6 +1028,7 @@ function renderResults() {
     const card = node.querySelector(".stop-card");
     card.dataset.id = candidate.id;
     if (candidate.id === state.selectedId) card.classList.add("is-selected");
+    if (isPinned(candidate.id)) card.classList.add("is-pinned");
     node.querySelector(".rank").textContent = String(index + 1);
     node.querySelector(".stop-name").textContent = candidate.name;
     node.querySelector(".stop-preview").textContent = speciesPreview(candidate);
@@ -831,8 +1040,16 @@ function renderResults() {
     node.querySelector(".metric-notable").textContent = uniqueNotableCount(candidate);
     node.querySelector(".metric-targets").textContent = candidate.targetMatches.length;
     const links = candidateLinks(candidate);
+    const pin = node.querySelector(".stop-pin");
     const dir = node.querySelector(".stop-dir");
     const ebird = node.querySelector(".stop-ebird");
+    const pinned = isPinned(candidate.id);
+    pin.classList.toggle("is-active", pinned);
+    pin.disabled = !pinned && state.pinnedIds.length >= 5;
+    pin.title = pinned ? "Remove from itinerary" : "Pin stop to itinerary";
+    pin.setAttribute("aria-pressed", String(pinned));
+    pin.querySelector("span").textContent = pinned ? "Pinned" : "Pin";
+    pin.addEventListener("click", () => togglePinned(candidate.id));
     dir.href = links.mapsUrl;
     ebird.href = links.ebirdUrl;
     dir.setAttribute("aria-label", `Directions to ${candidate.name}`);
@@ -912,10 +1129,13 @@ function renderDetails(candidate) {
       <ul>${species.map((sp) => `<li>${escapeHtml(sp.name)} <small>×${sp.count}${sp.latest ? ` · ${escapeHtml(sp.latest)}` : ""}</small></li>`).join("")}</ul>
     </section>
     <div class="detail-actions">
+      <button type="button" class="detail-pin">${isPinned(candidate.id) ? "Remove from itinerary" : "Pin to itinerary"}</button>
       <a href="${links.mapsUrl}" target="_blank" rel="noreferrer">Directions</a>
       <a href="${links.ebirdUrl}" target="_blank" rel="noreferrer">eBird</a>
     </div>
   `;
+  const pinButton = els.detailsContent.querySelector(".detail-pin");
+  if (pinButton) pinButton.addEventListener("click", () => togglePinned(candidate.id));
   if (window.lucide) window.lucide.createIcons();
 }
 
@@ -923,6 +1143,12 @@ function updateSelectedCard() {
   els.resultsList.querySelectorAll(".stop-card").forEach((card) => {
     card.classList.toggle("is-selected", card.dataset.id === state.selectedId);
   });
+}
+
+function updateVisibleDetails() {
+  if (els.detailsPanel.hidden || !state.selectedId) return;
+  const candidate = state.results.find((item) => item.id === state.selectedId);
+  if (candidate) renderDetails(candidate);
 }
 
 function scoreRow(label, value, max) {
@@ -938,6 +1164,7 @@ function scoreRow(label, value, max) {
 }
 
 function markerClass(candidate) {
+  if (isPinned(candidate.id)) return "marker-pinned";
   if (candidate.targetMatches.length) return "marker-low";
   if (uniqueNotableCount(candidate)) return "marker-mid";
   return isHotspot(candidate) ? "marker-high" : "marker-standard";
@@ -971,9 +1198,13 @@ function renderInsights() {
   const liveDetour = clamp(Number(els.maxDetour.value || 60), 0, 240);
   const liveTargets = parseTargetsInput();
   const hasToken = Boolean(els.apiToken.value.trim());
-  const routeText = state.route
-    ? `${state.routeName}: ${miles(state.route.distanceMeters).toFixed(0)} miles, ${formatMinutes(state.route.durationSeconds / 60)} drive time, ${liveDetour} min detour budget.`
-    : "Set a route to compare drive time, detour budget, and ranked birding stops.";
+  let routeText = "Set a route to compare drive time, detour budget, and ranked birding stops.";
+  if (state.route) {
+    routeText = `${state.routeName}: ${miles(state.route.distanceMeters).toFixed(0)} miles, ${formatMinutes(state.route.durationSeconds / 60)} drive time, ${liveDetour} min detour budget.`;
+  }
+  if (state.itinerary?.status === "ready") {
+    routeText = `${state.routeName}: ${state.pinnedIds.length} pinned stops add ${formatMinutes(state.itinerary.addedMinutes)}; total drive ${formatMinutes(state.itinerary.route.durationSeconds / 60)}.`;
+  }
   els.tripPlanSummary.textContent = routeText;
 
   els.targetSpeciesSummary.textContent = liveTargets.length
@@ -1083,7 +1314,14 @@ function renderReport() {
       ${param("Distance", `${miles(route.distanceMeters).toFixed(0)} mi`)}
       ${param("Drive time", formatMinutes(route.durationSeconds / 60))}
       ${param("Ranked stops", state.results.length)}
+      ${param("Pinned stops", state.pinnedIds.length)}
+      ${state.itinerary?.status === "ready" ? param("Pinned route added", `+${formatMinutes(state.itinerary.addedMinutes)} / +${state.itinerary.addedMiles.toFixed(1)} mi`) : ""}
     </dl>`;
+
+  const itineraryStops = pinnedStops();
+  const itineraryBlock = itineraryStops.length
+    ? `<h2>Pinned itinerary</h2><ol>${itineraryStops.map((candidate) => `<li>${escapeHtml(candidate.name)}</li>`).join("")}</ol>`
+    : "";
 
   const stopsBlock = state.results.length
     ? `<h2>Ranked stops</h2>${state.results.map((candidate, index) => {
@@ -1114,6 +1352,7 @@ function renderReport() {
     <p class="report-sub">${escapeHtml(state.routeName || "")} · Generated ${escapeHtml(generated)}</p>
     ${paramsBlock}
     ${routeBlock}
+    ${itineraryBlock}
     ${stopsBlock}
   `;
 }
@@ -1124,6 +1363,7 @@ class LeafletMapAdapter {
     this.container = container;
     this.map = null;
     this.routeLayer = null;
+    this.itineraryLayer = null;
     this.markerLayer = null;
   }
 
@@ -1145,6 +1385,25 @@ class LeafletMapAdapter {
       opacity: 0.86
     }).addTo(this.map);
     this.map.fitBounds(this.routeLayer.getBounds(), { padding: [34, 34] });
+  }
+
+  setItineraryRoute(coordinates) {
+    if (this.itineraryLayer) this.map.removeLayer(this.itineraryLayer);
+    const latLngs = coordinates.map(([lng, lat]) => [lat, lng]);
+    this.itineraryLayer = L.polyline(latLngs, {
+      color: "#f59e0b",
+      weight: 5,
+      opacity: 0.92,
+      dashArray: "8 7"
+    }).addTo(this.map);
+    this.map.fitBounds(this.itineraryLayer.getBounds(), { padding: [42, 42] });
+  }
+
+  clearItineraryRoute() {
+    if (this.itineraryLayer) {
+      this.map.removeLayer(this.itineraryLayer);
+      this.itineraryLayer = null;
+    }
   }
 
   setMarkers(results, selectedId, onSelect) {
@@ -1173,6 +1432,7 @@ class LeafletMapAdapter {
       this.map.removeLayer(this.routeLayer);
       this.routeLayer = null;
     }
+    this.clearItineraryRoute();
     if (this.markerLayer) this.markerLayer.clearLayers();
   }
 
@@ -1191,6 +1451,7 @@ class GoogleMapAdapter {
     this.container = container;
     this.map = null;
     this.routeLayer = null;
+    this.itineraryLayer = null;
     this.markers = [];
     this.infoWindow = null;
   }
@@ -1224,6 +1485,35 @@ class GoogleMapAdapter {
     this.map.fitBounds(bounds, 34);
   }
 
+  setItineraryRoute(coordinates) {
+    if (this.itineraryLayer) this.itineraryLayer.setMap(null);
+    const path = coordinates.map(([lng, lat]) => ({ lat, lng }));
+    const maps = window.google.maps;
+    this.itineraryLayer = new maps.Polyline({
+      path,
+      geodesic: true,
+      strokeColor: "#f59e0b",
+      strokeOpacity: 0.92,
+      strokeWeight: 5,
+      icons: [{
+        icon: { path: "M 0,-1 0,1", strokeOpacity: 1, scale: 3 },
+        offset: "0",
+        repeat: "18px"
+      }],
+      map: this.map
+    });
+    const bounds = new maps.LatLngBounds();
+    path.forEach((point) => bounds.extend(point));
+    this.map.fitBounds(bounds, 42);
+  }
+
+  clearItineraryRoute() {
+    if (this.itineraryLayer) {
+      this.itineraryLayer.setMap(null);
+      this.itineraryLayer = null;
+    }
+  }
+
   setMarkers(results, selectedId, onSelect) {
     this.markers.forEach((marker) => marker.setMap(null));
     const HtmlMarker = ensureGoogleHtmlMarkerClass();
@@ -1253,6 +1543,7 @@ class GoogleMapAdapter {
       this.routeLayer.setMap(null);
       this.routeLayer = null;
     }
+    this.clearItineraryRoute();
     this.markers.forEach((marker) => marker.setMap(null));
     this.markers = [];
     if (this.infoWindow) this.infoWindow.close();
@@ -1307,11 +1598,15 @@ function ensureGoogleHtmlMarkerClass() {
 }
 
 function markerHtml(candidate, index, selectedId) {
-  return `<div class="bird-marker ${markerClass(candidate)} ${candidate.id === selectedId ? "marker-selected" : ""}">${index + 1}</div>`;
+  const pinnedIndex = state.pinnedIds.indexOf(candidate.id);
+  const label = pinnedIndex >= 0 ? `P${pinnedIndex + 1}` : index + 1;
+  return `<div class="bird-marker ${markerClass(candidate)} ${candidate.id === selectedId ? "marker-selected" : ""}">${label}</div>`;
 }
 
 function markerPopup(candidate) {
-  return `<strong>${escapeHtml(candidate.name)}</strong><br>${candidate.score} score; +${Math.round(candidate.addedMinutes)} min<br>${candidate.species.size} recent species`;
+  const pinnedIndex = state.pinnedIds.indexOf(candidate.id);
+  const pinnedText = pinnedIndex >= 0 ? `<br>Pinned stop ${pinnedIndex + 1}` : "";
+  return `<strong>${escapeHtml(candidate.name)}</strong><br>${candidate.score} score; +${Math.round(candidate.addedMinutes)} min<br>${candidate.species.size} recent species${pinnedText}`;
 }
 
 function haversineKm(a, b) {

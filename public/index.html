@@ -218,6 +218,7 @@
           <span><b class="legend-dot target"></b> Target species</span>
           <span><b class="legend-dot notable"></b> Notable birds</span>
           <span><b class="legend-dot hotspot"></b> Ranked hotspot</span>
+          <span><b class="legend-dot pinned"></b> Pinned stop</span>
           <span><b class="legend-line route"></b> Route corridor</span>
         </div>
       </section>
@@ -248,6 +249,24 @@
             <p id="sightingSummary">Recent eBird activity and notable reports appear after search.</p>
           </section>
         </div>
+        <section id="itineraryBuilder" class="itinerary-builder" aria-live="polite">
+          <div class="itinerary-heading">
+            <div>
+              <i data-lucide="list-ordered"></i>
+              <span>Itinerary Builder</span>
+            </div>
+            <button type="button" id="clearItinerary" class="icon-button" title="Clear pinned stops" hidden>
+              <i data-lucide="trash-2"></i>
+            </button>
+          </div>
+          <p id="itinerarySummary">Pin 2-5 ranked stops to build a full multi-stop route.</p>
+          <div class="itinerary-stats">
+            <div><small>Pinned</small><b id="itineraryStopCount">0/5</b></div>
+            <div><small>Total added</small><b id="itineraryAddedTime">-</b></div>
+            <div><small>Total drive</small><b id="itineraryTotalDrive">-</b></div>
+          </div>
+          <div id="itineraryList" class="itinerary-list"></div>
+        </section>
         <div id="resultsList" class="results-list empty">
           <div class="empty-state">
             <i data-lucide="binoculars"></i>
@@ -284,6 +303,7 @@
         <span title="Target matches"><i data-lucide="target"></i><b class="metric-targets"></b></span>
       </div>
       <div class="stop-links">
+        <button class="stop-pin" type="button"><i data-lucide="pin"></i><span>Pin</span></button>
         <a class="stop-dir" target="_blank" rel="noreferrer"><i data-lucide="navigation"></i>Directions</a>
         <a class="stop-ebird" target="_blank" rel="noreferrer"><i data-lucide="external-link"></i>eBird</a>
       </div>
