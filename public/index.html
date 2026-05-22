@@ -57,27 +57,27 @@
 
       <form id="searchForm" class="search-form">
         <div class="mode-switch" role="group" aria-label="Search mode">
-          <button type="button" class="is-active">
+          <button type="button" id="routeModeButton" class="is-active" data-mode="route" aria-pressed="true">
             <i data-lucide="route"></i>
             Route
           </button>
-          <button type="button" disabled data-static-disabled="true" title="Area mode is planned">
+          <button type="button" id="areaModeButton" data-mode="area" aria-pressed="false">
             <i data-lucide="map"></i>
             Area
           </button>
         </div>
 
-        <section class="form-group">
+        <section class="form-group" id="locationGroup">
           <div class="group-label">
             <i data-lucide="route"></i>
-            <span>Route</span>
+            <span id="locationGroupTitle">Route</span>
           </div>
           <label>
-            <span>Origin</span>
+            <span id="originLabelText">Origin</span>
             <input id="origin" name="origin" autocomplete="street-address" value="Yuma, AZ" required>
             <small class="field-error" id="originError" hidden></small>
           </label>
-          <label>
+          <label id="destinationField">
             <span>Destination</span>
             <input id="destination" name="destination" autocomplete="street-address" value="Phoenix, AZ" required>
             <small class="field-error" id="destinationError" hidden></small>
@@ -99,10 +99,10 @@
           </div>
           <div class="control-grid">
             <label>
-              <span>Max added</span>
+              <span id="maxDetourLabel">Max added</span>
               <div class="number-field">
                 <input id="maxDetour" name="maxDetour" type="number" min="0" max="240" value="60">
-                <small>min</small>
+                <small id="maxDetourUnit">min</small>
               </div>
             </label>
             <label>
@@ -153,7 +153,7 @@
         <div class="actions">
           <button class="primary" type="submit">
             <i data-lucide="search"></i>
-            Find Stops
+            <span id="submitLabel">Find Stops</span>
           </button>
           <button type="button" id="sampleButton" title="Use sample route">
             <i data-lucide="map-pinned"></i>
@@ -201,11 +201,11 @@
           <span id="candidateCount">-</span>
         </div>
         <div class="summary-tile tile-route">
-          <small>Route Miles</small>
+          <small id="routeDistanceLabel">Route Miles</small>
           <span id="routeDistance">-</span>
         </div>
         <div class="summary-tile tile-budget">
-          <small>Added Time Budget</small>
+          <small id="maxAddedLabel">Added Time Budget</small>
           <span id="maxAdded">60m</span>
         </div>
       </section>
@@ -218,7 +218,7 @@
           <span><b class="legend-dot target"></b> Target species</span>
           <span><b class="legend-dot notable"></b> Notable birds</span>
           <span><b class="legend-dot hotspot"></b> Ranked hotspot</span>
-          <span><b class="legend-line route"></b> Route corridor</span>
+          <span><b class="legend-line route"></b> <span id="mapAreaLegend">Route corridor</span></span>
         </div>
       </section>
 
@@ -277,8 +277,8 @@
         <span class="score-pill"></span>
       </button>
       <div class="stop-metrics">
-        <span title="Added drive time"><i data-lucide="clock-3"></i><b class="metric-detour"></b></span>
-        <span title="Approx. distance off route"><i data-lucide="ruler"></i><b class="metric-offroute"></b></span>
+        <span class="metric-detour-wrap" title="Added drive time"><i data-lucide="clock-3"></i><b class="metric-detour"></b></span>
+        <span class="metric-offroute-wrap" title="Approx. distance off route"><i data-lucide="ruler"></i><b class="metric-offroute"></b></span>
         <span title="Recent species"><i data-lucide="feather"></i><b class="metric-species"></b></span>
         <span title="Notable species"><i data-lucide="sparkles"></i><b class="metric-notable"></b></span>
         <span title="Target matches"><i data-lucide="target"></i><b class="metric-targets"></b></span>
