@@ -188,10 +188,10 @@ function readSavedTrips() {
   }
 }
 
-function writeSavedTrips() {
+function writeSavedTrips(trips = state.savedTrips) {
   localStorage.setItem(SAVED_TRIPS_KEY, JSON.stringify({
     version: 1,
-    trips: state.savedTrips
+    trips
   }));
 }
 
@@ -266,19 +266,20 @@ function saveCurrentTrip() {
     reportHtml: els.report.innerHTML
   };
 
-  state.savedTrips = [
+  const nextSavedTrips = [
     trip,
     ...state.savedTrips.filter((item) => item.id !== id)
   ].sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
 
   try {
-    writeSavedTrips();
+    writeSavedTrips(nextSavedTrips);
   } catch (error) {
     updateSavedTripControls("Could not save trip; local storage is full.");
     console.error(error);
     return;
   }
 
+  state.savedTrips = nextSavedTrips;
   els.tripName.value = name;
   renderSavedTrips(id);
   updateSavedTripControls(`Saved ${name} locally.`);
