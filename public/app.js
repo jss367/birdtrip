@@ -554,7 +554,7 @@ function updateLifeListStatus() {
   const count = state.lifeList.displayNames.length || state.lifeList.species.size;
   if (!count) {
     els.lifeListStatus.textContent = "Import an eBird or iNaturalist CSV to boost likely lifers.";
-    els.clearLifeListButton.disabled = false;
+    els.clearLifeListButton.disabled = true;
     return;
   }
   const source = state.lifeList.source ? `${state.lifeList.source} ` : "";
