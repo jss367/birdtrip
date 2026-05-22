@@ -1222,7 +1222,8 @@ async function recalculateItinerary() {
   renderInsights();
 
   try {
-    const route = await apiJson(itineraryRouteUrl(state.origin, state.destination, stops, state.provider));
+    const routeProvider = state.route.provider || state.params?.mapProvider || state.provider;
+    const route = await apiJson(itineraryRouteUrl(state.origin, state.destination, stops, routeProvider));
     if (requestId !== state.itineraryRequestId) return;
     const addedMinutes = Math.max(0, (route.durationSeconds - state.route.durationSeconds) / 60);
     const addedMiles = Math.max(0, miles(route.distanceMeters - state.route.distanceMeters));
