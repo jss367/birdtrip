@@ -1,4 +1,5 @@
 const state = {
+  mode: "route",
   mapAdapter: null,
   route: null,
   routeName: "",
@@ -11,6 +12,7 @@ const state = {
   params: null,
   origin: null,
   destination: null,
+  areaCenter: null,
   provider: "osm",
   lifeList: {
     source: "",
@@ -34,11 +36,19 @@ const els = {
   settingsButton: document.querySelector("#settingsButton"),
   setupStatus: document.querySelector("#setupStatus"),
   form: document.querySelector("#searchForm"),
+  modeButtons: document.querySelectorAll(".mode-switch button[data-mode]"),
+  routeModeButton: document.querySelector("#routeModeButton"),
+  areaModeButton: document.querySelector("#areaModeButton"),
+  locationGroupTitle: document.querySelector("#locationGroupTitle"),
+  originLabelText: document.querySelector("#originLabelText"),
+  destinationField: document.querySelector("#destinationField"),
   origin: document.querySelector("#origin"),
   destination: document.querySelector("#destination"),
   mapProvider: document.querySelector("#mapProvider"),
   mapProviderHint: document.querySelector("#mapProviderHint"),
   maxDetour: document.querySelector("#maxDetour"),
+  maxDetourLabel: document.querySelector("#maxDetourLabel"),
+  maxDetourUnit: document.querySelector("#maxDetourUnit"),
   recentDays: document.querySelector("#recentDays"),
   radiusKm: document.querySelector("#radiusKm"),
   maxStops: document.querySelector("#maxStops"),
@@ -63,7 +73,9 @@ const els = {
   notableCount: document.querySelector("#notableCount"),
   hotspotCount: document.querySelector("#hotspotCount"),
   routeDistance: document.querySelector("#routeDistance"),
+  routeDistanceLabel: document.querySelector("#routeDistanceLabel"),
   maxAdded: document.querySelector("#maxAdded"),
+  maxAddedLabel: document.querySelector("#maxAddedLabel"),
   candidateCount: document.querySelector("#candidateCount"),
   resultContext: document.querySelector("#resultContext"),
   tripPlanSummary: document.querySelector("#tripPlanSummary"),
@@ -84,16 +96,20 @@ const els = {
   quickStartModal: document.querySelector("#quickStartModal"),
   closeQuickStart: document.querySelector("#closeQuickStart"),
   modalSampleButton: document.querySelector("#modalSampleButton"),
-  modalExploreButton: document.querySelector("#modalExploreButton")
+  modalExploreButton: document.querySelector("#modalExploreButton"),
+  submitLabel: document.querySelector("#submitLabel"),
+  mapAreaLegend: document.querySelector("#mapAreaLegend")
 };
 
 const PREF_FIELDS = ["origin", "destination", "mapProvider", "maxDetour", "recentDays", "radiusKm", "maxStops", "targets"];
 
 function init() {
   const saved = restorePreferences();
+  state.mode = saved.searchMode === "area" ? "area" : "route";
   const preferredProvider = typeof saved.mapProvider === "string" ? providerFromInput() : null;
   state.provider = preferredProvider || "osm";
   setupProviderControl();
+  setSearchMode(state.mode, { persist: false });
   updateSetupStatus();
   updateInputSummaries();
   setMapProvider("osm", { persist: false, preserveData: false });
@@ -102,6 +118,9 @@ function init() {
   els.form.addEventListener("submit", (event) => {
     event.preventDefault();
     runSearch();
+  });
+  els.modeButtons.forEach((button) => {
+    button.addEventListener("click", () => setSearchMode(button.dataset.mode));
   });
   els.sampleButton.addEventListener("click", useSampleRoute);
   els.clearButton.addEventListener("click", clearResults);
@@ -188,6 +207,7 @@ function restorePreferences() {
 function savePreferences() {
   const payload = {};
   for (const field of PREF_FIELDS) payload[field] = els[field].value;
+  payload.searchMode = state.mode;
   const remember = els.rememberToken.checked;
   payload.rememberToken = remember;
   if (remember) payload.apiToken = els.apiToken.value;
@@ -208,6 +228,46 @@ function savePreferences() {
     addWarning("The imported life list was too large to save in this browser, but it will work until the page is refreshed.");
     renderWarnings();
   }
+}
+
+function setSearchMode(mode, options = {}) {
+  const { persist = true } = options;
+  const previousMode = state.mode;
+  state.mode = mode === "area" ? "area" : "route";
+  const isArea = state.mode === "area";
+  els.form.dataset.mode = state.mode;
+
+  els.modeButtons.forEach((button) => {
+    const isActive = button.dataset.mode === state.mode;
+    button.classList.toggle("is-active", isActive);
+    button.setAttribute("aria-pressed", String(isActive));
+  });
+
+  els.locationGroupTitle.textContent = isArea ? "Area" : "Route";
+  els.originLabelText.textContent = isArea ? "Location" : "Origin";
+  els.origin.placeholder = isArea ? "City, park, hotel, or address" : "";
+  els.destinationField.hidden = isArea;
+  els.destination.required = !isArea;
+  els.maxDetourLabel.textContent = isArea ? "Area limit" : "Max added";
+  els.maxDetourUnit.textContent = isArea ? "off" : "min";
+  els.maxDetour.disabled = isArea;
+  els.submitLabel.textContent = isArea ? "Search Area" : "Find Stops";
+  els.routeDistanceLabel.textContent = isArea ? "Area Radius" : "Route Miles";
+  els.maxAddedLabel.textContent = isArea ? "Area Mode" : "Added Time Budget";
+  els.mapAreaLegend.textContent = isArea ? "Search area" : "Route corridor";
+  els.sampleButton.title = isArea ? "Use sample area" : "Use sample route";
+  els.progressMessage.textContent = isArea && els.progressTitle.textContent === "Ready"
+    ? "Enter a city, park, or lodging location and run a search."
+    : els.progressMessage.textContent;
+
+  clearFieldErrors();
+  if (persist && previousMode !== state.mode && (state.route || state.areaCenter || state.results.length)) {
+    clearResults();
+  }
+  updateInputSummaries();
+  renderInsights();
+  if (persist) savePreferences();
+  if (window.lucide) window.lucide.createIcons();
 }
 
 async function loadAppConfig(preferredProvider) {
@@ -303,6 +363,8 @@ async function initializeMap(provider, options = {}) {
   const container = document.querySelector("#map");
   const routeCoordinates = preserveData ? state.route?.geometry?.coordinates : null;
   const itineraryCoordinates = preserveData ? state.itinerary?.route?.geometry?.coordinates : null;
+  const areaCenter = preserveData ? state.areaCenter : null;
+  const areaRadiusKm = preserveData ? state.params?.radiusKm : null;
   const results = preserveData ? state.results : [];
   const selectedId = preserveData ? state.selectedId : null;
 
@@ -321,6 +383,7 @@ async function initializeMap(provider, options = {}) {
   state.mapAdapter.init();
   if (routeCoordinates) renderRoute(routeCoordinates);
   if (itineraryCoordinates) renderItineraryRoute(itineraryCoordinates);
+  if (areaCenter && areaRadiusKm) renderArea(areaCenter, areaRadiusKm);
   if (results.length) {
     state.selectedId = selectedId;
     renderMarkers();
@@ -351,19 +414,28 @@ function loadGoogleMapsScript(key) {
 }
 
 function useSampleRoute() {
-  els.origin.value = "Yuma, AZ";
-  els.destination.value = "Phoenix, AZ";
-  els.maxDetour.value = "60";
-  els.recentDays.value = "14";
-  els.radiusKm.value = "25";
-  els.maxStops.value = "10";
-  els.targets.value = "Gilded Flicker\nAbert's Towhee\nRosy-faced Lovebird\nBendire's Thrasher";
+  if (state.mode === "area") {
+    els.origin.value = "Papago Park, Phoenix, AZ";
+    els.recentDays.value = "14";
+    els.radiusKm.value = "20";
+    els.maxStops.value = "10";
+    els.targets.value = "Rosy-faced Lovebird\nGilded Flicker\nAbert's Towhee";
+  } else {
+    els.origin.value = "Yuma, AZ";
+    els.destination.value = "Phoenix, AZ";
+    els.maxDetour.value = "60";
+    els.recentDays.value = "14";
+    els.radiusKm.value = "25";
+    els.maxStops.value = "10";
+    els.targets.value = "Gilded Flicker\nAbert's Towhee\nRosy-faced Lovebird\nBendire's Thrasher";
+  }
   updateInputSummaries();
 }
 
 function clearResults() {
   state.results = [];
   state.route = null;
+  state.areaCenter = null;
   state.selectedId = null;
   state.pinnedIds = [];
   state.itinerary = null;
@@ -376,7 +448,7 @@ function clearResults() {
   els.report.innerHTML = "";
   els.resultsList.className = "results-list empty";
   els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="binoculars"></i><p>Results will appear here after the first search.</p></div>';
-  els.resultContext.textContent = "No route searched yet.";
+  els.resultContext.textContent = state.mode === "area" ? "No area searched yet." : "No route searched yet.";
   els.routeDistance.textContent = "-";
   els.notableCount.textContent = "-";
   els.hotspotCount.textContent = "-";
@@ -386,7 +458,9 @@ function clearResults() {
   renderInsights();
   renderItineraryBuilder();
   els.detailsPanel.hidden = true;
-  setStatus("Ready", "Enter a route and run a search.");
+  setStatus("Ready", state.mode === "area"
+    ? "Enter a city, park, or lodging location and run a search."
+    : "Enter a route and run a search.");
   if (window.lucide) window.lucide.createIcons();
 }
 
@@ -398,70 +472,11 @@ async function runSearch() {
   state.params = params;
 
   try {
-    setStatus("Geocoding", "Resolving origin and destination.");
-    const [originResult, destinationResult] = await Promise.allSettled([
-      geocodeField("origin", params.origin, params.mapProvider),
-      geocodeField("destination", params.destination, params.mapProvider)
-    ]);
-    if (originResult.status === "rejected") throw originResult.reason;
-    if (destinationResult.status === "rejected") throw destinationResult.reason;
-    const origin = originResult.value;
-    const destination = destinationResult.value;
-    state.origin = origin;
-    state.destination = destination;
-    state.routeName = `${shortName(origin.name)} to ${shortName(destination.name)}`;
-
-    setStatus("Routing", "Drawing the direct route.");
-    const route = await apiJson(routeUrl("/api/route", origin, destination, null, params.mapProvider));
-    state.route = { ...route, origin, destination };
-    renderRoute(route.geometry.coordinates);
-    updateRouteSummary(route);
-
-    if (!params.token) {
-      setStatus("Token needed", "Route loaded. Add an eBird API token to rank live birding stops.");
-      els.resultContext.textContent = "Route loaded, but live bird data needs an eBird token.";
-      els.resultsList.className = "results-list empty";
-      els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add an eBird API token to rank live birding stops.</p></div>';
-      if (window.lucide) window.lucide.createIcons();
-      return;
+    if (params.mode === "area") {
+      await runAreaSearch(params);
+    } else {
+      await runRouteSearch(params);
     }
-
-    setStatus("Scanning route", "Sampling points along the drive and requesting recent eBird observations.");
-    const samples = sampleRoute(route.geometry.coordinates, route.distanceMeters, 14);
-    const observationsBySample = await fetchRecentForSamples(samples, params);
-    const candidates = buildCandidates(observationsBySample, samples, params);
-
-    if (!candidates.length) {
-      setStatus("No candidates", "No hotspot observations were found. Try a wider radius or longer recent window.");
-      els.resultContext.textContent = "No birding locations matched the current route settings.";
-      renderWarnings();
-      return;
-    }
-
-    setStatus("Checking detours", `Evaluating route impact for ${Math.min(candidates.length, params.maxStops * 3)} candidate stops.`);
-    const practical = await evaluateDetours(candidates, origin, destination, route.durationSeconds, params);
-
-    if (!practical.length) {
-      setStatus("No stops within budget", "Try increasing the maximum added time or route radius.");
-      els.resultContext.textContent = "Candidate birding locations were outside the detour budget.";
-      renderWarnings();
-      return;
-    }
-
-    setStatus("Adding notable birds", "Checking recent notable reports for the strongest candidates.");
-    await addNotableObservations(practical, params);
-    scoreCandidates(practical, params);
-
-    state.results = practical
-      .filter((candidate) => candidate.addedMinutes <= params.maxDetour)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, params.maxStops);
-
-    renderResults();
-    renderMarkers();
-    renderReport();
-    renderWarnings();
-    setStatus("Complete", `Found ${state.results.length} stops within the detour budget.`);
   } catch (error) {
     setStatus("Search failed", error.message || "Something went wrong.");
     console.error(error);
@@ -470,8 +485,127 @@ async function runSearch() {
   }
 }
 
+async function runRouteSearch(params) {
+  setStatus("Geocoding", "Resolving origin and destination.");
+  const [originResult, destinationResult] = await Promise.allSettled([
+    geocodeField("origin", params.origin, params.mapProvider),
+    geocodeField("destination", params.destination, params.mapProvider)
+  ]);
+  if (originResult.status === "rejected") throw originResult.reason;
+  if (destinationResult.status === "rejected") throw destinationResult.reason;
+  const origin = originResult.value;
+  const destination = destinationResult.value;
+  state.origin = origin;
+  state.destination = destination;
+  state.routeName = `${shortName(origin.name)} to ${shortName(destination.name)}`;
+
+  setStatus("Routing", "Drawing the direct route.");
+  const route = await apiJson(routeUrl("/api/route", origin, destination, null, params.mapProvider));
+  state.route = { ...route, origin, destination };
+  renderRoute(route.geometry.coordinates);
+  updateRouteSummary(route);
+
+  if (!params.token) {
+    setStatus("Token needed", "Route loaded. Add an eBird API token to rank live birding stops.");
+    els.resultContext.textContent = "Route loaded, but live bird data needs an eBird token.";
+    els.resultsList.className = "results-list empty";
+    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add an eBird API token to rank live birding stops.</p></div>';
+    if (window.lucide) window.lucide.createIcons();
+    return;
+  }
+
+  setStatus("Scanning route", "Sampling points along the drive and requesting recent eBird observations.");
+  const samples = sampleRoute(route.geometry.coordinates, route.distanceMeters, 14);
+  const observationsBySample = await fetchRecentForSamples(samples, params);
+  const candidates = buildCandidates(observationsBySample, samples, params);
+
+  if (!candidates.length) {
+    setStatus("No candidates", "No hotspot observations were found. Try a wider radius or longer recent window.");
+    els.resultContext.textContent = "No birding locations matched the current route settings.";
+    renderWarnings();
+    return;
+  }
+
+  setStatus("Checking detours", `Evaluating route impact for ${Math.min(candidates.length, params.maxStops * 3)} candidate stops.`);
+  const practical = await evaluateDetours(candidates, origin, destination, route.durationSeconds, params);
+
+  if (!practical.length) {
+    setStatus("No stops within budget", "Try increasing the maximum added time or route radius.");
+    els.resultContext.textContent = "Candidate birding locations were outside the detour budget.";
+    renderWarnings();
+    return;
+  }
+
+  setStatus("Adding notable birds", "Checking recent notable reports for the strongest candidates.");
+  await addNotableObservations(practical, params);
+  scoreCandidates(practical, params);
+
+  state.results = practical
+    .filter((candidate) => candidate.addedMinutes <= params.maxDetour)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, params.maxStops);
+
+  renderResults();
+  renderMarkers();
+  renderReport();
+  renderWarnings();
+  setStatus("Complete", `Found ${state.results.length} stops within the detour budget.`);
+}
+
+async function runAreaSearch(params) {
+  setStatus("Geocoding", "Resolving search location.");
+  const center = await geocodeField("origin", params.origin, params.mapProvider);
+  state.origin = center;
+  state.areaCenter = center;
+  state.routeName = shortName(center.name) || params.origin;
+  renderArea(center, params.radiusKm);
+  updateAreaSummary(params.radiusKm);
+
+  if (!params.token) {
+    setStatus("Token needed", "Area loaded. Add an eBird API token to rank live birding stops.");
+    els.resultContext.textContent = "Area loaded, but live bird data needs an eBird token.";
+    els.resultsList.className = "results-list empty";
+    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add an eBird API token to rank live birding stops.</p></div>';
+    if (window.lucide) window.lucide.createIcons();
+    return;
+  }
+
+  setStatus("Scanning area", "Requesting recent eBird observations near the selected location.");
+  const samples = [{ lat: center.lat, lng: center.lng, index: 0 }];
+  const observationsBySample = await fetchRecentForSamples(samples, params);
+  const candidates = buildCandidates(observationsBySample, samples, params);
+
+  if (!candidates.length) {
+    setStatus("No candidates", "No hotspot observations were found. Try a wider radius or longer recent window.");
+    els.resultContext.textContent = "No birding locations matched the current area settings.";
+    renderWarnings();
+    return;
+  }
+
+  const practical = candidates.map((candidate) => ({
+    ...candidate,
+    addedMinutes: 0,
+    addedMiles: 0
+  }));
+
+  setStatus("Adding notable birds", "Checking recent notable reports for the strongest area matches.");
+  await addNotableObservations(practical, params);
+  scoreCandidates(practical, params);
+
+  state.results = practical
+    .sort((a, b) => b.score - a.score)
+    .slice(0, params.maxStops);
+
+  renderResults();
+  renderMarkers();
+  renderReport();
+  renderWarnings();
+  setStatus("Complete", `Found ${state.results.length} stops within ${params.radiusKm} km.`);
+}
+
 function readParams() {
   return {
+    mode: state.mode,
     origin: els.origin.value.trim(),
     destination: els.destination.value.trim(),
     maxDetour: clamp(Number(els.maxDetour.value || 60), 0, 240),
@@ -513,7 +647,9 @@ function updateSetupStatus() {
 function updateInputSummaries() {
   const targets = parseTargetsInput();
   els.targetCount.textContent = String(targets.length);
-  els.maxAdded.textContent = `${clamp(Number(els.maxDetour.value || 60), 0, 240)}m`;
+  els.maxAdded.textContent = state.mode === "area"
+    ? "Area"
+    : `${clamp(Number(els.maxDetour.value || 60), 0, 240)}m`;
   updateLifeListStatus();
   renderInsights();
 }
@@ -768,13 +904,14 @@ function clearSearchArtifacts() {
   state.routeName = "";
   state.origin = null;
   state.destination = null;
+  state.areaCenter = null;
   clearFieldErrors();
   clearWarning();
   els.report.innerHTML = "";
   els.detailsPanel.hidden = true;
   if (state.mapAdapter) state.mapAdapter.clear();
   els.resultsList.className = "results-list empty";
-  els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="loader"></i><p>Searching route corridor...</p></div>';
+  els.resultsList.innerHTML = `<div class="empty-state"><i data-lucide="loader"></i><p>${state.mode === "area" ? "Searching area..." : "Searching route corridor..."}</p></div>`;
   els.notableCount.textContent = "-";
   els.hotspotCount.textContent = "-";
   els.candidateCount.textContent = "-";
@@ -796,7 +933,7 @@ function setBusy(isBusy) {
   ];
 
   controls.forEach((control) => {
-    if (control.dataset.staticDisabled === "true") {
+    if (control === els.maxDetour && state.mode === "area") {
       control.disabled = true;
       return;
     }
@@ -854,13 +991,18 @@ async function geocodeField(field, query, provider) {
     matches = await apiJson(`/api/geocode?q=${encodeURIComponent(query)}&provider=${provider}`);
   } catch (error) {
     setFieldError(field, `Lookup failed: ${error.message}`);
-    throw new Error(`${field === "origin" ? "Origin" : "Destination"} lookup failed`);
+    throw new Error(`${fieldLabel(field)} lookup failed`);
   }
   if (!matches.length) {
     setFieldError(field, `No match for "${query}". Try a more specific place or "City, ST".`);
     throw new Error(`Could not geocode ${field}: ${query}`);
   }
   return matches[0];
+}
+
+function fieldLabel(field) {
+  if (field === "origin" && state.mode === "area") return "Location";
+  return field === "origin" ? "Origin" : "Destination";
 }
 
 function setFieldError(field, message) {
@@ -936,8 +1078,17 @@ function clearItineraryRoute() {
   if (state.mapAdapter) state.mapAdapter.clearItineraryRoute();
 }
 
+function renderArea(center, radiusKm) {
+  if (state.mapAdapter) state.mapAdapter.setArea(center, radiusKm);
+}
+
 function updateRouteSummary(route) {
   els.routeDistance.textContent = miles(route.distanceMeters).toFixed(0);
+  renderInsights();
+}
+
+function updateAreaSummary(radiusKm) {
+  els.routeDistance.textContent = `${radiusKm} km`;
   renderInsights();
 }
 
@@ -976,7 +1127,7 @@ async function fetchRecentForSamples(samples, params) {
 
   const all = [];
   for (let i = 0; i < chunks.length; i += 1) {
-    setStatus("Scanning route", `Requesting recent observations ${i * 4 + 1}-${Math.min((i + 1) * 4, samples.length)} of ${samples.length}.`);
+    setStatus(params.mode === "area" ? "Scanning area" : "Scanning route", `Requesting recent observations ${i * 4 + 1}-${Math.min((i + 1) * 4, samples.length)} of ${samples.length}.`);
     const batch = await Promise.all(chunks[i].map((sample) => {
       const url = `/api/ebird/recent?lat=${sample.lat}&lng=${sample.lng}&dist=${params.radiusKm}&back=${params.recentDays}&maxResults=500`;
       return apiJson(url, { token: params.token })
@@ -1118,9 +1269,11 @@ function scoreCandidates(candidates, params) {
     const liferScore = params.lifeList?.size
       ? Math.min(candidate.liferSpecies.length, 8) / 8 * 18
       : 0;
-    const practicalityScore = params.maxDetour === 0
-      ? 20
-      : Math.max(0, 20 * (1 - candidate.addedMinutes / Math.max(params.maxDetour, 1)));
+    const practicalityScore = params.mode === "area"
+      ? Math.max(0, 20 * (1 - candidate.routeDistanceKm / Math.max(params.radiusKm, 1)))
+      : params.maxDetour === 0
+        ? 20
+        : Math.max(0, 20 * (1 - candidate.addedMinutes / Math.max(params.maxDetour, 1)));
     candidate.scoreParts = {
       species: speciesScore,
       activity: activityScore,
@@ -1365,13 +1518,16 @@ function renderItineraryBuilder() {
 
 function renderResults() {
   pinnedStops();
+  const isArea = state.params?.mode === "area";
   els.candidateCount.textContent = String(state.results.length);
   els.hotspotCount.textContent = String(state.results.filter(isHotspot).length);
   els.notableCount.textContent = String(state.results.reduce((sum, candidate) => sum + uniqueNotableCount(candidate), 0));
   els.liferCount.textContent = state.lifeList.species.size
     ? String(uniqueLiferCount(state.results))
     : "-";
-  els.resultContext.textContent = `${state.routeName}; ${state.results.length} stops within budget.`;
+  els.resultContext.textContent = isArea
+    ? `${state.routeName}; ${state.results.length} stops within ${state.params.radiusKm} km.`
+    : `${state.routeName}; ${state.results.length} stops within budget.`;
   renderInsights();
   els.resultsList.className = "results-list";
   els.resultsList.innerHTML = "";
@@ -1394,8 +1550,19 @@ function renderResults() {
     node.querySelector(".stop-preview").textContent = speciesPreview(candidate);
     node.querySelector(".stop-chips").innerHTML = candidateChips(candidate);
     node.querySelector(".score-pill").textContent = candidate.score;
-    node.querySelector(".metric-detour").textContent = `+${Math.round(candidate.addedMinutes)}m`;
-    node.querySelector(".metric-offroute").textContent = `${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi`;
+    const detourWrap = node.querySelector(".metric-detour-wrap");
+    const offrouteWrap = node.querySelector(".metric-offroute-wrap");
+    if (isArea) {
+      detourWrap.title = "Distance from search center";
+      offrouteWrap.title = "Search radius";
+      node.querySelector(".metric-detour").textContent = `${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi`;
+      node.querySelector(".metric-offroute").textContent = `${state.params.radiusKm} km`;
+    } else {
+      detourWrap.title = "Added drive time";
+      offrouteWrap.title = "Approx. distance off route";
+      node.querySelector(".metric-detour").textContent = `+${Math.round(candidate.addedMinutes)}m`;
+      node.querySelector(".metric-offroute").textContent = `${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi`;
+    }
     node.querySelector(".metric-species").textContent = candidate.species.size;
     node.querySelector(".metric-notable").textContent = uniqueNotableCount(candidate);
     node.querySelector(".metric-targets").textContent = candidate.targetMatches.length;
@@ -1405,7 +1572,8 @@ function renderResults() {
     const ebird = node.querySelector(".stop-ebird");
     const pinned = isPinned(candidate.id);
     pin.classList.toggle("is-active", pinned);
-    pin.disabled = !pinned && state.pinnedIds.length >= 5;
+    pin.hidden = isArea;
+    pin.disabled = isArea || (!pinned && state.pinnedIds.length >= 5);
     pin.title = pinned ? "Remove from itinerary" : "Pin stop to itinerary";
     pin.setAttribute("aria-pressed", String(pinned));
     pin.querySelector("span").textContent = pinned ? "Pinned" : "Pin";
@@ -1440,17 +1608,18 @@ function selectCandidate(id) {
 }
 
 function renderDetails(candidate) {
+  const isArea = state.params?.mode === "area";
   const species = groupSpecies(candidate).slice(0, 80);
   const notable = candidate.notable.slice(0, 20);
   const lifers = candidate.liferSpecies.slice(0, 30);
   const links = candidateLinks(candidate);
   const offRouteMi = formatMiles(kmToMiles(candidate.routeDistanceKm));
   const pinned = isPinned(candidate.id);
-  const pinDisabled = !pinned && state.pinnedIds.length >= 5;
+  const pinDisabled = isArea || (!pinned && state.pinnedIds.length >= 5);
 
   els.detailsContent.innerHTML = `
     <h3>${escapeHtml(candidate.name)}</h3>
-    <p class="detail-subtitle">${candidate.score} score; +${Math.round(candidate.addedMinutes)} min and +${candidate.addedMiles.toFixed(1)} mi detour.</p>
+    <p class="detail-subtitle">${candidate.score} score; ${isArea ? `${offRouteMi} mi from ${escapeHtml(state.routeName)}.` : `+${Math.round(candidate.addedMinutes)} min and +${candidate.addedMiles.toFixed(1)} mi detour.`}</p>
     <div class="detail-grid">
       <div><b>${candidate.species.size}</b><small>recent species</small></div>
       <div><b>${candidate.observations.length}</b><small>records</small></div>
@@ -1459,11 +1628,16 @@ function renderDetails(candidate) {
       <div><b>${candidate.liferSpecies.length}</b><small>likely lifers</small></div>
     </div>
     <section class="score-line">
-      <h4>Route impact</h4>
+      <h4>${isArea ? "Area position" : "Route impact"}</h4>
       <div class="impact-list">
-        <div class="impact-row"><span>Added time</span><b>+${Math.round(candidate.addedMinutes)} min</b></div>
-        <div class="impact-row"><span>Added distance</span><b>+${candidate.addedMiles.toFixed(1)} mi</b></div>
-        <div class="impact-row"><span>Off route (approx.)</span><b>~${offRouteMi} mi</b></div>
+        ${isArea ? `
+          <div class="impact-row"><span>Distance from center</span><b>~${offRouteMi} mi</b></div>
+          <div class="impact-row"><span>Search radius</span><b>${state.params.radiusKm} km</b></div>
+        ` : `
+          <div class="impact-row"><span>Added time</span><b>+${Math.round(candidate.addedMinutes)} min</b></div>
+          <div class="impact-row"><span>Added distance</span><b>+${candidate.addedMiles.toFixed(1)} mi</b></div>
+          <div class="impact-row"><span>Off route (approx.)</span><b>~${offRouteMi} mi</b></div>
+        `}
       </div>
     </section>
     <section class="score-line">
@@ -1474,7 +1648,7 @@ function renderDetails(candidate) {
         ${scoreRow("Notable", candidate.scoreParts.notable, 20)}
         ${scoreRow("Targets", candidate.scoreParts.targets, 15)}
         ${scoreRow("Lifers", candidate.scoreParts.lifers, 18)}
-        ${scoreRow("Route", candidate.scoreParts.practicality, 20)}
+        ${scoreRow(isArea ? "Proximity" : "Route", candidate.scoreParts.practicality, 20)}
       </div>
     </section>
     ${lifers.length ? `
@@ -1500,7 +1674,7 @@ function renderDetails(candidate) {
       <ul>${species.map((sp) => `<li>${escapeHtml(sp.name)} <small>×${sp.count}${sp.latest ? ` · ${escapeHtml(sp.latest)}` : ""}</small></li>`).join("")}</ul>
     </section>
     <div class="detail-actions">
-      <button type="button" class="detail-pin" aria-pressed="${pinned}" ${pinDisabled ? "disabled" : ""}>${pinned ? "Remove from itinerary" : pinDisabled ? "Itinerary full" : "Pin to itinerary"}</button>
+      ${isArea ? "" : `<button type="button" class="detail-pin" aria-pressed="${pinned}" ${pinDisabled ? "disabled" : ""}>${pinned ? "Remove from itinerary" : pinDisabled ? "Itinerary full" : "Pin to itinerary"}</button>`}
       <a href="${links.mapsUrl}" target="_blank" rel="noreferrer">Directions</a>
       <a href="${links.ebirdUrl}" target="_blank" rel="noreferrer">eBird</a>
     </div>
@@ -1584,14 +1758,19 @@ function renderInsights() {
   const liveTargets = parseTargetsInput();
   const hasToken = Boolean(els.apiToken.value.trim());
   const lifeListCount = state.lifeList.displayNames.length || state.lifeList.species.size;
-  let routeText = "Set a route to compare drive time, detour budget, and ranked birding stops.";
-  if (state.route) {
-    routeText = `${state.routeName}: ${miles(state.route.distanceMeters).toFixed(0)} miles, ${formatMinutes(state.route.durationSeconds / 60)} drive time, ${liveDetour} min detour budget.`;
+  if (state.mode === "area") {
+    els.tripPlanSummary.textContent = state.areaCenter
+      ? `${state.routeName}: searching hotspots within ${state.params?.radiusKm || els.radiusKm.value || 25} km.`
+      : "Set a city, park, or lodging location to rank nearby birding stops.";
+  } else {
+    let routeText = state.route
+      ? `${state.routeName}: ${miles(state.route.distanceMeters).toFixed(0)} miles, ${formatMinutes(state.route.durationSeconds / 60)} drive time, ${liveDetour} min detour budget.`
+      : "Set a route to compare drive time, detour budget, and ranked birding stops.";
+    if (state.itinerary?.status === "ready") {
+      routeText = `${state.routeName}: ${state.pinnedIds.length} pinned stops add ${formatMinutes(state.itinerary.addedMinutes)}; total drive ${formatMinutes(state.itinerary.route.durationSeconds / 60)}.`;
+    }
+    els.tripPlanSummary.textContent = routeText;
   }
-  if (state.itinerary?.status === "ready") {
-    routeText = `${state.routeName}: ${state.pinnedIds.length} pinned stops add ${formatMinutes(state.itinerary.addedMinutes)}; total drive ${formatMinutes(state.itinerary.route.durationSeconds / 60)}.`;
-  }
-  els.tripPlanSummary.textContent = routeText;
 
   if (liveTargets.length || lifeListCount) {
     const targetText = liveTargets.length
@@ -1602,7 +1781,7 @@ function renderInsights() {
       : "no life list imported";
     els.targetSpeciesSummary.textContent = `${targetText}; ${lifeText}.`;
   } else {
-    els.targetSpeciesSummary.textContent = "Add targets or import a life list to highlight matching reports along the corridor.";
+    els.targetSpeciesSummary.textContent = `Add targets or import a life list to highlight matching reports ${state.mode === "area" ? "nearby" : "along the corridor"}.`;
   }
 
   if (state.results.length) {
@@ -1611,8 +1790,9 @@ function renderInsights() {
     const liferCount = uniqueLiferCount(state.results);
     els.sightingSummary.textContent = `${speciesCount} recent species across ${state.results.length} ranked stops, including ${notableCount} notable species${state.lifeList.species.size ? ` and ${liferCount} likely lifers` : ""}.`;
   } else {
-    els.sightingSummary.textContent = state.route && !hasToken
-      ? "Route is ready. Add an eBird token to load recent sightings and notable reports."
+    const searchedWithoutToken = state.mode === "area" ? state.areaCenter && !hasToken : state.route && !hasToken;
+    els.sightingSummary.textContent = searchedWithoutToken
+      ? `${state.mode === "area" ? "Area" : "Route"} is ready. Add an eBird token to load recent sightings and notable reports.`
       : "Recent eBird activity and notable reports appear after search.";
   }
 }
@@ -1691,7 +1871,7 @@ function uniqueLiferCount(candidates) {
 
 function renderReport() {
   if (!els.report) return;
-  if (!state.route || !state.params) {
+  if (!hasReportableSearch()) {
     els.report.innerHTML = "";
     return;
   }
@@ -1701,6 +1881,7 @@ function renderReport() {
 function buildReportMarkup() {
   const p = state.params;
   const route = state.route;
+  const isArea = p.mode === "area";
   const generated = new Date().toLocaleString();
   const param = (label, value, options = {}) => {
     const renderedValue = options.raw ? String(value) : escapeHtml(String(value));
@@ -1710,18 +1891,24 @@ function buildReportMarkup() {
   const paramsBlock = `
     <h2>Search parameters</h2>
     <dl class="report-params">
-      ${param("Origin", p.origin)}
-      ${param("Destination", p.destination)}
+      ${param(isArea ? "Location" : "Origin", p.origin)}
+      ${isArea ? "" : param("Destination", p.destination)}
       ${param("Map service", providerLabel(p.mapProvider))}
-      ${param("Max added", `${p.maxDetour} min`)}
-      ${param("Corridor radius", `${p.radiusKm} km`)}
+      ${isArea ? "" : param("Max added", `${p.maxDetour} min`)}
+      ${param(isArea ? "Area radius" : "Corridor radius", `${p.radiusKm} km`)}
       ${param("Recent window", `${p.recentDays} days`)}
       ${param("Max stops", p.maxStops)}
       ${param("Targets", p.targets.length ? p.targets.join(", ") : "none")}
       ${param("Life list", state.lifeList.species.size ? `${state.lifeList.displayNames.length || state.lifeList.species.size} species from ${state.lifeList.fileName || state.lifeList.source || "import"}` : "none")}
     </dl>`;
 
-  const routeBlock = `
+  const summaryBlock = isArea ? `
+    <h2>Area summary</h2>
+    <dl class="report-route">
+      ${param("Location", state.routeName || p.origin)}
+      ${param("Radius", `${p.radiusKm} km`)}
+      ${param("Ranked stops", state.results.length)}
+    </dl>` : `
     <h2>Route summary</h2>
     <dl class="report-route">
       ${param("Route", state.routeName || `${p.origin} to ${p.destination}`)}
@@ -1747,9 +1934,9 @@ function buildReportMarkup() {
             <h3>${index + 1}. ${escapeHtml(candidate.name)}</h3>
             <p class="report-stop-meta">
               Score ${candidate.score} ·
-              +${Math.round(candidate.addedMinutes)} min ·
-              +${candidate.addedMiles.toFixed(1)} mi detour ·
-              ~${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi off route ·
+              ${isArea
+                ? `~${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi from center ·`
+                : `+${Math.round(candidate.addedMinutes)} min · +${candidate.addedMiles.toFixed(1)} mi detour · ~${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi off route ·`}
               ${candidate.species.size} species ·
               ${uniqueNotableCount(candidate)} notable ·
               ${candidate.targetMatches.length} targets ·
@@ -1767,21 +1954,21 @@ function buildReportMarkup() {
             <ul>${species.map((sp) => `<li>${escapeHtml(sp.name)} <small>×${sp.count}</small></li>`).join("")}</ul>
           </div>`;
       }).join("")}`
-    : `<h2>Ranked stops</h2><p>No stops within the current detour budget.</p>`;
+    : `<h2>Ranked stops</h2><p>No stops matched the current ${isArea ? "area settings" : "detour budget"}.</p>`;
 
   return `
-    <h1>Birdtrip Trip Report</h1>
+    <h1>Birdtrip ${isArea ? "Area" : "Trip"} Report</h1>
     <p class="report-sub">${escapeHtml(state.routeName || "")} · Generated ${escapeHtml(generated)}</p>
     ${paramsBlock}
-    ${routeBlock}
-    ${itineraryBlock}
+    ${summaryBlock}
+    ${isArea ? "" : itineraryBlock}
     ${stopsBlock}
   `;
 }
 
 function downloadHtmlReport() {
-  if (!state.route || !state.params) {
-    setStatus("Nothing to export", "Run a route search before downloading a report.");
+  if (!hasReportableSearch()) {
+    setStatus("Nothing to export", `Run a ${state.mode === "area" ? "area" : "route"} search before downloading a report.`);
     return;
   }
 
@@ -1800,7 +1987,9 @@ function downloadHtmlReport() {
 }
 
 function buildStandaloneReportDocument(reportMarkup) {
-  const title = state.routeName ? `Birdtrip - ${state.routeName}` : "Birdtrip Trip Report";
+  const title = state.routeName
+    ? `Birdtrip - ${state.routeName}`
+    : `Birdtrip ${state.params?.mode === "area" ? "Area" : "Trip"} Report`;
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1959,9 +2148,17 @@ a {
 }
 
 function reportFileName() {
-  const base = slugify(state.routeName || `${state.params.origin} to ${state.params.destination}`) || "trip-report";
+  const fallback = state.params?.mode === "area"
+    ? state.params.origin
+    : `${state.params.origin} to ${state.params.destination}`;
+  const base = slugify(state.routeName || fallback) || `${state.params?.mode === "area" ? "area" : "trip"}-report`;
   const date = new Date().toISOString().slice(0, 10);
   return `birdtrip-${base}-${date}.html`;
+}
+
+function hasReportableSearch() {
+  if (!state.params) return false;
+  return state.params.mode === "area" ? Boolean(state.areaCenter) : Boolean(state.route);
 }
 
 function slugify(value) {
@@ -1981,6 +2178,7 @@ class LeafletMapAdapter {
     this.map = null;
     this.routeLayer = null;
     this.itineraryLayer = null;
+    this.areaLayer = null;
     this.markerLayer = null;
   }
 
@@ -1994,6 +2192,11 @@ class LeafletMapAdapter {
   }
 
   setRoute(coordinates) {
+    if (this.areaLayer) {
+      this.map.removeLayer(this.areaLayer);
+      this.areaLayer = null;
+    }
+    this.clearItineraryRoute();
     if (this.routeLayer) this.map.removeLayer(this.routeLayer);
     const latLngs = coordinates.map(([lng, lat]) => [lat, lng]);
     this.routeLayer = L.polyline(latLngs, {
@@ -2023,6 +2226,32 @@ class LeafletMapAdapter {
     }
   }
 
+  setArea(center, radiusKm) {
+    if (this.routeLayer) {
+      this.map.removeLayer(this.routeLayer);
+      this.routeLayer = null;
+    }
+    this.clearItineraryRoute();
+    if (this.areaLayer) this.map.removeLayer(this.areaLayer);
+    const circle = L.circle([center.lat, center.lng], {
+      radius: radiusKm * 1000,
+      color: "#3b82f6",
+      weight: 2,
+      opacity: 0.75,
+      fillColor: "#3b82f6",
+      fillOpacity: 0.08
+    });
+    const centerMarker = L.circleMarker([center.lat, center.lng], {
+      radius: 6,
+      color: "#065f46",
+      weight: 3,
+      fillColor: "#10b981",
+      fillOpacity: 0.95
+    }).bindPopup(`<strong>${escapeHtml(shortName(center.name) || "Search center")}</strong>`);
+    this.areaLayer = L.featureGroup([circle, centerMarker]).addTo(this.map);
+    this.map.fitBounds(circle.getBounds(), { padding: [34, 34] });
+  }
+
   setMarkers(results, selectedId, onSelect) {
     this.markerLayer.clearLayers();
     results.forEach((candidate, index) => {
@@ -2050,6 +2279,10 @@ class LeafletMapAdapter {
       this.routeLayer = null;
     }
     this.clearItineraryRoute();
+    if (this.areaLayer) {
+      this.map.removeLayer(this.areaLayer);
+      this.areaLayer = null;
+    }
     if (this.markerLayer) this.markerLayer.clearLayers();
   }
 
@@ -2069,6 +2302,8 @@ class GoogleMapAdapter {
     this.map = null;
     this.routeLayer = null;
     this.itineraryLayer = null;
+    this.areaCircle = null;
+    this.areaMarker = null;
     this.markers = [];
     this.infoWindow = null;
   }
@@ -2086,6 +2321,15 @@ class GoogleMapAdapter {
   }
 
   setRoute(coordinates) {
+    if (this.areaCircle) {
+      this.areaCircle.setMap(null);
+      this.areaCircle = null;
+    }
+    if (this.areaMarker) {
+      this.areaMarker.setMap(null);
+      this.areaMarker = null;
+    }
+    this.clearItineraryRoute();
     if (this.routeLayer) this.routeLayer.setMap(null);
     const path = coordinates.map(([lng, lat]) => ({ lat, lng }));
     const maps = window.google.maps;
@@ -2131,6 +2375,33 @@ class GoogleMapAdapter {
     }
   }
 
+  setArea(center, radiusKm) {
+    if (this.routeLayer) {
+      this.routeLayer.setMap(null);
+      this.routeLayer = null;
+    }
+    this.clearItineraryRoute();
+    if (this.areaCircle) this.areaCircle.setMap(null);
+    if (this.areaMarker) this.areaMarker.setMap(null);
+    const maps = window.google.maps;
+    this.areaCircle = new maps.Circle({
+      strokeColor: "#3b82f6",
+      strokeOpacity: 0.75,
+      strokeWeight: 2,
+      fillColor: "#3b82f6",
+      fillOpacity: 0.08,
+      map: this.map,
+      center: { lat: center.lat, lng: center.lng },
+      radius: radiusKm * 1000
+    });
+    this.areaMarker = new maps.Marker({
+      position: { lat: center.lat, lng: center.lng },
+      map: this.map,
+      title: shortName(center.name) || "Search center"
+    });
+    this.map.fitBounds(this.areaCircle.getBounds(), 34);
+  }
+
   setMarkers(results, selectedId, onSelect) {
     this.markers.forEach((marker) => marker.setMap(null));
     const HtmlMarker = ensureGoogleHtmlMarkerClass();
@@ -2161,6 +2432,14 @@ class GoogleMapAdapter {
       this.routeLayer = null;
     }
     this.clearItineraryRoute();
+    if (this.areaCircle) {
+      this.areaCircle.setMap(null);
+      this.areaCircle = null;
+    }
+    if (this.areaMarker) {
+      this.areaMarker.setMap(null);
+      this.areaMarker = null;
+    }
     this.markers.forEach((marker) => marker.setMap(null));
     this.markers = [];
     if (this.infoWindow) this.infoWindow.close();
@@ -2223,7 +2502,10 @@ function markerHtml(candidate, index, selectedId) {
 function markerPopup(candidate) {
   const pinnedIndex = state.pinnedIds.indexOf(candidate.id);
   const pinnedText = pinnedIndex >= 0 ? `<br>Pinned stop ${pinnedIndex + 1}` : "";
-  return `<strong>${escapeHtml(candidate.name)}</strong><br>${candidate.score} score; +${Math.round(candidate.addedMinutes)} min<br>${candidate.species.size} recent species${pinnedText}`;
+  const impact = state.params?.mode === "area"
+    ? `${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi from center`
+    : `+${Math.round(candidate.addedMinutes)} min`;
+  return `<strong>${escapeHtml(candidate.name)}</strong><br>${candidate.score} score; ${impact}<br>${candidate.species.size} recent species${pinnedText}`;
 }
 
 function haversineKm(a, b) {
