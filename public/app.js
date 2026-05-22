@@ -290,13 +290,13 @@ async function loadSelectedTrip() {
 
   try {
     applyTripSettings(trip.settings || {});
-    savePreferences();
     updateSetupStatus();
     updateInputSummaries();
     clearFieldErrors();
     clearWarning();
     await setMapProvider(trip.settings?.mapProvider || state.provider, { persist: false, preserveData: false });
     restoreTripState(trip);
+    savePreferences();
     els.tripName.value = trip.name;
     renderSavedTrips(trip.id);
     updateSavedTripControls(`Loaded ${trip.name}.`);
@@ -445,7 +445,7 @@ function hydrateCandidate(candidate) {
 }
 
 function isObjectRecord(value) {
-  return Boolean(value && typeof value === "object");
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function restoreSelectedStop() {
