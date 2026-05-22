@@ -511,6 +511,9 @@ function restoreTripState(trip) {
   state.origin = savedState.origin || state.route?.origin || null;
   state.destination = savedState.destination || state.route?.destination || null;
   state.areaCenter = savedState.areaCenter || null;
+  state.pinnedIds = [];
+  state.itinerary = null;
+  state.itineraryRequestId += 1;
 
   if (state.mapAdapter) state.mapAdapter.clear();
   els.detailsPanel.hidden = true;
