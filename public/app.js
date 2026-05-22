@@ -472,6 +472,7 @@ function serializeCandidate(candidate) {
     lng: candidate.lng,
     observations: candidate.observations,
     notable: candidate.notable,
+    liferSpecies: candidate.liferSpecies,
     nearestSample: candidate.nearestSample,
     routeDistanceKm: candidate.routeDistanceKm,
     targetMatches: candidate.targetMatches,
@@ -557,6 +558,9 @@ function hydrateCandidate(candidate) {
     seen,
     species,
     targetMatches: Array.isArray(candidate.targetMatches) ? candidate.targetMatches : [],
+    liferSpecies: Array.isArray(candidate.liferSpecies)
+      ? candidate.liferSpecies.filter(isObjectRecord)
+      : [],
     routeDistanceKm: Number.isFinite(candidate.routeDistanceKm) ? candidate.routeDistanceKm : 0,
     scoreParts: candidate.scoreParts || {
       species: 0,
