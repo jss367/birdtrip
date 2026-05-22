@@ -313,8 +313,15 @@ function deleteSelectedTrip() {
   const trip = currentSavedTrip();
   if (!trip) return;
   if (!window.confirm(`Delete "${trip.name}" from saved trips?`)) return;
-  state.savedTrips = state.savedTrips.filter((item) => item.id !== trip.id);
-  writeSavedTrips();
+  const nextSavedTrips = state.savedTrips.filter((item) => item.id !== trip.id);
+  try {
+    writeSavedTrips(nextSavedTrips);
+  } catch (error) {
+    updateSavedTripControls("Could not delete trip; local storage could not be updated.");
+    console.error(error);
+    return;
+  }
+  state.savedTrips = nextSavedTrips;
   renderSavedTrips();
   updateSavedTripControls(`Deleted ${trip.name}.`);
 }
