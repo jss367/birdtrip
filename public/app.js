@@ -5,6 +5,7 @@ const state = {
   routeName: "",
   results: [],
   selectedId: null,
+  comparisonIds: [],
   pinnedIds: [],
   itinerary: null,
   itineraryRequestId: 0,
@@ -81,6 +82,10 @@ const els = {
   tripPlanSummary: document.querySelector("#tripPlanSummary"),
   targetSpeciesSummary: document.querySelector("#targetSpeciesSummary"),
   sightingSummary: document.querySelector("#sightingSummary"),
+  comparisonPanel: document.querySelector("#comparisonPanel"),
+  comparisonSummary: document.querySelector("#comparisonSummary"),
+  comparisonContent: document.querySelector("#comparisonContent"),
+  clearComparisonButton: document.querySelector("#clearComparisonButton"),
   itineraryBuilder: document.querySelector("#itineraryBuilder"),
   itinerarySummary: document.querySelector("#itinerarySummary"),
   itineraryList: document.querySelector("#itineraryList"),
@@ -161,6 +166,7 @@ function init() {
     renderReport();
     window.print();
   });
+  els.clearComparisonButton.addEventListener("click", clearComparison);
   els.clearItinerary.addEventListener("click", clearPinnedStops);
   window.addEventListener("beforeprint", renderReport);
   els.closeDetails.addEventListener("click", () => {
@@ -171,6 +177,7 @@ function init() {
   });
 
   renderItineraryBuilder();
+  renderComparison();
   if (window.lucide) window.lucide.createIcons();
 }
 
@@ -437,6 +444,7 @@ function clearResults() {
   state.route = null;
   state.areaCenter = null;
   state.selectedId = null;
+  state.comparisonIds = [];
   state.pinnedIds = [];
   state.itinerary = null;
   state.itineraryRequestId += 1;
@@ -456,6 +464,7 @@ function clearResults() {
   els.liferCount.textContent = "-";
   updateInputSummaries();
   renderInsights();
+  renderComparison();
   renderItineraryBuilder();
   els.detailsPanel.hidden = true;
   setStatus("Ready", state.mode === "area"
@@ -896,6 +905,7 @@ function cleanSpeciesName(value) {
 function clearSearchArtifacts() {
   state.results = [];
   state.selectedId = null;
+  state.comparisonIds = [];
   state.pinnedIds = [];
   state.itinerary = null;
   state.itineraryRequestId += 1;
@@ -917,6 +927,7 @@ function clearSearchArtifacts() {
   els.candidateCount.textContent = "-";
   els.liferCount.textContent = state.lifeList.species.size ? "0" : "-";
   renderInsights();
+  renderComparison();
   renderItineraryBuilder();
   if (window.lucide) window.lucide.createIcons();
 }
@@ -929,6 +940,7 @@ function setBusy(isBusy) {
     els.settingsButton,
     els.modalSampleButton,
     els.modalExploreButton,
+    els.clearComparisonButton,
     els.clearItinerary
   ];
 
@@ -1568,9 +1580,11 @@ function renderResults() {
     node.querySelector(".metric-targets").textContent = candidate.targetMatches.length;
     const links = candidateLinks(candidate);
     const pin = node.querySelector(".stop-pin");
+    const compareButton = node.querySelector(".compare-toggle");
     const dir = node.querySelector(".stop-dir");
     const ebird = node.querySelector(".stop-ebird");
     const pinned = isPinned(candidate.id);
+    const compared = state.comparisonIds.includes(candidate.id);
     pin.classList.toggle("is-active", pinned);
     pin.hidden = isArea;
     pin.disabled = isArea || (!pinned && state.pinnedIds.length >= 5);
@@ -1578,6 +1592,11 @@ function renderResults() {
     pin.setAttribute("aria-pressed", String(pinned));
     pin.querySelector("span").textContent = pinned ? "Pinned" : "Pin";
     pin.addEventListener("click", () => togglePinned(candidate.id));
+    compareButton.classList.toggle("is-active", compared);
+    compareButton.setAttribute("aria-pressed", String(compared));
+    compareButton.setAttribute("aria-label", `${compared ? "Remove" : "Add"} ${candidate.name} ${compared ? "from" : "to"} comparison`);
+    compareButton.querySelector("span").textContent = compared ? "Compared" : "Compare";
+    compareButton.addEventListener("click", () => toggleComparison(candidate.id));
     dir.href = links.mapsUrl;
     ebird.href = links.ebirdUrl;
     dir.setAttribute("aria-label", `Directions to ${candidate.name}`);
@@ -1588,6 +1607,7 @@ function renderResults() {
     els.resultsList.appendChild(node);
   });
 
+  renderComparison();
   if (window.lucide) window.lucide.createIcons();
 }
 
@@ -1690,6 +1710,168 @@ function updateSelectedCard() {
   });
 }
 
+function toggleComparison(id) {
+  const candidate = state.results.find((item) => item.id === id);
+  if (!candidate) return;
+  if (state.comparisonIds.includes(id)) {
+    state.comparisonIds = state.comparisonIds.filter((item) => item !== id);
+  } else {
+    state.comparisonIds = [...state.comparisonIds, id].slice(-4);
+  }
+  syncComparisonButtons();
+  renderComparison();
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function clearComparison() {
+  state.comparisonIds = [];
+  syncComparisonButtons();
+  renderComparison();
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function syncComparisonButtons() {
+  els.resultsList.querySelectorAll(".stop-card").forEach((card) => {
+    const candidate = state.results.find((item) => item.id === card.dataset.id);
+    const button = card.querySelector(".compare-toggle");
+    if (!candidate || !button) return;
+    const isCompared = state.comparisonIds.includes(candidate.id);
+    button.classList.toggle("is-active", isCompared);
+    button.setAttribute("aria-pressed", String(isCompared));
+    button.setAttribute("aria-label", `${isCompared ? "Remove" : "Add"} ${candidate.name} ${isCompared ? "from" : "to"} comparison`);
+    const label = button.querySelector("span");
+    if (label) label.textContent = isCompared ? "Compared" : "Compare";
+  });
+}
+
+function renderComparison() {
+  state.comparisonIds = state.comparisonIds.filter((id) => state.results.some((candidate) => candidate.id === id));
+  if (!state.results.length) {
+    els.comparisonPanel.hidden = true;
+    els.comparisonContent.innerHTML = "";
+    return;
+  }
+
+  els.comparisonPanel.hidden = false;
+  const compared = state.comparisonIds
+    .map((id) => state.results.find((candidate) => candidate.id === id))
+    .filter(Boolean);
+
+  els.comparisonSummary.textContent = compared.length
+    ? `${compared.length} selected; add up to ${Math.max(0, 4 - compared.length)} more.`
+    : "Select stops from the ranked list to compare route cost and birding value.";
+
+  if (!compared.length) {
+    els.comparisonContent.innerHTML = `
+      <div class="comparison-empty">
+        <i data-lucide="columns-3"></i>
+        <p>Choose Compare on any ranked stop to build a side-by-side view.</p>
+      </div>
+    `;
+    return;
+  }
+
+  const gridTemplate = `minmax(128px, 0.72fr) repeat(${compared.length}, minmax(190px, 1fr))`;
+  els.comparisonContent.innerHTML = `
+    <div class="comparison-table" style="grid-template-columns: ${gridTemplate}">
+      <div class="comparison-label comparison-sticky">Metric</div>
+      ${compared.map((candidate) => `
+        <div class="comparison-stop comparison-sticky">
+          <b>${escapeHtml(candidate.name)}</b>
+          <button type="button" class="comparison-remove" data-id="${escapeHtml(candidate.id)}" title="Remove ${escapeHtml(candidate.name)} from comparison" aria-label="Remove ${escapeHtml(candidate.name)} from comparison">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+      `).join("")}
+      ${comparisonRow("Detour", compared.map(compareDetourCell))}
+      ${comparisonRow("Species Count", compared.map((candidate) => `${candidate.species.size} species<br><small>${candidate.observations.length} records</small>`))}
+      ${comparisonRow("Notables", compared.map(compareNotablesCell))}
+      ${comparisonRow("Targets", compared.map(compareTargetsCell))}
+      ${comparisonRow("Observation Freshness", compared.map(compareFreshnessCell))}
+      ${comparisonRow("Score Breakdown", compared.map(compareScoreCell))}
+    </div>
+  `;
+
+  els.comparisonContent.querySelectorAll(".comparison-remove").forEach((button) => {
+    button.addEventListener("click", () => toggleComparison(button.dataset.id));
+  });
+}
+
+function comparisonRow(label, cells) {
+  return `
+    <div class="comparison-label">${escapeHtml(label)}</div>
+    ${cells.map((cell) => `<div class="comparison-cell">${cell}</div>`).join("")}
+  `;
+}
+
+function compareDetourCell(candidate) {
+  const isArea = state.params?.mode === "area";
+  return isArea
+    ? `
+      <b>${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi</b>
+      <small>from search center</small>
+      <small>${state.params.radiusKm} km radius</small>
+    `
+    : `
+      <b>+${Math.round(candidate.addedMinutes)} min</b>
+      <small>+${candidate.addedMiles.toFixed(1)} mi detour</small>
+      <small>~${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi off route</small>
+    `;
+}
+
+function compareNotablesCell(candidate) {
+  const notableNames = uniqueObservationNames(candidate.notable).slice(0, 4);
+  return `
+    <b>${uniqueNotableCount(candidate)} notable</b>
+    <small>${notableNames.length ? notableNames.map(escapeHtml).join(", ") : "No notable reports loaded"}</small>
+  `;
+}
+
+function compareTargetsCell(candidate) {
+  const targets = candidate.targetMatches
+    .map((obs) => obs.comName || obs.sciName)
+    .filter(Boolean)
+    .slice(0, 4);
+  return `
+    <b>${candidate.targetMatches.length} targets</b>
+    <small>${targets.length ? targets.map(escapeHtml).join(", ") : "No target matches"}</small>
+  `;
+}
+
+function compareFreshnessCell(candidate) {
+  const latest = latestObservationDate(candidate);
+  return `
+    <b>${escapeHtml(formatFreshness(latest))}</b>
+    <small>${latest ? escapeHtml(latest) : "No dated observations"}</small>
+  `;
+}
+
+function compareScoreCell(candidate) {
+  const routeLabel = state.params?.mode === "area" ? "Proximity" : "Route";
+  return `
+    <b>${candidate.score} total</b>
+    <div class="comparison-score">
+      ${compactScorePart("Species", candidate.scoreParts.species, 45)}
+      ${compactScorePart("Activity", candidate.scoreParts.activity, 15)}
+      ${compactScorePart("Notable", candidate.scoreParts.notable, 20)}
+      ${compactScorePart("Targets", candidate.scoreParts.targets, 15)}
+      ${compactScorePart("Lifers", candidate.scoreParts.lifers, 18)}
+      ${compactScorePart(routeLabel, candidate.scoreParts.practicality, 20)}
+    </div>
+  `;
+}
+
+function compactScorePart(label, value, max) {
+  const safeValue = Number.isFinite(value) ? value : 0;
+  const width = Math.max(0, Math.min(100, safeValue / max * 100));
+  return `
+    <span>
+      <small>${escapeHtml(label)} ${safeValue.toFixed(1)}/${max}</small>
+      <i><i style="width: ${width.toFixed(0)}%"></i></i>
+    </span>
+  `;
+}
+
 function updateVisibleDetails() {
   if (els.detailsPanel.hidden || !state.selectedId) return;
   const candidate = state.results.find((item) => item.id === state.selectedId);
@@ -1739,6 +1921,50 @@ function isHotspot(candidate) {
 
 function uniqueNotableCount(candidate) {
   return new Set(candidate.notable.map((obs) => normalizeName(obs.comName || obs.sciName))).size;
+}
+
+function uniqueObservationNames(observations) {
+  const names = new Map();
+  for (const obs of observations) {
+    const name = obs.comName || obs.sciName;
+    const key = normalizeName(name);
+    if (key && !names.has(key)) names.set(key, name);
+  }
+  return Array.from(names.values());
+}
+
+function latestObservationDate(candidate) {
+  return candidate.observations
+    .map((obs) => obs.obsDt || "")
+    .filter(Boolean)
+    .map((obsDt) => {
+      const observedAt = parseObservationDate(obsDt);
+      return { obsDt, time: observedAt ? observedAt.getTime() : NaN };
+    })
+    .filter((entry) => Number.isFinite(entry.time))
+    .sort((a, b) => a.time - b.time)
+    .at(-1)?.obsDt || "";
+}
+
+function formatFreshness(obsDt) {
+  const ageDays = observationAgeDays(obsDt);
+  if (ageDays === null) return obsDt || "No date";
+  if (ageDays === 0) return "Today";
+  if (ageDays === 1) return "1 day ago";
+  return `${ageDays} days ago`;
+}
+
+function observationAgeDays(obsDt) {
+  const observedAt = parseObservationDate(obsDt);
+  if (!observedAt) return null;
+  const today = new Date();
+  const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+  const observedMidnight = new Date(
+    observedAt.getFullYear(),
+    observedAt.getMonth(),
+    observedAt.getDate()
+  ).getTime();
+  return Math.max(0, Math.floor((todayMidnight - observedMidnight) / 86400000));
 }
 
 function isSeenObservation(obs, lifeList) {

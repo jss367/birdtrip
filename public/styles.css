@@ -991,6 +991,172 @@ select {
   height: 15px;
 }
 
+.comparison-panel {
+  margin: 14px 22px 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.07);
+  overflow: hidden;
+}
+
+.comparison-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 13px 14px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.92), rgba(255, 255, 255, 0.92));
+}
+
+.comparison-header h3 {
+  margin: 0;
+  font-size: 0.98rem;
+}
+
+.comparison-header p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.comparison-content {
+  overflow-x: auto;
+}
+
+.comparison-empty {
+  min-height: 118px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  padding: 16px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.comparison-empty svg {
+  width: 32px;
+  height: 32px;
+  color: var(--accent);
+}
+
+.comparison-table {
+  min-width: 560px;
+  display: grid;
+  align-items: stretch;
+}
+
+.comparison-label,
+.comparison-stop,
+.comparison-cell {
+  border-bottom: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+  padding: 11px;
+}
+
+.comparison-label {
+  color: var(--muted-strong);
+  background: var(--panel-soft);
+  font-size: 0.74rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.comparison-sticky {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  border-bottom-color: var(--line-strong);
+}
+
+.comparison-stop {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  align-items: start;
+  gap: 8px;
+  background: white;
+}
+
+.comparison-stop b {
+  overflow-wrap: anywhere;
+  line-height: 1.25;
+}
+
+.comparison-remove {
+  width: 30px;
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  background: var(--panel-soft);
+}
+
+.comparison-remove:hover,
+.comparison-remove:focus-visible {
+  color: var(--rose);
+  border-color: var(--rose-soft);
+  background: #fff5f5;
+}
+
+.comparison-remove:focus-visible {
+  outline: 3px solid var(--blue);
+  outline-offset: 2px;
+}
+
+.comparison-remove svg {
+  width: 15px;
+  height: 15px;
+}
+
+.comparison-cell {
+  min-width: 0;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.82);
+  font-size: 0.87rem;
+  line-height: 1.35;
+}
+
+.comparison-cell b,
+.comparison-cell small {
+  display: block;
+}
+
+.comparison-cell small {
+  margin-top: 3px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.comparison-score {
+  display: grid;
+  gap: 7px;
+  margin-top: 8px;
+}
+
+.comparison-score span {
+  display: grid;
+  gap: 3px;
+}
+
+.comparison-score span > i {
+  height: 7px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(184, 196, 178, 0.34);
+}
+
+.comparison-score span > i > i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), var(--blue));
+}
+
 .results-list {
   padding: 16px 22px 26px;
   overflow-y: auto;
@@ -1192,6 +1358,11 @@ select {
 .stop-links button.is-active {
   color: var(--amber-strong);
   background: var(--amber-soft);
+}
+
+.stop-links .compare-toggle.is-active {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
 }
 
 .stop-links button:disabled {
