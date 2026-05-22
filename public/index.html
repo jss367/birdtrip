@@ -36,6 +36,10 @@
           <i data-lucide="sparkles"></i>
           Quick Start
         </button>
+        <button type="button" id="downloadReportButton" class="ghost-button">
+          <i data-lucide="file-down"></i>
+          Download HTML
+        </button>
         <span id="setupStatus" class="setup-badge setup-needed" role="status" aria-live="polite">
           <i data-lucide="circle-alert"></i>
           Setup Required
@@ -57,27 +61,27 @@
 
       <form id="searchForm" class="search-form">
         <div class="mode-switch" role="group" aria-label="Search mode">
-          <button type="button" class="is-active">
+          <button type="button" id="routeModeButton" class="is-active" data-mode="route" aria-pressed="true">
             <i data-lucide="route"></i>
             Route
           </button>
-          <button type="button" disabled data-static-disabled="true" title="Area mode is planned">
+          <button type="button" id="areaModeButton" data-mode="area" aria-pressed="false">
             <i data-lucide="map"></i>
             Area
           </button>
         </div>
 
-        <section class="form-group">
+        <section class="form-group" id="locationGroup">
           <div class="group-label">
             <i data-lucide="route"></i>
-            <span>Route</span>
+            <span id="locationGroupTitle">Route</span>
           </div>
           <label>
-            <span>Origin</span>
+            <span id="originLabelText">Origin</span>
             <input id="origin" name="origin" autocomplete="street-address" value="Yuma, AZ" required>
             <small class="field-error" id="originError" hidden></small>
           </label>
-          <label>
+          <label id="destinationField">
             <span>Destination</span>
             <input id="destination" name="destination" autocomplete="street-address" value="Phoenix, AZ" required>
             <small class="field-error" id="destinationError" hidden></small>
@@ -99,10 +103,10 @@
           </div>
           <div class="control-grid">
             <label>
-              <span>Max added</span>
+              <span id="maxDetourLabel">Max added</span>
               <div class="number-field">
                 <input id="maxDetour" name="maxDetour" type="number" min="0" max="240" value="60">
-                <small>min</small>
+                <small id="maxDetourUnit">min</small>
               </div>
             </label>
             <label>
@@ -148,12 +152,28 @@
             <span>Target species</span>
             <textarea id="targets" name="targets" rows="4" placeholder="One common name per line"></textarea>
           </label>
+          <div class="life-list-import">
+            <div>
+              <span>Life list</span>
+              <small id="lifeListStatus" class="field-hint">Import an eBird or iNaturalist CSV to boost likely lifers.</small>
+            </div>
+            <div class="file-actions">
+              <label class="file-button">
+                <input id="lifeListInput" name="lifeListInput" type="file" accept=".csv,.tsv,.txt,text/csv,text/tab-separated-values">
+                <i data-lucide="upload"></i>
+                Import
+              </label>
+              <button type="button" id="clearLifeListButton" title="Clear imported life list" aria-label="Clear imported life list">
+                <i data-lucide="trash-2"></i>
+              </button>
+            </div>
+          </div>
         </section>
 
         <div class="actions">
           <button class="primary" type="submit">
             <i data-lucide="search"></i>
-            Find Stops
+            <span id="submitLabel">Find Stops</span>
           </button>
           <button type="button" id="sampleButton" title="Use sample route">
             <i data-lucide="map-pinned"></i>
@@ -161,7 +181,7 @@
           <button type="button" id="clearButton" title="Clear results">
             <i data-lucide="x"></i>
           </button>
-          <button type="button" id="printButton" title="Print report">
+          <button type="button" id="printButton" title="Export PDF or print report">
             <i data-lucide="printer"></i>
           </button>
         </div>
@@ -219,6 +239,10 @@
           <small>Target Species</small>
           <span id="targetCount">0</span>
         </div>
+        <div class="summary-tile tile-lifers">
+          <small>Potential Lifers</small>
+          <span id="liferCount">-</span>
+        </div>
         <div class="summary-tile tile-notable">
           <small>Notable Birds</small>
           <span id="notableCount">-</span>
@@ -232,11 +256,11 @@
           <span id="candidateCount">-</span>
         </div>
         <div class="summary-tile tile-route">
-          <small>Route Miles</small>
+          <small id="routeDistanceLabel">Route Miles</small>
           <span id="routeDistance">-</span>
         </div>
         <div class="summary-tile tile-budget">
-          <small>Added Time Budget</small>
+          <small id="maxAddedLabel">Added Time Budget</small>
           <span id="maxAdded">60m</span>
         </div>
       </section>
@@ -247,9 +271,10 @@
         <div id="map"></div>
         <div class="map-glass" aria-hidden="true">
           <span><b class="legend-dot target"></b> Target species</span>
+          <span><b class="legend-dot lifer"></b> Likely lifer</span>
           <span><b class="legend-dot notable"></b> Notable birds</span>
           <span><b class="legend-dot hotspot"></b> Ranked hotspot</span>
-          <span><b class="legend-line route"></b> Route corridor</span>
+          <span><b class="legend-line route"></b> <span id="mapAreaLegend">Route corridor</span></span>
         </div>
       </section>
 
@@ -262,6 +287,7 @@
           <div class="legend">
             <span><b class="tier high"></b>Top hotspot</span>
             <span><b class="tier mid"></b>Notable birds</span>
+            <span><b class="tier lifer"></b>Likely lifer</span>
             <span><b class="tier low"></b>Target match</span>
           </div>
         </div>
@@ -308,8 +334,8 @@
         <span class="score-pill"></span>
       </button>
       <div class="stop-metrics">
-        <span title="Added drive time"><i data-lucide="clock-3"></i><b class="metric-detour"></b></span>
-        <span title="Approx. distance off route"><i data-lucide="ruler"></i><b class="metric-offroute"></b></span>
+        <span class="metric-detour-wrap" title="Added drive time"><i data-lucide="clock-3"></i><b class="metric-detour"></b></span>
+        <span class="metric-offroute-wrap" title="Approx. distance off route"><i data-lucide="ruler"></i><b class="metric-offroute"></b></span>
         <span title="Recent species"><i data-lucide="feather"></i><b class="metric-species"></b></span>
         <span title="Notable species"><i data-lucide="sparkles"></i><b class="metric-notable"></b></span>
         <span title="Target matches"><i data-lucide="target"></i><b class="metric-targets"></b></span>
