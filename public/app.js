@@ -383,8 +383,7 @@ function saveCurrentTrip() {
     name,
     updatedAt: new Date().toISOString(),
     settings: readTripSettings(),
-    state: serializeTripState(),
-    reportHtml: els.report.innerHTML
+    state: serializeTripState()
   };
 
   const nextSavedTrips = [
@@ -452,6 +451,20 @@ function deleteSelectedTrip() {
 }
 
 function readTripSettings() {
+  if (isObjectRecord(state.params)) {
+    return {
+      origin: typeof state.params.origin === "string" ? state.params.origin : els.origin.value,
+      destination: typeof state.params.destination === "string" ? state.params.destination : els.destination.value,
+      mapProvider: typeof state.params.mapProvider === "string" ? state.params.mapProvider : state.provider,
+      maxDetour: Number.isFinite(state.params.maxDetour) ? String(state.params.maxDetour) : els.maxDetour.value,
+      recentDays: Number.isFinite(state.params.recentDays) ? String(state.params.recentDays) : els.recentDays.value,
+      radiusKm: Number.isFinite(state.params.radiusKm) ? String(state.params.radiusKm) : els.radiusKm.value,
+      maxStops: Number.isFinite(state.params.maxStops) ? String(state.params.maxStops) : els.maxStops.value,
+      targets: Array.isArray(state.params.targets) ? state.params.targets.join("\n") : els.targets.value,
+      searchMode: typeof state.params.mode === "string" ? state.params.mode : state.mode
+    };
+  }
+
   const settings = {};
   for (const field of PREF_FIELDS) settings[field] = els[field].value;
   settings.searchMode = state.mode;
