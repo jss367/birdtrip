@@ -377,7 +377,8 @@ select {
 .ghost-button,
 .icon-button,
 #closeDetails,
-.modal-actions button {
+.modal-actions button,
+.saved-trip-actions button {
   border: 1px solid var(--line-strong);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.92);
@@ -403,6 +404,7 @@ select {
 .ghost-button:hover,
 .icon-button:hover,
 .modal-actions button:hover,
+.saved-trip-actions button:hover,
 #closeDetails:hover {
   border-color: var(--accent);
   box-shadow: 0 12px 26px rgba(31, 47, 34, 0.12);
@@ -439,9 +441,36 @@ select {
 .setup-badge svg,
 .ghost-button svg,
 .icon-button svg,
-.modal-actions svg {
+.modal-actions svg,
+.saved-trip-actions svg {
   width: 17px;
   height: 17px;
+}
+
+.saved-trip-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 44px;
+  gap: 9px;
+}
+
+.saved-trip-actions button {
+  min-height: 40px;
+  font-size: 0.82rem;
+  font-weight: 850;
+}
+
+.saved-trip-actions button:first-child {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.saved-trip-actions button:disabled {
+  cursor: not-allowed;
+}
+
+.saved-trips-status {
+  min-height: 1rem;
 }
 
 .setup-needed {

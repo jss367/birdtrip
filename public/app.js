@@ -4,6 +4,7 @@ const state = {
   routeName: "",
   results: [],
   selectedId: null,
+  savedTrips: [],
   warnings: [],
   params: null,
   origin: null,
@@ -42,6 +43,12 @@ const els = {
   sampleButton: document.querySelector("#sampleButton"),
   clearButton: document.querySelector("#clearButton"),
   printButton: document.querySelector("#printButton"),
+  tripName: document.querySelector("#tripName"),
+  savedTripSelect: document.querySelector("#savedTripSelect"),
+  saveTripButton: document.querySelector("#saveTripButton"),
+  loadTripButton: document.querySelector("#loadTripButton"),
+  deleteTripButton: document.querySelector("#deleteTripButton"),
+  savedTripsStatus: document.querySelector("#savedTripsStatus"),
   progressTitle: document.querySelector("#progressTitle"),
   progressMessage: document.querySelector("#progressMessage"),
   targetCount: document.querySelector("#targetCount"),
@@ -66,14 +73,17 @@ const els = {
 };
 
 const PREF_FIELDS = ["origin", "destination", "mapProvider", "maxDetour", "recentDays", "radiusKm", "maxStops", "targets"];
+const SAVED_TRIPS_KEY = "birdtripSavedTrips";
 
 function init() {
   const saved = restorePreferences();
+  state.savedTrips = readSavedTrips();
   const preferredProvider = typeof saved.mapProvider === "string" ? providerFromInput() : null;
   state.provider = preferredProvider || "osm";
   setupProviderControl();
   updateSetupStatus();
   updateInputSummaries();
+  renderSavedTrips();
   setMapProvider("osm", { persist: false, preserveData: false });
   loadAppConfig(preferredProvider);
 
@@ -117,6 +127,15 @@ function init() {
     renderReport();
     window.print();
   });
+  els.saveTripButton.addEventListener("click", saveCurrentTrip);
+  els.loadTripButton.addEventListener("click", () => loadSelectedTrip());
+  els.deleteTripButton.addEventListener("click", deleteSelectedTrip);
+  els.savedTripSelect.addEventListener("change", handleSavedTripSelection);
+  els.tripName.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    saveCurrentTrip();
+  });
   window.addEventListener("beforeprint", renderReport);
   els.closeDetails.addEventListener("click", () => {
     els.detailsPanel.hidden = true;
@@ -154,6 +173,291 @@ function savePreferences() {
   payload.rememberToken = remember;
   if (remember) payload.apiToken = els.apiToken.value;
   localStorage.setItem("routeBirdingPrefs", JSON.stringify(payload));
+}
+
+function readSavedTrips() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SAVED_TRIPS_KEY) || "{}");
+    const trips = Array.isArray(parsed.trips) ? parsed.trips : [];
+    return trips
+      .filter((trip) => trip && typeof trip.id === "string" && typeof trip.name === "string")
+      .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+  } catch {
+    localStorage.removeItem(SAVED_TRIPS_KEY);
+    return [];
+  }
+}
+
+function writeSavedTrips() {
+  localStorage.setItem(SAVED_TRIPS_KEY, JSON.stringify({
+    version: 1,
+    trips: state.savedTrips
+  }));
+}
+
+function renderSavedTrips(selectedId = els.savedTripSelect.value) {
+  const trips = state.savedTrips;
+  els.savedTripSelect.innerHTML = "";
+
+  if (!trips.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "No saved trips";
+    els.savedTripSelect.appendChild(option);
+  } else {
+    for (const trip of trips) {
+      const option = document.createElement("option");
+      option.value = trip.id;
+      option.textContent = tripOptionLabel(trip);
+      els.savedTripSelect.appendChild(option);
+    }
+  }
+
+  els.savedTripSelect.value = trips.some((trip) => trip.id === selectedId) ? selectedId : (trips[0]?.id || "");
+  updateSavedTripControls();
+}
+
+function tripOptionLabel(trip) {
+  const date = trip.updatedAt ? new Date(trip.updatedAt) : null;
+  const stamp = date && !Number.isNaN(date.getTime())
+    ? date.toLocaleDateString(undefined, { month: "short", day: "numeric" })
+    : "";
+  return stamp ? `${trip.name} - ${stamp}` : trip.name;
+}
+
+function updateSavedTripControls(message) {
+  const hasTrip = Boolean(els.savedTripSelect.value);
+  els.loadTripButton.disabled = !hasTrip;
+  els.deleteTripButton.disabled = !hasTrip;
+  if (message) els.savedTripsStatus.textContent = message;
+}
+
+function handleSavedTripSelection() {
+  const trip = currentSavedTrip();
+  if (trip) {
+    els.tripName.value = trip.name;
+    updateSavedTripControls(`${trip.name} is selected.`);
+  } else {
+    updateSavedTripControls("Trips stay in this browser.");
+  }
+}
+
+function currentSavedTrip() {
+  return state.savedTrips.find((trip) => trip.id === els.savedTripSelect.value) || null;
+}
+
+function saveCurrentTrip() {
+  const name = cleanTripName(els.tripName.value || state.routeName || `${els.origin.value.trim()} to ${els.destination.value.trim()}`);
+  if (!name) {
+    updateSavedTripControls("Add a name before saving.");
+    els.tripName.focus();
+    return;
+  }
+
+  renderReport();
+  const selectedTrip = currentSavedTrip();
+  const matchingTrip = state.savedTrips.find((trip) => trip.name.toLowerCase() === name.toLowerCase());
+  const id = matchingTrip?.id || selectedTrip?.id || createTripId();
+  const trip = {
+    id,
+    name,
+    updatedAt: new Date().toISOString(),
+    settings: readTripSettings(),
+    state: serializeTripState(),
+    reportHtml: els.report.innerHTML
+  };
+
+  state.savedTrips = [
+    trip,
+    ...state.savedTrips.filter((item) => item.id !== id)
+  ].sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+
+  try {
+    writeSavedTrips();
+  } catch (error) {
+    updateSavedTripControls("Could not save trip; local storage is full.");
+    console.error(error);
+    return;
+  }
+
+  els.tripName.value = name;
+  renderSavedTrips(id);
+  updateSavedTripControls(`Saved ${name} locally.`);
+}
+
+async function loadSelectedTrip() {
+  const trip = currentSavedTrip();
+  if (!trip) return;
+
+  applyTripSettings(trip.settings || {});
+  savePreferences();
+  updateSetupStatus();
+  updateInputSummaries();
+  clearFieldErrors();
+  clearWarning();
+  await setMapProvider(trip.settings?.mapProvider || state.provider, { persist: false, preserveData: false });
+  restoreTripState(trip);
+  els.tripName.value = trip.name;
+  renderSavedTrips(trip.id);
+  updateSavedTripControls(`Loaded ${trip.name}.`);
+  setStatus("Trip loaded", `${trip.name} restored from this browser.`);
+}
+
+function deleteSelectedTrip() {
+  const trip = currentSavedTrip();
+  if (!trip) return;
+  if (!window.confirm(`Delete "${trip.name}" from saved trips?`)) return;
+  state.savedTrips = state.savedTrips.filter((item) => item.id !== trip.id);
+  writeSavedTrips();
+  renderSavedTrips();
+  updateSavedTripControls(`Deleted ${trip.name}.`);
+}
+
+function readTripSettings() {
+  const settings = {};
+  for (const field of PREF_FIELDS) settings[field] = els[field].value;
+  settings.mapProvider = state.provider;
+  return settings;
+}
+
+function applyTripSettings(settings) {
+  for (const field of PREF_FIELDS) {
+    if (typeof settings[field] === "string" && els[field]) els[field].value = settings[field];
+  }
+}
+
+function serializeTripState() {
+  return {
+    routeName: state.routeName,
+    route: state.route,
+    results: state.results.map(serializeCandidate),
+    selectedId: state.selectedId,
+    warnings: state.warnings,
+    params: state.params ? { ...state.params, token: "" } : null,
+    origin: state.origin,
+    destination: state.destination
+  };
+}
+
+function serializeCandidate(candidate) {
+  return {
+    id: candidate.id,
+    locId: candidate.locId,
+    name: candidate.name,
+    lat: candidate.lat,
+    lng: candidate.lng,
+    observations: candidate.observations,
+    notable: candidate.notable,
+    nearestSample: candidate.nearestSample,
+    routeDistanceKm: candidate.routeDistanceKm,
+    targetMatches: candidate.targetMatches,
+    viaRoute: candidate.viaRoute,
+    addedMinutes: candidate.addedMinutes,
+    addedMiles: candidate.addedMiles,
+    scoreParts: candidate.scoreParts,
+    score: candidate.score
+  };
+}
+
+function restoreTripState(trip) {
+  const savedState = trip.state || {};
+  state.routeName = savedState.routeName || "";
+  state.route = savedState.route || null;
+  state.results = Array.isArray(savedState.results) ? savedState.results.map(hydrateCandidate) : [];
+  state.selectedId = savedState.selectedId || null;
+  state.warnings = Array.isArray(savedState.warnings) ? savedState.warnings : [];
+  state.params = savedState.params ? { ...savedState.params, token: els.apiToken.value.trim() } : null;
+  state.origin = savedState.origin || state.route?.origin || null;
+  state.destination = savedState.destination || state.route?.destination || null;
+
+  if (state.mapAdapter) state.mapAdapter.clear();
+  els.detailsPanel.hidden = true;
+  els.report.innerHTML = trip.reportHtml || "";
+
+  if (state.route?.geometry?.coordinates) {
+    renderRoute(state.route.geometry.coordinates);
+    updateRouteSummary(state.route);
+  } else {
+    els.routeDistance.textContent = "-";
+  }
+
+  if (state.results.length) {
+    renderResults();
+    renderMarkers();
+  } else {
+    renderEmptyResults("binoculars", state.route ? "Route restored. Run a search to refresh birding stops." : "Saved settings restored. Run a search to build this trip.");
+    els.candidateCount.textContent = "-";
+    els.hotspotCount.textContent = "-";
+    els.notableCount.textContent = "-";
+    els.resultContext.textContent = state.routeName ? `${state.routeName}; no saved stops.` : "No route searched yet.";
+  }
+
+  renderWarnings();
+  if (!trip.reportHtml) renderReport();
+  renderInsights();
+  restoreSelectedStop();
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function hydrateCandidate(candidate) {
+  const observations = Array.isArray(candidate.observations) ? candidate.observations : [];
+  const notable = Array.isArray(candidate.notable) ? candidate.notable : [];
+  const species = new Map();
+  const seen = new Set();
+
+  for (const obs of observations) {
+    const speciesKey = normalizeName(obs.comName || obs.sciName || "Unknown species");
+    if (speciesKey && !species.has(speciesKey)) species.set(speciesKey, obs);
+    const obsKey = obs.subId && obs.speciesCode
+      ? `${obs.subId}|${obs.speciesCode}`
+      : `${speciesKey}|${obs.obsDt || ""}|${obs.howMany ?? ""}`;
+    seen.add(obsKey);
+  }
+
+  return {
+    ...candidate,
+    observations,
+    notable,
+    seen,
+    species,
+    targetMatches: Array.isArray(candidate.targetMatches) ? candidate.targetMatches : [],
+    routeDistanceKm: Number.isFinite(candidate.routeDistanceKm) ? candidate.routeDistanceKm : 0,
+    scoreParts: candidate.scoreParts || {
+      species: 0,
+      activity: 0,
+      notable: 0,
+      targets: 0,
+      practicality: 0
+    },
+    score: Number.isFinite(candidate.score) ? candidate.score : 0
+  };
+}
+
+function restoreSelectedStop() {
+  if (!state.selectedId) return;
+  const candidate = state.results.find((item) => item.id === state.selectedId);
+  if (!candidate) {
+    state.selectedId = null;
+    return;
+  }
+  renderDetails(candidate);
+  els.detailsPanel.hidden = false;
+  updateSelectedCard();
+  renderMarkers();
+}
+
+function renderEmptyResults(icon, message) {
+  els.resultsList.className = "results-list empty";
+  els.resultsList.innerHTML = `<div class="empty-state"><i data-lucide="${icon}"></i><p>${escapeHtml(message)}</p></div>`;
+}
+
+function cleanTripName(value) {
+  return String(value || "").trim().replace(/\s+/g, " ").slice(0, 80);
+}
+
+function createTripId() {
+  if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+  return `trip-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 async function loadAppConfig(preferredProvider) {
@@ -349,6 +653,7 @@ async function runSearch() {
     state.origin = origin;
     state.destination = destination;
     state.routeName = `${shortName(origin.name)} to ${shortName(destination.name)}`;
+    if (!els.tripName.value.trim()) els.tripName.value = state.routeName;
 
     setStatus("Routing", "Drawing the direct route.");
     const route = await apiJson(routeUrl("/api/route", origin, destination, null, params.mapProvider));
@@ -490,7 +795,12 @@ function setBusy(isBusy) {
     els.quickStartButton,
     els.settingsButton,
     els.modalSampleButton,
-    els.modalExploreButton
+    els.modalExploreButton,
+    els.tripName,
+    els.savedTripSelect,
+    els.saveTripButton,
+    els.loadTripButton,
+    els.deleteTripButton
   ];
 
   controls.forEach((control) => {
@@ -500,6 +810,7 @@ function setBusy(isBusy) {
     }
     control.disabled = isBusy;
   });
+  if (!isBusy) updateSavedTripControls();
 }
 
 function setStatus(title, message) {

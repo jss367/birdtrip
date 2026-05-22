@@ -167,6 +167,37 @@
         </div>
       </form>
 
+      <section class="form-group saved-trips-panel" aria-labelledby="savedTripsTitle">
+        <div class="group-label" id="savedTripsTitle">
+          <i data-lucide="bookmark"></i>
+          <span>Saved Trips</span>
+        </div>
+        <label>
+          <span>Trip name</span>
+          <input id="tripName" name="tripName" autocomplete="off" placeholder="Name this trip">
+        </label>
+        <label>
+          <span>Local trips</span>
+          <select id="savedTripSelect" aria-describedby="savedTripsStatus">
+            <option value="">No saved trips</option>
+          </select>
+        </label>
+        <div class="saved-trip-actions">
+          <button type="button" id="saveTripButton">
+            <i data-lucide="save"></i>
+            Save
+          </button>
+          <button type="button" id="loadTripButton">
+            <i data-lucide="folder-open"></i>
+            Load
+          </button>
+          <button type="button" id="deleteTripButton" title="Delete saved trip">
+            <i data-lucide="trash-2"></i>
+          </button>
+        </div>
+        <small class="field-hint saved-trips-status" id="savedTripsStatus">Trips stay in this browser.</small>
+      </section>
+
       <section class="status-panel" aria-live="polite">
         <div class="status-heading">
           <i data-lucide="activity"></i>
