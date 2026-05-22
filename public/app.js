@@ -9,6 +9,13 @@ const state = {
   origin: null,
   destination: null,
   provider: "osm",
+  lifeList: {
+    source: "",
+    fileName: "",
+    importedAt: "",
+    species: new Set(),
+    displayNames: []
+  },
   config: {
     defaultMapProvider: "osm",
     providers: {
@@ -20,6 +27,7 @@ const state = {
 
 const els = {
   quickStartButton: document.querySelector("#quickStartButton"),
+  downloadReportButton: document.querySelector("#downloadReportButton"),
   settingsButton: document.querySelector("#settingsButton"),
   setupStatus: document.querySelector("#setupStatus"),
   form: document.querySelector("#searchForm"),
@@ -34,6 +42,9 @@ const els = {
   apiToken: document.querySelector("#apiToken"),
   rememberToken: document.querySelector("#rememberToken"),
   targets: document.querySelector("#targets"),
+  lifeListInput: document.querySelector("#lifeListInput"),
+  lifeListStatus: document.querySelector("#lifeListStatus"),
+  clearLifeListButton: document.querySelector("#clearLifeListButton"),
   originError: document.querySelector("#originError"),
   destinationError: document.querySelector("#destinationError"),
   warningPanel: document.querySelector("#warningPanel"),
@@ -45,6 +56,7 @@ const els = {
   progressTitle: document.querySelector("#progressTitle"),
   progressMessage: document.querySelector("#progressMessage"),
   targetCount: document.querySelector("#targetCount"),
+  liferCount: document.querySelector("#liferCount"),
   notableCount: document.querySelector("#notableCount"),
   hotspotCount: document.querySelector("#hotspotCount"),
   routeDistance: document.querySelector("#routeDistance"),
@@ -93,8 +105,11 @@ function init() {
   els.apiToken.addEventListener("input", updateSetupStatus);
   els.mapProvider.addEventListener("change", () => setMapProvider(providerFromInput()));
   els.targets.addEventListener("input", updateInputSummaries);
+  els.lifeListInput.addEventListener("change", handleLifeListFile);
+  els.clearLifeListButton.addEventListener("click", clearLifeList);
   els.maxDetour.addEventListener("input", updateInputSummaries);
   els.quickStartButton.addEventListener("click", openQuickStart);
+  els.downloadReportButton.addEventListener("click", downloadHtmlReport);
   els.settingsButton.addEventListener("click", () => {
     els.maxDetour.scrollIntoView({ block: "center", behavior: "smooth" });
     els.maxDetour.focus();
@@ -144,6 +159,17 @@ function restorePreferences() {
   if (saved.rememberToken === true && typeof saved.apiToken === "string") {
     els.apiToken.value = saved.apiToken;
   }
+  if (saved.lifeList && typeof saved.lifeList === "object") {
+    const species = Array.isArray(saved.lifeList.species) ? saved.lifeList.species : [];
+    const displayNames = Array.isArray(saved.lifeList.displayNames) ? saved.lifeList.displayNames : species;
+    state.lifeList = {
+      source: typeof saved.lifeList.source === "string" ? saved.lifeList.source : "",
+      fileName: typeof saved.lifeList.fileName === "string" ? saved.lifeList.fileName : "",
+      importedAt: typeof saved.lifeList.importedAt === "string" ? saved.lifeList.importedAt : "",
+      species: new Set(species.map((name) => normalizeName(name)).filter(Boolean)),
+      displayNames: displayNames.map(String).filter(Boolean)
+    };
+  }
   return saved;
 }
 
@@ -153,7 +179,23 @@ function savePreferences() {
   const remember = els.rememberToken.checked;
   payload.rememberToken = remember;
   if (remember) payload.apiToken = els.apiToken.value;
-  localStorage.setItem("routeBirdingPrefs", JSON.stringify(payload));
+  if (state.lifeList.species.size) {
+    payload.lifeList = {
+      source: state.lifeList.source,
+      fileName: state.lifeList.fileName,
+      importedAt: state.lifeList.importedAt,
+      species: Array.from(state.lifeList.species),
+      displayNames: state.lifeList.displayNames
+    };
+  }
+  try {
+    localStorage.setItem("routeBirdingPrefs", JSON.stringify(payload));
+  } catch {
+    delete payload.lifeList;
+    localStorage.setItem("routeBirdingPrefs", JSON.stringify(payload));
+    addWarning("The imported life list was too large to save in this browser, but it will work until the page is refreshed.");
+    renderWarnings();
+  }
 }
 
 async function loadAppConfig(preferredProvider) {
@@ -322,6 +364,7 @@ function clearResults() {
   els.notableCount.textContent = "-";
   els.hotspotCount.textContent = "-";
   els.candidateCount.textContent = "-";
+  els.liferCount.textContent = "-";
   updateInputSummaries();
   renderInsights();
   els.detailsPanel.hidden = true;
@@ -422,7 +465,8 @@ function readParams() {
     targets: els.targets.value
       .split(/\n|,/)
       .map((target) => normalizeName(target))
-      .filter(Boolean)
+      .filter(Boolean),
+    lifeList: new Set(state.lifeList.species)
   };
 }
 
@@ -452,6 +496,7 @@ function updateInputSummaries() {
   const targets = parseTargetsInput();
   els.targetCount.textContent = String(targets.length);
   els.maxAdded.textContent = `${clamp(Number(els.maxDetour.value || 60), 0, 240)}m`;
+  updateLifeListStatus();
   renderInsights();
 }
 
@@ -460,6 +505,238 @@ function parseTargetsInput() {
     .split(/\n|,/)
     .map((target) => normalizeName(target))
     .filter(Boolean);
+}
+
+async function handleLifeListFile(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const parsed = parseLifeListText(text, file.name);
+    if (!parsed.species.size) {
+      throw new Error("No bird species names were found. Try an eBird or iNaturalist CSV export.");
+    }
+    state.lifeList = {
+      source: parsed.source,
+      fileName: file.name,
+      importedAt: new Date().toISOString(),
+      species: parsed.species,
+      displayNames: parsed.displayNames
+    };
+    applyLifeListToCurrentResults();
+    savePreferences();
+    updateInputSummaries();
+    renderResultsIfPresent();
+    setStatus("Life list imported", `${state.lifeList.displayNames.length} species loaded from ${file.name}. Run search again for full reranking.`);
+  } catch (error) {
+    setStatus("Import failed", error.message || "Could not import that life list.");
+  } finally {
+    els.lifeListInput.value = "";
+  }
+}
+
+function clearLifeList() {
+  state.lifeList = {
+    source: "",
+    fileName: "",
+    importedAt: "",
+    species: new Set(),
+    displayNames: []
+  };
+  applyLifeListToCurrentResults();
+  savePreferences();
+  updateInputSummaries();
+  renderResultsIfPresent();
+  setStatus("Life list cleared", "Imported species will no longer affect lifer ranking.");
+}
+
+function updateLifeListStatus() {
+  const count = state.lifeList.displayNames.length || state.lifeList.species.size;
+  if (!count) {
+    els.lifeListStatus.textContent = "Import an eBird or iNaturalist CSV to boost likely lifers.";
+    els.clearLifeListButton.disabled = true;
+    return;
+  }
+  const source = state.lifeList.source ? `${state.lifeList.source} ` : "";
+  const fileName = state.lifeList.fileName ? ` from ${state.lifeList.fileName}` : "";
+  els.lifeListStatus.textContent = `${count} ${source}species imported${fileName}.`;
+  els.clearLifeListButton.disabled = false;
+}
+
+function renderResultsIfPresent() {
+  if (!state.results.length) {
+    els.liferCount.textContent = state.lifeList.species.size ? "0" : "-";
+    renderInsights();
+    return;
+  }
+  renderResults();
+  renderMarkers();
+  renderReport();
+  if (state.selectedId) {
+    const candidate = state.results.find((item) => item.id === state.selectedId);
+    if (candidate) renderDetails(candidate);
+  }
+}
+
+function applyLifeListToCurrentResults() {
+  if (!state.results.length) return;
+  const params = {
+    ...(state.params || {}),
+    maxDetour: state.params?.maxDetour ?? clamp(Number(els.maxDetour.value || 60), 0, 240),
+    lifeList: new Set(state.lifeList.species)
+  };
+  for (const candidate of state.results) {
+    candidate.liferSpecies = params.lifeList.size
+      ? Array.from(candidate.species.values()).filter((obs) => !isSeenObservation(obs, params.lifeList))
+      : [];
+  }
+  scoreCandidates(state.results, params);
+  state.results.sort((a, b) => b.score - a.score);
+}
+
+function parseLifeListText(text, fileName = "") {
+  const rows = parseDelimitedRows(text);
+  if (!rows.length) {
+    return { source: sourceFromFileName(fileName), species: new Set(), displayNames: [] };
+  }
+
+  const header = rows[0].map(normalizeHeader);
+  const hasHeader = hasLifeListHeader(header);
+  const dataRows = hasHeader ? rows.slice(1) : rows;
+  const source = detectLifeListSource(header, fileName);
+  const indexes = {
+    common: findHeaderIndex(header, ["commonname", "comname", "englishname", "taxoncommonname", "preferredcommonname", "common"]),
+    scientific: findHeaderIndex(header, ["scientificname", "sciname", "taxonname", "taxonlatinname", "name", "latinname"]),
+    speciesCode: findHeaderIndex(header, ["speciescode"]),
+    iconic: findHeaderIndex(header, ["iconictaxonname", "iconictaxon"]),
+    category: findHeaderIndex(header, ["category"])
+  };
+  const aliases = new Set();
+  const displayNames = new Map();
+
+  for (const row of dataRows) {
+    if (!row.some((value) => String(value || "").trim())) continue;
+    if (indexes.iconic >= 0 && !isBirdIconicTaxon(row[indexes.iconic])) continue;
+    if (indexes.category >= 0 && row[indexes.category] && normalizeName(row[indexes.category]) !== "species") continue;
+
+    const names = [];
+    if (hasHeader) {
+      names.push(row[indexes.common], row[indexes.scientific], row[indexes.speciesCode]);
+    } else {
+      names.push(row.find((value) => looksLikeSpeciesName(value)));
+    }
+
+    let display = cleanSpeciesName(row[indexes.common]) || cleanSpeciesName(row[indexes.scientific]);
+    for (const name of names) {
+      const cleaned = cleanSpeciesName(name);
+      const normalized = normalizeName(cleaned);
+      if (!normalized) continue;
+      aliases.add(normalized);
+      if (!display) display = cleaned;
+    }
+    if (display) displayNames.set(normalizeName(display), display);
+  }
+
+  return {
+    source,
+    species: aliases,
+    displayNames: Array.from(displayNames.values()).sort((a, b) => a.localeCompare(b))
+  };
+}
+
+function parseDelimitedRows(text) {
+  const rows = [];
+  let row = [];
+  let cell = "";
+  let quoted = false;
+  const delimiter = detectDelimiter(text);
+
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    const next = text[i + 1];
+    if (char === '"') {
+      if (quoted && next === '"') {
+        cell += '"';
+        i += 1;
+      } else {
+        quoted = !quoted;
+      }
+    } else if (char === delimiter && !quoted) {
+      row.push(cell);
+      cell = "";
+    } else if ((char === "\n" || char === "\r") && !quoted) {
+      if (char === "\r" && next === "\n") i += 1;
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = "";
+    } else {
+      cell += char;
+    }
+  }
+  row.push(cell);
+  rows.push(row);
+  return rows
+    .map((items) => items.map((item) => item.trim()))
+    .filter((items) => items.some(Boolean));
+}
+
+function detectDelimiter(text) {
+  const firstLine = text.split(/\r?\n/, 1)[0] || "";
+  const candidates = [",", "\t", ";"];
+  return candidates
+    .map((delimiter) => ({ delimiter, count: firstLine.split(delimiter).length }))
+    .sort((a, b) => b.count - a.count)[0].delimiter;
+}
+
+function hasLifeListHeader(header) {
+  return header.some((name) => [
+    "commonname",
+    "comname",
+    "scientificname",
+    "sciname",
+    "taxonname",
+    "speciescode",
+    "iconictaxonname",
+    "observedon"
+  ].includes(name));
+}
+
+function detectLifeListSource(header, fileName) {
+  if (header.some((name) => ["iconictaxonname", "taxonid", "observedon", "qualitygrade"].includes(name))) return "iNaturalist";
+  if (header.some((name) => ["speciescode", "subid", "checklistid", "locationid", "taxonomicorder"].includes(name))) return "eBird";
+  return sourceFromFileName(fileName);
+}
+
+function sourceFromFileName(fileName) {
+  const name = normalizeName(fileName);
+  if (name.includes("inaturalist") || name.includes("inat")) return "iNaturalist";
+  if (name.includes("ebird")) return "eBird";
+  return "life-list";
+}
+
+function findHeaderIndex(header, options) {
+  return header.findIndex((name) => options.includes(name));
+}
+
+function normalizeHeader(value) {
+  return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function isBirdIconicTaxon(value) {
+  const normalized = normalizeName(value);
+  return !normalized || normalized === "aves" || normalized === "birds" || normalized === "bird";
+}
+
+function looksLikeSpeciesName(value) {
+  const text = cleanSpeciesName(value);
+  return text.length >= 3 && /[a-z]/i.test(text) && !/^\d+([./-]\d+)*$/.test(text);
+}
+
+function cleanSpeciesName(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function clearSearchArtifacts() {
@@ -480,6 +757,7 @@ function clearSearchArtifacts() {
   els.notableCount.textContent = "-";
   els.hotspotCount.textContent = "-";
   els.candidateCount.textContent = "-";
+  els.liferCount.textContent = state.lifeList.species.size ? "0" : "-";
   renderInsights();
   if (window.lucide) window.lucide.createIcons();
 }
@@ -488,6 +766,7 @@ function setBusy(isBusy) {
   const controls = [
     ...els.form.querySelectorAll("button, input, select, textarea"),
     els.quickStartButton,
+    els.downloadReportButton,
     els.settingsButton,
     els.modalSampleButton,
     els.modalExploreButton
@@ -693,7 +972,8 @@ function buildCandidates(observationsBySample, samples, params) {
           notable: [],
           nearestSample: sample,
           routeDistanceKm: Infinity,
-          targetMatches: []
+          targetMatches: [],
+          liferSpecies: []
         });
       }
       const candidate = byKey.get(key);
@@ -722,6 +1002,9 @@ function buildCandidates(observationsBySample, samples, params) {
     candidate.targetMatches = params.targets
       .map((target) => candidate.species.get(target))
       .filter(Boolean);
+    candidate.liferSpecies = params.lifeList?.size
+      ? Array.from(candidate.species.values()).filter((obs) => !isSeenObservation(obs, params.lifeList))
+      : [];
   }
 
   return candidates
@@ -731,7 +1014,11 @@ function buildCandidates(observationsBySample, samples, params) {
 }
 
 function preliminaryScore(candidate) {
-  return candidate.species.size * 4 + candidate.observations.length + Math.max(0, 20 - candidate.routeDistanceKm);
+  return candidate.species.size * 4
+    + candidate.observations.length
+    + candidate.targetMatches.length * 8
+    + candidate.liferSpecies.length * 6
+    + Math.max(0, 20 - candidate.routeDistanceKm);
 }
 
 async function evaluateDetours(candidates, origin, destination, baseDurationSeconds, params) {
@@ -788,6 +1075,9 @@ function scoreCandidates(candidates, params) {
     const activityScore = Math.min(weightedActivity, 250) / 250 * 15;
     const notableScore = Math.min(weightedNotable, 8) / 8 * 20;
     const targetScore = Math.min(weightedTargets, 5) / 5 * 15;
+    const liferScore = params.lifeList?.size
+      ? Math.min(candidate.liferSpecies.length, 8) / 8 * 18
+      : 0;
     const practicalityScore = params.maxDetour === 0
       ? 20
       : Math.max(0, 20 * (1 - candidate.addedMinutes / Math.max(params.maxDetour, 1)));
@@ -796,9 +1086,10 @@ function scoreCandidates(candidates, params) {
       activity: activityScore,
       notable: notableScore,
       targets: targetScore,
+      lifers: liferScore,
       practicality: practicalityScore
     };
-    candidate.score = Math.round(speciesScore + activityScore + notableScore + targetScore + practicalityScore);
+    candidate.score = Math.round(speciesScore + activityScore + notableScore + targetScore + liferScore + practicalityScore);
   }
 }
 
@@ -834,10 +1125,14 @@ function observationFreshnessWeight(obsDt, recentDays) {
   const observedAt = parseObservationDate(obsDt);
   if (!observedAt) return 0.5;
   const today = new Date();
-  today.setHours(0, 0, 0, 0);
   const observedDay = new Date(observedAt);
-  observedDay.setHours(0, 0, 0, 0);
-  const ageDays = Math.max(0, Math.floor((today - observedDay) / 86400000));
+  const todayUtcMidnight = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
+  const observedUtcMidnight = Date.UTC(
+    observedDay.getUTCFullYear(),
+    observedDay.getUTCMonth(),
+    observedDay.getUTCDate()
+  );
+  const ageDays = Math.max(0, Math.floor((todayUtcMidnight - observedUtcMidnight) / 86400000));
   if (ageDays <= 1) return 1;
   const searchWindow = Math.max(1, Number(recentDays) || 1);
   const staleRatio = Math.min(ageDays, searchWindow) / searchWindow;
@@ -863,6 +1158,9 @@ function renderResults() {
   els.candidateCount.textContent = String(state.results.length);
   els.hotspotCount.textContent = String(state.results.filter(isHotspot).length);
   els.notableCount.textContent = String(state.results.reduce((sum, candidate) => sum + uniqueNotableCount(candidate), 0));
+  els.liferCount.textContent = state.lifeList.species.size
+    ? String(uniqueLiferCount(state.results))
+    : "-";
   els.resultContext.textContent = `${state.routeName}; ${state.results.length} stops within budget.`;
   renderInsights();
   els.resultsList.className = "results-list";
@@ -925,6 +1223,7 @@ function selectCandidate(id) {
 function renderDetails(candidate) {
   const species = groupSpecies(candidate).slice(0, 80);
   const notable = candidate.notable.slice(0, 20);
+  const lifers = candidate.liferSpecies.slice(0, 30);
   const links = candidateLinks(candidate);
   const offRouteMi = formatMiles(kmToMiles(candidate.routeDistanceKm));
 
@@ -936,6 +1235,7 @@ function renderDetails(candidate) {
       <div><b>${candidate.observations.length}</b><small>records</small></div>
       <div><b>${uniqueNotableCount(candidate)}</b><small>notable species</small></div>
       <div><b>${candidate.targetMatches.length}</b><small>target matches</small></div>
+      <div><b>${candidate.liferSpecies.length}</b><small>likely lifers</small></div>
     </div>
     <section class="score-line">
       <h4>Route impact</h4>
@@ -952,9 +1252,16 @@ function renderDetails(candidate) {
         ${scoreRow("Activity", candidate.scoreParts.activity, 15)}
         ${scoreRow("Notable", candidate.scoreParts.notable, 20)}
         ${scoreRow("Targets", candidate.scoreParts.targets, 15)}
+        ${scoreRow("Lifers", candidate.scoreParts.lifers, 18)}
         ${scoreRow("Route", candidate.scoreParts.practicality, 20)}
       </div>
     </section>
+    ${lifers.length ? `
+      <section class="species-list">
+        <h4>Likely Lifers</h4>
+        <ul>${lifers.map((obs) => `<li>${escapeHtml(obs.comName || obs.sciName || "")} <small>${escapeHtml(obs.obsDt || "")}</small></li>`).join("")}</ul>
+      </section>
+    ` : ""}
     ${candidate.targetMatches.length ? `
       <section class="species-list">
         <h4>Targets</h4>
@@ -999,6 +1306,7 @@ function scoreRow(label, value, max) {
 
 function markerClass(candidate) {
   if (candidate.targetMatches.length) return "marker-low";
+  if (candidate.liferSpecies.length) return "marker-lifer";
   if (uniqueNotableCount(candidate)) return "marker-mid";
   return isHotspot(candidate) ? "marker-high" : "marker-standard";
 }
@@ -1014,6 +1322,7 @@ function speciesPreview(candidate) {
 function candidateChips(candidate) {
   const chips = [];
   if (candidate.targetMatches.length) chips.push(`<span class="stop-chip chip-target">${candidate.targetMatches.length} target</span>`);
+  if (candidate.liferSpecies.length) chips.push(`<span class="stop-chip chip-lifer">${candidate.liferSpecies.length} lifer</span>`);
   if (uniqueNotableCount(candidate)) chips.push(`<span class="stop-chip chip-notable">${uniqueNotableCount(candidate)} notable</span>`);
   if (isHotspot(candidate)) chips.push('<span class="stop-chip chip-hotspot">top hotspot</span>');
   return chips.join("");
@@ -1027,23 +1336,45 @@ function uniqueNotableCount(candidate) {
   return new Set(candidate.notable.map((obs) => normalizeName(obs.comName || obs.sciName))).size;
 }
 
+function isSeenObservation(obs, lifeList) {
+  return observationAliases(obs).some((alias) => lifeList.has(alias));
+}
+
+function observationAliases(obs) {
+  return [
+    obs.comName,
+    obs.sciName,
+    obs.speciesCode
+  ].map((value) => normalizeName(value)).filter(Boolean);
+}
+
 function renderInsights() {
   const liveDetour = clamp(Number(els.maxDetour.value || 60), 0, 240);
   const liveTargets = parseTargetsInput();
   const hasToken = Boolean(els.apiToken.value.trim());
+  const lifeListCount = state.lifeList.displayNames.length || state.lifeList.species.size;
   const routeText = state.route
     ? `${state.routeName}: ${miles(state.route.distanceMeters).toFixed(0)} miles, ${formatMinutes(state.route.durationSeconds / 60)} drive time, ${liveDetour} min detour budget.`
     : "Set a route to compare drive time, detour budget, and ranked birding stops.";
   els.tripPlanSummary.textContent = routeText;
 
-  els.targetSpeciesSummary.textContent = liveTargets.length
-    ? `${liveTargets.length} target species queued: ${liveTargets.slice(0, 3).join(", ")}${liveTargets.length > 3 ? ", ..." : ""}.`
-    : "Add targets to highlight matching reports along the corridor.";
+  if (liveTargets.length || lifeListCount) {
+    const targetText = liveTargets.length
+      ? `${liveTargets.length} target species queued`
+      : "No target species queued";
+    const lifeText = lifeListCount
+      ? `${lifeListCount} imported life-list species will be treated as already seen`
+      : "no life list imported";
+    els.targetSpeciesSummary.textContent = `${targetText}; ${lifeText}.`;
+  } else {
+    els.targetSpeciesSummary.textContent = "Add targets or import a life list to highlight matching reports along the corridor.";
+  }
 
   if (state.results.length) {
     const speciesCount = state.results.reduce((sum, candidate) => sum + candidate.species.size, 0);
     const notableCount = state.results.reduce((sum, candidate) => sum + uniqueNotableCount(candidate), 0);
-    els.sightingSummary.textContent = `${speciesCount} recent species across ${state.results.length} ranked stops, including ${notableCount} notable species.`;
+    const liferCount = uniqueLiferCount(state.results);
+    els.sightingSummary.textContent = `${speciesCount} recent species across ${state.results.length} ranked stops, including ${notableCount} notable species${state.lifeList.species.size ? ` and ${liferCount} likely lifers` : ""}.`;
   } else {
     els.sightingSummary.textContent = state.route && !hasToken
       ? "Route is ready. Add an eBird token to load recent sightings and notable reports."
@@ -1112,16 +1443,34 @@ function groupSpecies(candidate) {
   return Array.from(groups.values()).sort((a, b) => a.name.localeCompare(b.name));
 }
 
+function uniqueLiferCount(candidates) {
+  const seen = new Set();
+  for (const candidate of candidates) {
+    for (const obs of candidate.liferSpecies || []) {
+      const key = normalizeName(obs.comName || obs.sciName || obs.speciesCode);
+      if (key) seen.add(key);
+    }
+  }
+  return seen.size;
+}
+
 function renderReport() {
   if (!els.report) return;
   if (!state.route || !state.params) {
     els.report.innerHTML = "";
     return;
   }
+  els.report.innerHTML = buildReportMarkup();
+}
+
+function buildReportMarkup() {
   const p = state.params;
   const route = state.route;
   const generated = new Date().toLocaleString();
-  const param = (label, value) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd></div>`;
+  const param = (label, value, options = {}) => {
+    const renderedValue = options.raw ? String(value) : escapeHtml(String(value));
+    return `<div><dt>${escapeHtml(label)}</dt><dd>${renderedValue}</dd></div>`;
+  };
 
   const paramsBlock = `
     <h2>Search parameters</h2>
@@ -1134,6 +1483,7 @@ function renderReport() {
       ${param("Recent window", `${p.recentDays} days`)}
       ${param("Max stops", p.maxStops)}
       ${param("Targets", p.targets.length ? p.targets.join(", ") : "none")}
+      ${param("Life list", state.lifeList.species.size ? `${state.lifeList.displayNames.length || state.lifeList.species.size} species from ${state.lifeList.fileName || state.lifeList.source || "import"}` : "none")}
     </dl>`;
 
   const routeBlock = `
@@ -1149,6 +1499,7 @@ function renderReport() {
     ? `<h2>Ranked stops</h2>${state.results.map((candidate, index) => {
         const species = groupSpecies(candidate).slice(0, 40);
         const notable = candidate.notable.slice(0, 12);
+        const links = candidateLinks(candidate);
         return `
           <div class="report-stop">
             <h3>${index + 1}. ${escapeHtml(candidate.name)}</h3>
@@ -1159,8 +1510,15 @@ function renderReport() {
               ~${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi off route ·
               ${candidate.species.size} species ·
               ${uniqueNotableCount(candidate)} notable ·
-              ${candidate.targetMatches.length} targets
+              ${candidate.targetMatches.length} targets ·
+              ${candidate.liferSpecies.length} likely lifers
             </p>
+            <dl class="report-stop-route">
+              ${param("Coordinates", `${candidate.lat.toFixed(5)}, ${candidate.lng.toFixed(5)}`)}
+              ${param("Directions", `<a href="${escapeHtml(links.mapsUrl)}">${escapeHtml(links.mapsUrl)}</a>`, { raw: true })}
+              ${param("eBird", `<a href="${escapeHtml(links.ebirdUrl)}">${escapeHtml(links.ebirdUrl)}</a>`, { raw: true })}
+            </dl>
+            ${candidate.liferSpecies.length ? `<h4>Likely lifers</h4><ul>${candidate.liferSpecies.slice(0, 20).map((obs) => `<li>${escapeHtml(obs.comName || obs.sciName || "")}</li>`).join("")}</ul>` : ""}
             ${candidate.targetMatches.length ? `<h4>Target matches</h4><ul>${candidate.targetMatches.map((obs) => `<li>${escapeHtml(obs.comName || obs.sciName || "")}</li>`).join("")}</ul>` : ""}
             ${notable.length ? `<h4>Notable</h4><ul>${notable.map((obs) => `<li>${escapeHtml(obs.comName || obs.sciName || "")} <small>${escapeHtml(obs.obsDt || "")}</small></li>`).join("")}</ul>` : ""}
             <h4>Recent species</h4>
@@ -1169,13 +1527,208 @@ function renderReport() {
       }).join("")}`
     : `<h2>Ranked stops</h2><p>No stops within the current detour budget.</p>`;
 
-  els.report.innerHTML = `
+  return `
     <h1>Birdtrip Trip Report</h1>
     <p class="report-sub">${escapeHtml(state.routeName || "")} · Generated ${escapeHtml(generated)}</p>
     ${paramsBlock}
     ${routeBlock}
     ${stopsBlock}
   `;
+}
+
+function downloadHtmlReport() {
+  if (!state.route || !state.params) {
+    setStatus("Nothing to export", "Run a route search before downloading a report.");
+    return;
+  }
+
+  renderReport();
+  const documentHtml = buildStandaloneReportDocument(buildReportMarkup());
+  const blob = new Blob([documentHtml], { type: "text/html;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = reportFileName();
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setStatus("Report downloaded", "Saved a standalone HTML trip report for offline reference.");
+}
+
+function buildStandaloneReportDocument(reportMarkup) {
+  const title = state.routeName ? `Birdtrip - ${state.routeName}` : "Birdtrip Trip Report";
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHtml(title)}</title>
+  <style>
+${reportDocumentCss()}
+  </style>
+</head>
+<body>
+  <main class="report">
+${reportMarkup}
+  </main>
+</body>
+</html>
+`;
+}
+
+function reportDocumentCss() {
+  return `
+:root {
+  --line: #d9e2ec;
+  --line-strong: #b8c4d2;
+  --text: #10201a;
+  --muted: #64748b;
+  --muted-strong: #405569;
+  --panel-soft: #f8fafc;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  color: var(--text);
+  background: #f8fafc;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  line-height: 1.45;
+}
+
+a {
+  color: #065f46;
+  overflow-wrap: anywhere;
+}
+
+.report {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 32px 22px 48px;
+  background: white;
+}
+
+.report h1 {
+  font-size: 1.5rem;
+  margin: 0 0 4px;
+}
+
+.report .report-sub {
+  color: var(--muted);
+  margin: 0 0 18px;
+}
+
+.report h2 {
+  font-size: 1.05rem;
+  margin: 22px 0 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.report .report-params,
+.report .report-route,
+.report .report-stop-route {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px 18px;
+  margin: 0;
+}
+
+.report .report-stop-route {
+  grid-template-columns: minmax(120px, 0.6fr) repeat(2, minmax(0, 1fr));
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.report dt {
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  font-weight: 800;
+}
+
+.report dd {
+  margin: 1px 0 0;
+  font-weight: 700;
+}
+
+.report .report-stop {
+  break-inside: avoid;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 10px 0;
+}
+
+.report .report-stop h3 {
+  margin: 0 0 4px;
+  font-size: 1rem;
+}
+
+.report .report-stop .report-stop-meta {
+  color: var(--muted-strong);
+  font-size: 0.85rem;
+  margin: 0 0 8px;
+}
+
+.report .report-stop ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font-size: 0.85rem;
+  columns: 2;
+}
+
+.report .report-stop h4 {
+  margin: 10px 0 2px;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+@media (max-width: 720px) {
+  .report .report-params,
+  .report .report-route,
+  .report .report-stop-route {
+    grid-template-columns: 1fr;
+  }
+
+  .report .report-stop ul {
+    columns: 1;
+  }
+}
+
+@media print {
+  body {
+    background: white;
+  }
+
+  .report {
+    max-width: none;
+    padding: 0;
+  }
+}
+`;
+}
+
+function reportFileName() {
+  const base = slugify(state.routeName || `${state.params.origin} to ${state.params.destination}`) || "trip-report";
+  const date = new Date().toISOString().slice(0, 10);
+  return `birdtrip-${base}-${date}.html`;
+}
+
+function slugify(value) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
 }
 
 class LeafletMapAdapter {
