@@ -62,15 +62,21 @@ function setCached(key, value) {
 }
 
 function parseCoordPair(value, name) {
-  if (!value) throw new Error(`${name} is required`);
+  if (!value) throwClientInputError(`${name} is required`);
   const [lng, lat] = value.split(",").map(Number);
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-    throw new Error(`${name} must be "lng,lat"`);
+    throwClientInputError(`${name} must be "lng,lat"`);
   }
   if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
-    throw new Error(`${name} is outside valid coordinate bounds`);
+    throwClientInputError(`${name} is outside valid coordinate bounds`);
   }
   return { lat, lng };
+}
+
+function throwClientInputError(message) {
+  const error = new Error(message);
+  error.status = 400;
+  throw error;
 }
 
 function boundedNumber(value, fallback, min, max) {
@@ -353,10 +359,11 @@ async function handleApi(req, res, url) {
         viaPoints = [parseCoordPair(url.searchParams.get("via"), "via")];
       }
       if (url.pathname === "/api/route-itinerary") {
-        viaPoints = url.searchParams.getAll("via").map((value, index) => parseCoordPair(value, `via ${index + 1}`));
-        if (viaPoints.length < 1 || viaPoints.length > 5) {
+        const viaValues = url.searchParams.getAll("via");
+        if (viaValues.length < 1 || viaValues.length > 5) {
           return sendError(res, 400, "Itinerary routes require 1 to 5 stops");
         }
+        viaPoints = viaValues.map((value, index) => parseCoordPair(value, `via ${index + 1}`));
       }
       const provider = mapProviderFrom(url);
       const route = provider === "google"

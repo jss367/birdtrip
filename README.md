@@ -42,4 +42,6 @@ Live bird data uses the eBird API. Either:
 - paste an eBird API token into the app, or
 - start the server with `EBIRD_API_KEY=... npm start`.
 
+You can also import an eBird or iNaturalist CSV/TSV life list in the app. Imported common names, scientific names, and eBird species codes stay in the browser and are used to boost likely lifers in ranked stops.
+
 OpenStreetMap mode uses public Nominatim and OSRM demo endpoints for geocoding and routing. That is fine for local experimentation, but a production deployment should use services with explicit quotas.
