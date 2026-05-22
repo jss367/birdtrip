@@ -152,6 +152,22 @@
             <span>Target species</span>
             <textarea id="targets" name="targets" rows="4" placeholder="One common name per line"></textarea>
           </label>
+          <div class="life-list-import">
+            <div>
+              <span>Life list</span>
+              <small id="lifeListStatus" class="field-hint">Import an eBird or iNaturalist CSV to boost likely lifers.</small>
+            </div>
+            <div class="file-actions">
+              <label class="file-button">
+                <input id="lifeListInput" name="lifeListInput" type="file" accept=".csv,.tsv,.txt,text/csv,text/tab-separated-values">
+                <i data-lucide="upload"></i>
+                Import
+              </label>
+              <button type="button" id="clearLifeListButton" title="Clear imported life list" aria-label="Clear imported life list">
+                <i data-lucide="trash-2"></i>
+              </button>
+            </div>
+          </div>
         </section>
 
         <div class="actions">
@@ -192,6 +208,10 @@
           <small>Target Species</small>
           <span id="targetCount">0</span>
         </div>
+        <div class="summary-tile tile-lifers">
+          <small>Potential Lifers</small>
+          <span id="liferCount">-</span>
+        </div>
         <div class="summary-tile tile-notable">
           <small>Notable Birds</small>
           <span id="notableCount">-</span>
@@ -220,6 +240,7 @@
         <div id="map"></div>
         <div class="map-glass" aria-hidden="true">
           <span><b class="legend-dot target"></b> Target species</span>
+          <span><b class="legend-dot lifer"></b> Likely lifer</span>
           <span><b class="legend-dot notable"></b> Notable birds</span>
           <span><b class="legend-dot hotspot"></b> Ranked hotspot</span>
           <span><b class="legend-line route"></b> Route corridor</span>
@@ -235,6 +256,7 @@
           <div class="legend">
             <span><b class="tier high"></b>Top hotspot</span>
             <span><b class="tier mid"></b>Notable birds</span>
+            <span><b class="tier lifer"></b>Likely lifer</span>
             <span><b class="tier low"></b>Target match</span>
           </div>
         </div>
