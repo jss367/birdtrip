@@ -1126,11 +1126,11 @@ function observationFreshnessWeight(obsDt, recentDays) {
   if (!observedAt) return 0.5;
   const today = new Date();
   const observedDay = new Date(observedAt);
-  const todayUtcMidnight = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
+  const todayUtcMidnight = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate());
   const observedUtcMidnight = Date.UTC(
-    observedDay.getUTCFullYear(),
-    observedDay.getUTCMonth(),
-    observedDay.getUTCDate()
+    observedDay.getFullYear(),
+    observedDay.getMonth(),
+    observedDay.getDate()
   );
   const ageDays = Math.max(0, Math.floor((todayUtcMidnight - observedUtcMidnight) / 86400000));
   if (ageDays <= 1) return 1;
