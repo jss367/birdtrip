@@ -518,6 +518,7 @@ function restoreTripState(trip) {
   state.origin = savedState.origin || state.route?.origin || null;
   state.destination = savedState.destination || state.route?.destination || null;
   state.areaCenter = savedState.areaCenter || null;
+  state.comparisonIds = [];
   state.pinnedIds = [];
   state.itinerary = null;
   state.itineraryRequestId += 1;
@@ -547,6 +548,8 @@ function restoreTripState(trip) {
     els.resultContext.textContent = state.routeName ? `${state.routeName}; no saved stops.` : "No route searched yet.";
   }
 
+  renderComparison();
+  renderItineraryBuilder();
   renderWarnings();
   renderReport();
   renderInsights();
