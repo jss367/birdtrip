@@ -545,6 +545,7 @@ function restoreTripState(trip) {
     els.candidateCount.textContent = "-";
     els.hotspotCount.textContent = "-";
     els.notableCount.textContent = "-";
+    els.liferCount.textContent = state.lifeList.species.size ? "0" : "-";
     els.resultContext.textContent = state.routeName ? `${state.routeName}; no saved stops.` : "No route searched yet.";
   }
 
