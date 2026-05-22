@@ -191,11 +191,11 @@
             <i data-lucide="folder-open"></i>
             Load
           </button>
-          <button type="button" id="deleteTripButton" title="Delete saved trip">
+          <button type="button" id="deleteTripButton" title="Delete saved trip" aria-label="Delete saved trip">
             <i data-lucide="trash-2"></i>
           </button>
         </div>
-        <small class="field-hint saved-trips-status" id="savedTripsStatus">Trips stay in this browser.</small>
+        <small class="field-hint saved-trips-status" id="savedTripsStatus" role="status" aria-live="polite" aria-atomic="true">Trips stay in this browser.</small>
       </section>
 
       <section class="status-panel" aria-live="polite">

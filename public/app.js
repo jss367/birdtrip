@@ -255,9 +255,8 @@ function saveCurrentTrip() {
   }
 
   renderReport();
-  const selectedTrip = currentSavedTrip();
   const matchingTrip = state.savedTrips.find((trip) => trip.name.toLowerCase() === name.toLowerCase());
-  const id = matchingTrip?.id || selectedTrip?.id || createTripId();
+  const id = matchingTrip?.id || createTripId();
   const trip = {
     id,
     name,
@@ -289,18 +288,24 @@ async function loadSelectedTrip() {
   const trip = currentSavedTrip();
   if (!trip) return;
 
-  applyTripSettings(trip.settings || {});
-  savePreferences();
-  updateSetupStatus();
-  updateInputSummaries();
-  clearFieldErrors();
-  clearWarning();
-  await setMapProvider(trip.settings?.mapProvider || state.provider, { persist: false, preserveData: false });
-  restoreTripState(trip);
-  els.tripName.value = trip.name;
-  renderSavedTrips(trip.id);
-  updateSavedTripControls(`Loaded ${trip.name}.`);
-  setStatus("Trip loaded", `${trip.name} restored from this browser.`);
+  try {
+    applyTripSettings(trip.settings || {});
+    savePreferences();
+    updateSetupStatus();
+    updateInputSummaries();
+    clearFieldErrors();
+    clearWarning();
+    await setMapProvider(trip.settings?.mapProvider || state.provider, { persist: false, preserveData: false });
+    restoreTripState(trip);
+    els.tripName.value = trip.name;
+    renderSavedTrips(trip.id);
+    updateSavedTripControls(`Loaded ${trip.name}.`);
+    setStatus("Trip loaded", `${trip.name} restored from this browser.`);
+  } catch (error) {
+    console.error(error);
+    updateSavedTripControls(`Could not load ${trip.name}.`);
+    setStatus("Load failed", error.message || "Saved trip could not be restored.");
+  }
 }
 
 function deleteSelectedTrip() {
@@ -363,7 +368,9 @@ function restoreTripState(trip) {
   const savedState = trip.state || {};
   state.routeName = savedState.routeName || "";
   state.route = savedState.route || null;
-  state.results = Array.isArray(savedState.results) ? savedState.results.map(hydrateCandidate) : [];
+  state.results = Array.isArray(savedState.results)
+    ? savedState.results.filter(isObjectRecord).map(hydrateCandidate)
+    : [];
   state.selectedId = savedState.selectedId || null;
   state.warnings = Array.isArray(savedState.warnings) ? savedState.warnings : [];
   state.params = savedState.params ? { ...savedState.params, token: els.apiToken.value.trim() } : null;
@@ -400,8 +407,12 @@ function restoreTripState(trip) {
 }
 
 function hydrateCandidate(candidate) {
-  const observations = Array.isArray(candidate.observations) ? candidate.observations : [];
-  const notable = Array.isArray(candidate.notable) ? candidate.notable : [];
+  const observations = Array.isArray(candidate.observations)
+    ? candidate.observations.filter(isObjectRecord)
+    : [];
+  const notable = Array.isArray(candidate.notable)
+    ? candidate.notable.filter(isObjectRecord)
+    : [];
   const species = new Map();
   const seen = new Set();
 
@@ -431,6 +442,10 @@ function hydrateCandidate(candidate) {
     },
     score: Number.isFinite(candidate.score) ? candidate.score : 0
   };
+}
+
+function isObjectRecord(value) {
+  return Boolean(value && typeof value === "object");
 }
 
 function restoreSelectedStop() {
