@@ -4,6 +4,7 @@ const state = {
   routeName: "",
   results: [],
   selectedId: null,
+  comparisonIds: [],
   warnings: [],
   params: null,
   origin: null,
@@ -55,6 +56,10 @@ const els = {
   tripPlanSummary: document.querySelector("#tripPlanSummary"),
   targetSpeciesSummary: document.querySelector("#targetSpeciesSummary"),
   sightingSummary: document.querySelector("#sightingSummary"),
+  comparisonPanel: document.querySelector("#comparisonPanel"),
+  comparisonSummary: document.querySelector("#comparisonSummary"),
+  comparisonContent: document.querySelector("#comparisonContent"),
+  clearComparisonButton: document.querySelector("#clearComparisonButton"),
   resultsList: document.querySelector("#resultsList"),
   resultTemplate: document.querySelector("#resultTemplate"),
   detailsPanel: document.querySelector("#detailsPanel"),
@@ -119,6 +124,7 @@ function init() {
     renderReport();
     window.print();
   });
+  els.clearComparisonButton.addEventListener("click", clearComparison);
   window.addEventListener("beforeprint", renderReport);
   els.closeDetails.addEventListener("click", () => {
     els.detailsPanel.hidden = true;
@@ -311,6 +317,7 @@ function clearResults() {
   state.results = [];
   state.route = null;
   state.selectedId = null;
+  state.comparisonIds = [];
   state.params = null;
   state.warnings = [];
   if (state.mapAdapter) state.mapAdapter.clear();
@@ -326,6 +333,7 @@ function clearResults() {
   els.candidateCount.textContent = "-";
   updateInputSummaries();
   renderInsights();
+  renderComparison();
   els.detailsPanel.hidden = true;
   setStatus("Ready", "Enter a route and run a search.");
   if (window.lucide) window.lucide.createIcons();
@@ -467,6 +475,7 @@ function parseTargetsInput() {
 function clearSearchArtifacts() {
   state.results = [];
   state.selectedId = null;
+  state.comparisonIds = [];
   state.warnings = [];
   state.route = null;
   state.routeName = "";
@@ -483,6 +492,7 @@ function clearSearchArtifacts() {
   els.hotspotCount.textContent = "-";
   els.candidateCount.textContent = "-";
   renderInsights();
+  renderComparison();
   if (window.lucide) window.lucide.createIcons();
 }
 
@@ -492,6 +502,7 @@ function setBusy(isBusy) {
     els.quickStartButton,
     els.downloadReportButton,
     els.settingsButton,
+    els.clearComparisonButton,
     els.modalSampleButton,
     els.modalExploreButton
   ];
@@ -843,9 +854,17 @@ function renderResults() {
     const mainButton = node.querySelector(".stop-main");
     mainButton.setAttribute("aria-label", `View ${candidate.name}`);
     mainButton.addEventListener("click", () => selectCandidate(candidate.id));
+    const compareButton = node.querySelector(".compare-toggle");
+    const isCompared = state.comparisonIds.includes(candidate.id);
+    compareButton.classList.toggle("is-active", isCompared);
+    compareButton.setAttribute("aria-pressed", String(isCompared));
+    compareButton.setAttribute("aria-label", `${isCompared ? "Remove" : "Add"} ${candidate.name} ${isCompared ? "from" : "to"} comparison`);
+    compareButton.querySelector("span").textContent = isCompared ? "Compared" : "Compare";
+    compareButton.addEventListener("click", () => toggleComparison(candidate.id));
     els.resultsList.appendChild(node);
   });
 
+  renderComparison();
   if (window.lucide) window.lucide.createIcons();
 }
 
@@ -928,6 +947,159 @@ function updateSelectedCard() {
   });
 }
 
+function toggleComparison(id) {
+  const candidate = state.results.find((item) => item.id === id);
+  if (!candidate) return;
+  if (state.comparisonIds.includes(id)) {
+    state.comparisonIds = state.comparisonIds.filter((item) => item !== id);
+  } else {
+    state.comparisonIds = [...state.comparisonIds, id].slice(-4);
+  }
+  syncComparisonButtons();
+  renderComparison();
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function clearComparison() {
+  state.comparisonIds = [];
+  syncComparisonButtons();
+  renderComparison();
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function syncComparisonButtons() {
+  els.resultsList.querySelectorAll(".stop-card").forEach((card) => {
+    const candidate = state.results.find((item) => item.id === card.dataset.id);
+    const button = card.querySelector(".compare-toggle");
+    if (!candidate || !button) return;
+    const isCompared = state.comparisonIds.includes(candidate.id);
+    button.classList.toggle("is-active", isCompared);
+    button.setAttribute("aria-pressed", String(isCompared));
+    button.setAttribute("aria-label", `${isCompared ? "Remove" : "Add"} ${candidate.name} ${isCompared ? "from" : "to"} comparison`);
+    const label = button.querySelector("span");
+    if (label) label.textContent = isCompared ? "Compared" : "Compare";
+  });
+}
+
+function renderComparison() {
+  state.comparisonIds = state.comparisonIds.filter((id) => state.results.some((candidate) => candidate.id === id));
+  if (!state.results.length) {
+    els.comparisonPanel.hidden = true;
+    els.comparisonContent.innerHTML = "";
+    return;
+  }
+
+  els.comparisonPanel.hidden = false;
+  const compared = state.comparisonIds
+    .map((id) => state.results.find((candidate) => candidate.id === id))
+    .filter(Boolean);
+
+  els.comparisonSummary.textContent = compared.length
+    ? `${compared.length} selected; add up to ${Math.max(0, 4 - compared.length)} more.`
+    : "Select stops from the ranked list to compare route cost and birding value.";
+
+  if (!compared.length) {
+    els.comparisonContent.innerHTML = `
+      <div class="comparison-empty">
+        <i data-lucide="columns-3"></i>
+        <p>Choose Compare on any ranked stop to build a side-by-side view.</p>
+      </div>
+    `;
+    return;
+  }
+
+  const gridTemplate = `minmax(128px, 0.72fr) repeat(${compared.length}, minmax(190px, 1fr))`;
+  els.comparisonContent.innerHTML = `
+    <div class="comparison-table" style="grid-template-columns: ${gridTemplate}">
+      <div class="comparison-label comparison-sticky">Metric</div>
+      ${compared.map((candidate) => `
+        <div class="comparison-stop comparison-sticky">
+          <b>${escapeHtml(candidate.name)}</b>
+          <button type="button" class="comparison-remove" data-id="${escapeHtml(candidate.id)}" title="Remove ${escapeHtml(candidate.name)} from comparison">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+      `).join("")}
+      ${comparisonRow("Detour", compared.map(compareDetourCell))}
+      ${comparisonRow("Species Count", compared.map((candidate) => `${candidate.species.size} species<br><small>${candidate.observations.length} records</small>`))}
+      ${comparisonRow("Notables", compared.map(compareNotablesCell))}
+      ${comparisonRow("Targets", compared.map(compareTargetsCell))}
+      ${comparisonRow("Observation Freshness", compared.map(compareFreshnessCell))}
+      ${comparisonRow("Score Breakdown", compared.map(compareScoreCell))}
+    </div>
+  `;
+
+  els.comparisonContent.querySelectorAll(".comparison-remove").forEach((button) => {
+    button.addEventListener("click", () => toggleComparison(button.dataset.id));
+  });
+}
+
+function comparisonRow(label, cells) {
+  return `
+    <div class="comparison-label">${escapeHtml(label)}</div>
+    ${cells.map((cell) => `<div class="comparison-cell">${cell}</div>`).join("")}
+  `;
+}
+
+function compareDetourCell(candidate) {
+  return `
+    <b>+${Math.round(candidate.addedMinutes)} min</b>
+    <small>+${candidate.addedMiles.toFixed(1)} mi detour</small>
+    <small>~${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi off route</small>
+  `;
+}
+
+function compareNotablesCell(candidate) {
+  const notableNames = uniqueObservationNames(candidate.notable).slice(0, 4);
+  return `
+    <b>${uniqueNotableCount(candidate)} notable</b>
+    <small>${notableNames.length ? notableNames.map(escapeHtml).join(", ") : "No notable reports loaded"}</small>
+  `;
+}
+
+function compareTargetsCell(candidate) {
+  const targets = candidate.targetMatches
+    .map((obs) => obs.comName || obs.sciName)
+    .filter(Boolean)
+    .slice(0, 4);
+  return `
+    <b>${candidate.targetMatches.length} targets</b>
+    <small>${targets.length ? targets.map(escapeHtml).join(", ") : "No target matches"}</small>
+  `;
+}
+
+function compareFreshnessCell(candidate) {
+  const latest = latestObservationDate(candidate);
+  return `
+    <b>${escapeHtml(formatFreshness(latest))}</b>
+    <small>${latest ? escapeHtml(latest) : "No dated observations"}</small>
+  `;
+}
+
+function compareScoreCell(candidate) {
+  return `
+    <b>${candidate.score} total</b>
+    <div class="comparison-score">
+      ${compactScorePart("Species", candidate.scoreParts.species, 45)}
+      ${compactScorePart("Activity", candidate.scoreParts.activity, 15)}
+      ${compactScorePart("Notable", candidate.scoreParts.notable, 20)}
+      ${compactScorePart("Targets", candidate.scoreParts.targets, 15)}
+      ${compactScorePart("Route", candidate.scoreParts.practicality, 20)}
+    </div>
+  `;
+}
+
+function compactScorePart(label, value, max) {
+  const safeValue = Number.isFinite(value) ? value : 0;
+  const width = Math.max(0, Math.min(100, safeValue / max * 100));
+  return `
+    <span>
+      <small>${escapeHtml(label)} ${safeValue.toFixed(1)}/${max}</small>
+      <i><i style="width: ${width.toFixed(0)}%"></i></i>
+    </span>
+  `;
+}
+
 function scoreRow(label, value, max) {
   const safeValue = Number.isFinite(value) ? value : 0;
   const width = Math.max(0, Math.min(100, safeValue / max * 100));
@@ -968,6 +1140,34 @@ function isHotspot(candidate) {
 
 function uniqueNotableCount(candidate) {
   return new Set(candidate.notable.map((obs) => normalizeName(obs.comName || obs.sciName))).size;
+}
+
+function uniqueObservationNames(observations) {
+  const names = new Map();
+  for (const obs of observations) {
+    const name = obs.comName || obs.sciName;
+    const key = normalizeName(name);
+    if (key && !names.has(key)) names.set(key, name);
+  }
+  return Array.from(names.values());
+}
+
+function latestObservationDate(candidate) {
+  return candidate.observations
+    .map((obs) => obs.obsDt || "")
+    .filter(Boolean)
+    .sort()
+    .at(-1) || "";
+}
+
+function formatFreshness(obsDt) {
+  if (!obsDt) return "No date";
+  const parsed = new Date(obsDt.replace(" ", "T"));
+  if (!Number.isFinite(parsed.getTime())) return obsDt;
+  const days = Math.max(0, Math.floor((Date.now() - parsed.getTime()) / 86400000));
+  if (days === 0) return "Today";
+  if (days === 1) return "1 day ago";
+  return `${days} days ago`;
 }
 
 function renderInsights() {
