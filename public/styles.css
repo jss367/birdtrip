@@ -1336,6 +1336,32 @@ select {
   box-shadow: 0 10px 20px rgba(31, 122, 84, 0.2);
 }
 
+.stop-reason {
+  display: grid;
+  gap: 4px;
+  padding: 0 13px 12px 66px;
+  margin-top: -3px;
+}
+
+.stop-reason span,
+.reason-line h4 {
+  color: var(--accent-strong);
+  font-size: 0.68rem;
+  font-weight: 900;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.stop-reason p,
+.reason-line p,
+.report .report-stop .report-stop-reason {
+  margin: 0;
+  color: var(--muted-strong);
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
 .stop-metrics {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -1460,6 +1486,7 @@ select {
 
 .detail-grid div,
 .score-line,
+.reason-line,
 .species-list,
 .warning {
   border: 1px solid var(--line);
@@ -1488,7 +1515,15 @@ select {
   margin: 10px 0;
 }
 
+.reason-line {
+  padding: 11px;
+  margin: 10px 0;
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+}
+
 .score-line h4,
+.reason-line h4,
 .species-list h4 {
   margin: 0 0 9px;
 }
