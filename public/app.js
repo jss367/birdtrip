@@ -25,7 +25,7 @@ const state = {
   },
   config: {
     defaultMapProvider: "osm",
-    ebirdConfigured: false,
+    ebirdConfigured: null,
     providers: {
       osm: { enabled: true },
       google: { enabled: false, browserKey: "", serverConfigured: false }
@@ -171,7 +171,7 @@ function init() {
     els.origin.focus();
   });
   els.modalExploreButton.addEventListener("click", () => {
-    const needsToken = !hasEbirdAccess();
+    const needsToken = !shouldAttemptEbirdSearch();
     setStatus(
       needsToken ? "Explore without setup" : "Ready",
       needsToken
@@ -922,7 +922,7 @@ async function runRouteSearch(params) {
   renderRoute(route.geometry.coordinates);
   updateRouteSummary(route);
 
-  if (!hasEbirdAccess()) {
+  if (!shouldAttemptEbirdSearch()) {
     setStatus("Token needed", "Route loaded. Add an eBird token or configure EBIRD_API_KEY to rank live birding stops.");
     els.resultContext.textContent = "Route loaded, but live bird data needs eBird access.";
     els.resultsList.className = "results-list empty";
@@ -979,7 +979,7 @@ async function runAreaSearch(params) {
   renderArea(center, params.radiusKm);
   updateAreaSummary(params.radiusKm);
 
-  if (!hasEbirdAccess()) {
+  if (!shouldAttemptEbirdSearch()) {
     setStatus("Token needed", "Area loaded. Add an eBird token or configure EBIRD_API_KEY to rank live birding stops.");
     els.resultContext.textContent = "Area loaded, but live bird data needs eBird access.";
     els.resultsList.className = "results-list empty";
@@ -1053,18 +1053,25 @@ function closeQuickStart() {
 
 function updateSetupStatus() {
   const hasAccess = hasEbirdAccess();
-  els.setupStatus.classList.remove("setup-checking");
+  const isChecking = state.config.ebirdConfigured === null && !els.apiToken.value.trim();
+  els.setupStatus.classList.toggle("setup-checking", isChecking);
   els.setupStatus.classList.toggle("setup-ready", hasAccess);
-  els.setupStatus.classList.toggle("setup-needed", !hasAccess);
-  els.setupStatus.innerHTML = hasAccess
-    ? '<i data-lucide="check-circle-2"></i>Ready to Search'
-    : '<i data-lucide="circle-alert"></i>Setup Required';
+  els.setupStatus.classList.toggle("setup-needed", !isChecking && !hasAccess);
+  els.setupStatus.innerHTML = isChecking
+    ? '<i data-lucide="loader-circle"></i>Checking Setup'
+    : hasAccess
+      ? '<i data-lucide="check-circle-2"></i>Ready to Search'
+      : '<i data-lucide="circle-alert"></i>Setup Required';
   renderInsights();
   if (window.lucide) window.lucide.createIcons();
 }
 
 function hasEbirdAccess() {
-  return Boolean(els.apiToken.value.trim() || state.config.ebirdConfigured);
+  return Boolean(els.apiToken.value.trim() || state.config.ebirdConfigured === true);
+}
+
+function shouldAttemptEbirdSearch() {
+  return hasEbirdAccess() || state.config.ebirdConfigured === null;
 }
 
 function updateInputSummaries() {
@@ -2402,7 +2409,7 @@ function observationAliases(obs) {
 function renderInsights() {
   const liveDetour = clamp(Number(els.maxDetour.value || 60), 0, 240);
   const liveTargets = parseTargetsInput();
-  const hasAccess = hasEbirdAccess();
+  const canAttemptSearch = shouldAttemptEbirdSearch();
   const lifeListCount = state.lifeList.displayNames.length || state.lifeList.species.size;
   if (state.mode === "area") {
     els.tripPlanSummary.textContent = state.areaCenter
@@ -2436,7 +2443,7 @@ function renderInsights() {
     const liferCount = uniqueLiferCount(state.results);
     els.sightingSummary.textContent = `${speciesCount} recent species across ${state.results.length} ranked stops, including ${notableCount} notable species${state.lifeList.species.size ? ` and ${liferCount} likely lifers` : ""}.`;
   } else {
-    const searchedWithoutToken = state.mode === "area" ? state.areaCenter && !hasAccess : state.route && !hasAccess;
+    const searchedWithoutToken = state.mode === "area" ? state.areaCenter && !canAttemptSearch : state.route && !canAttemptSearch;
     els.sightingSummary.textContent = searchedWithoutToken
       ? `${state.mode === "area" ? "Area" : "Route"} is ready. Add an eBird token to load recent sightings and notable reports.`
       : "Recent eBird activity and notable reports appear after search.";
