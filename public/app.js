@@ -17,6 +17,7 @@ const state = {
   destination: null,
   areaCenter: null,
   provider: "osm",
+  userSelectedProvider: false,
   lifeList: {
     source: "",
     fileName: "",
@@ -145,7 +146,11 @@ function init() {
   updateSetupStatus();
   updateInputSummaries();
   renderSavedTrips();
-  state.configReady = loadAppConfig();
+  const configReady = loadAppConfig();
+  state.configReady = configReady;
+  configReady.then(() => {
+    if (!state.configReady) reapplyStartupProvider(preferredProvider);
+  });
   initializeStartupMap(preferredProvider, sharedSearch);
 
   els.form.addEventListener("submit", (event) => {
@@ -165,7 +170,10 @@ function init() {
     updateSetupStatus();
   });
   els.apiToken.addEventListener("input", updateSetupStatus);
-  els.mapProvider.addEventListener("change", () => setMapProvider(providerFromInput()));
+  els.mapProvider.addEventListener("change", () => {
+    state.userSelectedProvider = true;
+    setMapProvider(providerFromInput());
+  });
   els.targets.addEventListener("input", updateInputSummaries);
   els.lifeListInput.addEventListener("change", handleLifeListFile);
   els.clearLifeListButton.addEventListener("click", clearLifeList);
@@ -247,6 +255,18 @@ async function initializeStartupMap(preferredProvider, sharedSearch) {
   if (sharedSearch?.autoRun && hasRunnableSearchInputs()) {
     setStatus("Refreshing shared trip", "Loading the route and latest birding stops from this link.");
     await runSearch({ persistPreferences: false });
+  }
+}
+
+async function reapplyStartupProvider(preferredProvider) {
+  if (state.userSelectedProvider) return;
+  const nextProvider = resolveProvider(preferredProvider || state.config.defaultMapProvider || providerFromInput());
+  if (state.provider === nextProvider) return;
+  try {
+    await setMapProvider(nextProvider, { persist: false });
+  } catch (error) {
+    addWarning(`Map could not be initialized: ${error.message}. Searches can continue with the current setup.`);
+    renderWarnings();
   }
 }
 
