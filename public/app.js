@@ -2913,23 +2913,42 @@ function formatMiles(value) {
 
 function candidateLinks(candidate) {
   const provider = state.params?.mapProvider || state.provider;
-  const mapsUrl = provider === "google"
-    ? `https://www.google.com/maps/dir/?api=1&destination=${candidate.lat},${candidate.lng}`
-    : osmDirectionsUrl(candidate);
   return {
     ebirdUrl: candidate.locId
       ? `https://ebird.org/hotspot/${encodeURIComponent(candidate.locId)}`
       : `https://ebird.org/map?lat=${candidate.lat}&lng=${candidate.lng}`,
-    mapsUrl
+    mapsUrl: directionsUrlForPoints([state.origin, candidate].filter(Boolean), provider)
   };
 }
 
-function osmDirectionsUrl(candidate) {
+function directionsUrlForPoints(points, provider = state.params?.mapProvider || state.provider) {
+  const coords = points
+    .filter((point) => Number.isFinite(point?.lat) && Number.isFinite(point?.lng))
+    .map((point) => ({ lat: point.lat, lng: point.lng }));
+  if (!coords.length) return "";
+  if (provider === "google") {
+    const url = new URL("https://www.google.com/maps/dir/");
+    url.searchParams.set("api", "1");
+    if (coords.length > 1) {
+      const [origin, ...rest] = coords;
+      const destination = rest.at(-1);
+      const waypoints = rest.slice(0, -1);
+      url.searchParams.set("origin", `${origin.lat},${origin.lng}`);
+      url.searchParams.set("destination", `${destination.lat},${destination.lng}`);
+      if (waypoints.length) {
+        url.searchParams.set("waypoints", waypoints.map((point) => `${point.lat},${point.lng}`).join("|"));
+      }
+    } else {
+      url.searchParams.set("destination", `${coords[0].lat},${coords[0].lng}`);
+    }
+    return url.toString();
+  }
+
   const url = new URL("https://www.openstreetmap.org/directions");
-  if (state.origin) {
-    url.searchParams.set("route", `${state.origin.lat},${state.origin.lng};${candidate.lat},${candidate.lng}`);
+  if (coords.length > 1) {
+    url.searchParams.set("route", coords.map((point) => `${point.lat},${point.lng}`).join(";"));
   } else {
-    url.searchParams.set("to", `${candidate.lat},${candidate.lng}`);
+    url.searchParams.set("to", `${coords[0].lat},${coords[0].lng}`);
   }
   return url.toString();
 }
@@ -2962,6 +2981,236 @@ function uniqueLiferCount(candidates) {
   return seen.size;
 }
 
+function reportOrderedStops(isArea) {
+  return isArea ? state.results : pinnedStops();
+}
+
+function reportDirectionsLink(points, label = "Open directions") {
+  const url = directionsUrlForPoints(points);
+  if (!url) return "";
+  return `<a href="${escapeHtml(url)}">${escapeHtml(label)}</a>`;
+}
+
+function reportCoordinate(candidate) {
+  return `${candidate.lat.toFixed(5)}, ${candidate.lng.toFixed(5)}`;
+}
+
+function reportRoutePoints(stops) {
+  const points = [];
+  if (state.origin) points.push(state.origin);
+  points.push(...stops);
+  if (state.destination) points.push(state.destination);
+  return points;
+}
+
+function buildReportMapMarkup(isArea, orderedStops) {
+  const width = 900;
+  const height = 360;
+  const routeCoordinates = !isArea
+    ? (state.itinerary?.status === "ready" ? state.itinerary.route?.geometry?.coordinates : state.route?.geometry?.coordinates) || []
+    : [];
+  const mapStops = orderedStops.length ? orderedStops : state.results.slice(0, isArea ? 16 : 8);
+  const stopPins = mapStops.slice(0, isArea ? 16 : Math.max(mapStops.length, 8)).map((candidate, index) => ({
+    lat: candidate.lat,
+    lng: candidate.lng,
+    label: String(index + 1),
+    name: candidate.name
+  }));
+  const endpointPins = [
+    state.origin ? { ...state.origin, label: isArea ? "C" : "S", name: isArea ? "Search center" : "Start" } : null,
+    !isArea && state.destination ? { ...state.destination, label: "E", name: "End" } : null
+  ].filter(Boolean);
+  const allPoints = [
+    ...routeCoordinates.map(([lng, lat]) => ({ lat, lng })),
+    ...stopPins,
+    ...endpointPins
+  ].filter((point) => Number.isFinite(point.lat) && Number.isFinite(point.lng));
+
+  if (!allPoints.length) {
+    return `
+      <section class="report-map-card">
+        <h2>Offline map</h2>
+        <p>No coordinates were available for a schematic map.</p>
+      </section>`;
+  }
+
+  let minLat = Math.min(...allPoints.map((point) => point.lat));
+  let maxLat = Math.max(...allPoints.map((point) => point.lat));
+  let minLng = Math.min(...allPoints.map((point) => point.lng));
+  let maxLng = Math.max(...allPoints.map((point) => point.lng));
+  if (minLat === maxLat) {
+    minLat -= 0.05;
+    maxLat += 0.05;
+  }
+  if (minLng === maxLng) {
+    minLng -= 0.05;
+    maxLng += 0.05;
+  }
+
+  const pad = 34;
+  const project = (point) => {
+    const x = pad + ((point.lng - minLng) / (maxLng - minLng)) * (width - pad * 2);
+    const y = pad + ((maxLat - point.lat) / (maxLat - minLat)) * (height - pad * 2);
+    return { x, y };
+  };
+  const routePath = routeCoordinates
+    .map(([lng, lat]) => project({ lat, lng }))
+    .map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`)
+    .join(" ");
+  const centerPoint = isArea && state.areaCenter ? project(state.areaCenter) : null;
+  const stopMarkers = stopPins.map((pin) => {
+    const point = project(pin);
+    return `
+      <g class="report-map-stop">
+        <circle cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="12"></circle>
+        <text x="${point.x.toFixed(1)}" y="${(point.y + 4).toFixed(1)}">${escapeHtml(pin.label)}</text>
+        <title>${escapeHtml(pin.label)}. ${escapeHtml(pin.name)} (${reportCoordinate(pin)})</title>
+      </g>`;
+  }).join("");
+  const endpointMarkers = endpointPins.map((pin) => {
+    const point = project(pin);
+    return `
+      <g class="report-map-endpoint">
+        <rect x="${(point.x - 11).toFixed(1)}" y="${(point.y - 11).toFixed(1)}" width="22" height="22" rx="5"></rect>
+        <text x="${point.x.toFixed(1)}" y="${(point.y + 4).toFixed(1)}">${escapeHtml(pin.label)}</text>
+        <title>${escapeHtml(pin.name)} (${reportCoordinate(pin)})</title>
+      </g>`;
+  }).join("");
+
+  return `
+    <section class="report-map-card">
+      <div class="report-section-heading">
+        <h2>Offline map</h2>
+        ${!isArea ? reportDirectionsLink(reportRoutePoints(orderedStops), "Full route directions") : ""}
+      </div>
+      <svg class="report-map" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(isArea ? "Schematic area map" : "Schematic route map")}">
+        <rect class="report-map-bg" x="0" y="0" width="${width}" height="${height}"></rect>
+        ${isArea && centerPoint ? `<circle class="report-map-radius" cx="${centerPoint.x.toFixed(1)}" cy="${centerPoint.y.toFixed(1)}" r="${Math.min(width, height) * 0.34}"></circle>` : ""}
+        ${routePath ? `<polyline class="report-map-route" points="${routePath}"></polyline>` : ""}
+        ${endpointMarkers}
+        ${stopMarkers}
+      </svg>
+      <p class="report-note">This schematic map is embedded in the packet for offline use. OpenStreetMap, Google Maps, and eBird links require signal when opened.</p>
+    </section>`;
+}
+
+function buildStopOrderBlock(isArea, orderedStops) {
+  if (isArea) {
+    if (!orderedStops.length) return "";
+    return `
+      <h2>Ranked visit order</h2>
+      <ol class="report-stop-order">
+        ${orderedStops.map((candidate) => `
+          <li>
+            <b>${escapeHtml(candidate.name)}</b>
+            <span>${reportCoordinate(candidate)} · ${candidate.score} score · ${candidate.species.size} species</span>
+            ${reportDirectionsLink([candidate], "Map link")}
+          </li>`).join("")}
+      </ol>`;
+  }
+
+  if (!orderedStops.length) {
+    return `
+      <h2>Stop order</h2>
+      <p class="report-note">No stops were pinned before export. Use the ranked stops below as the fallback priority order.</p>`;
+  }
+
+  const legs = [];
+  if (state.origin) {
+    legs.push({ label: "Start", name: state.origin.name || state.params.origin, point: state.origin, directionsFrom: null });
+  }
+  orderedStops.forEach((candidate, index) => {
+    const previous = index === 0 ? state.origin : orderedStops[index - 1];
+    legs.push({
+      label: `Stop ${index + 1}`,
+      name: candidate.name,
+      point: candidate,
+      directionsFrom: previous ? [previous, candidate] : [candidate],
+      meta: `+${Math.round(candidate.addedMinutes)} min single-stop detour · ${candidate.species.size} species`
+    });
+  });
+  if (state.destination) {
+    const previous = orderedStops.at(-1) || state.origin;
+    legs.push({
+      label: "End",
+      name: state.destination.name || state.params.destination,
+      point: state.destination,
+      directionsFrom: previous ? [previous, state.destination] : [state.destination]
+    });
+  }
+
+  return `
+    <h2>Stop order</h2>
+    <ol class="report-stop-order">
+      ${legs.map((leg) => `
+        <li>
+          <b>${escapeHtml(leg.label)}: ${escapeHtml(leg.name || "")}</b>
+          <span>${reportCoordinate(leg.point)}${leg.meta ? ` · ${escapeHtml(leg.meta)}` : ""}</span>
+          ${leg.directionsFrom ? reportDirectionsLink(leg.directionsFrom, "Leg directions") : ""}
+        </li>`).join("")}
+    </ol>`;
+}
+
+function buildTargetCoverageBlock() {
+  const targets = state.params?.targets || [];
+  if (!targets.length) {
+    return `
+      <h2>Species targets</h2>
+      <p class="report-note">No target species were entered for this search. Use likely lifers, notable birds, and recent species lists as field priorities.</p>`;
+  }
+
+  const matchedTargets = targets.map((target) => {
+    const matches = [];
+    for (const [index, candidate] of state.results.entries()) {
+      const obs = candidate.targetMatches.find((item) => normalizeName(item.comName || item.sciName) === target);
+      if (obs) matches.push({ candidate, index, obs });
+    }
+    return {
+      target,
+      display: targetDisplayName(target, matches),
+      matches
+    };
+  });
+
+  return `
+    <h2>Species targets</h2>
+    <ul class="report-target-list">
+      ${matchedTargets.map((entry) => `
+        <li>
+          <b>${escapeHtml(entry.display)}</b>
+          ${entry.matches.length
+            ? `<span>${entry.matches.slice(0, 4).map(({ candidate, index, obs }) => `#${index + 1} ${escapeHtml(candidate.name)}${obs.obsDt ? ` (${escapeHtml(obs.obsDt)})` : ""}`).join("; ")}</span>`
+            : "<span>No match in ranked stops for the selected date window.</span>"}
+        </li>`).join("")}
+    </ul>`;
+}
+
+function targetDisplayName(target, matches) {
+  const observedName = matches.find(({ obs }) => obs.comName || obs.sciName)?.obs;
+  if (observedName) return observedName.comName || observedName.sciName;
+  return target.split(" ").map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
+}
+
+function buildFallbackNotesBlock(isArea, orderedStops) {
+  const notes = [
+    "Coordinates, stop order, species lists, and the schematic map are saved in this packet for no-signal use.",
+    "External map, directions, and eBird links are included for reconnecting later; if they do not load, navigate by the listed coordinates.",
+    "Recent sightings are a planning snapshot. Check access signs, closures, daylight, weather, and safety before birding a stop."
+  ];
+  if (!isArea && !orderedStops.length) {
+    notes.push("No itinerary stops were pinned, so the ranked stop list is the fallback order.");
+  }
+  if (state.warnings.length) {
+    notes.push(`Search warnings: ${state.warnings.join(" ")}`);
+  }
+
+  return `
+    <h2>Fallback notes</h2>
+    <ul class="report-fallback-list">
+      ${notes.map((note) => `<li>${escapeHtml(note)}</li>`).join("")}
+    </ul>`;
+}
+
 function renderReport() {
   if (!els.report) return;
   if (!hasReportableSearch()) {
@@ -2976,6 +3225,7 @@ function buildReportMarkup() {
   const route = state.route;
   const isArea = p.mode === "area";
   const generated = new Date().toLocaleString();
+  const orderedStops = reportOrderedStops(isArea);
   const param = (label, value, options = {}) => {
     const renderedValue = options.raw ? String(value) : escapeHtml(String(value));
     return `<div><dt>${escapeHtml(label)}</dt><dd>${renderedValue}</dd></div>`;
@@ -2995,12 +3245,14 @@ function buildReportMarkup() {
       ${param("Life list", state.lifeList.species.size ? `${state.lifeList.displayNames.length || state.lifeList.species.size} species from ${state.lifeList.fileName || state.lifeList.source || "import"}` : "none")}
     </dl>`;
 
+  const allRoutePoints = reportRoutePoints(orderedStops);
   const summaryBlock = isArea ? `
     <h2>Area summary</h2>
     <dl class="report-route">
       ${param("Location", state.routeName || p.origin)}
       ${param("Radius", `${p.radiusKm} km`)}
       ${param("Ranked stops", state.results.length)}
+      ${state.areaCenter ? param("Center coordinates", `${state.areaCenter.lat.toFixed(5)}, ${state.areaCenter.lng.toFixed(5)}`) : ""}
     </dl>` : `
     <h2>Route summary</h2>
     <dl class="report-route">
@@ -3010,12 +3262,8 @@ function buildReportMarkup() {
       ${param("Ranked stops", state.results.length)}
       ${param("Pinned stops", state.pinnedIds.length)}
       ${state.itinerary?.status === "ready" ? param("Pinned route added", `+${formatMinutes(state.itinerary.addedMinutes)} / +${state.itinerary.addedMiles.toFixed(1)} mi`) : ""}
+      ${param("Full directions", reportDirectionsLink(allRoutePoints, "Open route"), { raw: true })}
     </dl>`;
-
-  const itineraryStops = pinnedStops();
-  const itineraryBlock = itineraryStops.length
-    ? `<h2>Pinned itinerary</h2><ol>${itineraryStops.map((candidate) => `<li>${escapeHtml(candidate.name)}</li>`).join("")}</ol>`
-    : "";
 
   const stopsBlock = state.results.length
     ? `<h2>Ranked stops</h2>${state.results.map((candidate, index) => {
@@ -3041,8 +3289,8 @@ function buildReportMarkup() {
               ${param("Directions", `<a href="${escapeHtml(links.mapsUrl)}">${escapeHtml(links.mapsUrl)}</a>`, { raw: true })}
               ${param("eBird", `<a href="${escapeHtml(links.ebirdUrl)}">${escapeHtml(links.ebirdUrl)}</a>`, { raw: true })}
             </dl>
+            ${candidate.targetMatches.length ? `<h4>Species targets</h4><ul>${candidate.targetMatches.map((obs) => `<li>${escapeHtml(obs.comName || obs.sciName || "")}${obs.obsDt ? ` <small>${escapeHtml(obs.obsDt)}</small>` : ""}</li>`).join("")}</ul>` : ""}
             ${candidate.liferSpecies.length ? `<h4>Likely lifers</h4><ul>${candidate.liferSpecies.slice(0, 20).map((obs) => `<li>${escapeHtml(obs.comName || obs.sciName || "")}</li>`).join("")}</ul>` : ""}
-            ${candidate.targetMatches.length ? `<h4>Target matches</h4><ul>${candidate.targetMatches.map((obs) => `<li>${escapeHtml(obs.comName || obs.sciName || "")}</li>`).join("")}</ul>` : ""}
             ${notable.length ? `<h4>Notable</h4><ul>${notable.map((obs) => `<li>${escapeHtml(obs.comName || obs.sciName || "")} <small>${escapeHtml(obs.obsDt || "")}</small></li>`).join("")}</ul>` : ""}
             <h4>Recent species</h4>
             <ul>${species.map((sp) => `<li>${escapeHtml(sp.name)} <small>×${sp.count}</small></li>`).join("")}</ul>
@@ -3055,7 +3303,10 @@ function buildReportMarkup() {
     <p class="report-sub">${escapeHtml(state.routeName || "")} · Generated ${escapeHtml(generated)}</p>
     ${paramsBlock}
     ${summaryBlock}
-    ${isArea ? "" : itineraryBlock}
+    ${buildReportMapMarkup(isArea, orderedStops)}
+    ${buildStopOrderBlock(isArea, orderedStops)}
+    ${buildTargetCoverageBlock()}
+    ${buildFallbackNotesBlock(isArea, orderedStops)}
     ${stopsBlock}
   `;
 }
@@ -3155,6 +3406,26 @@ a {
   border-bottom: 1px solid var(--line-strong);
 }
 
+.report .report-section-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin: 22px 0 8px;
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.report .report-section-heading h2 {
+  margin: 0;
+  border-bottom: 0;
+}
+
+.report .report-section-heading a {
+  color: #065f46;
+  font-size: 0.85rem;
+  font-weight: 800;
+}
+
 .report .report-params,
 .report .report-route,
 .report .report-stop-route {
@@ -3181,6 +3452,88 @@ a {
 .report dd {
   margin: 1px 0 0;
   font-weight: 700;
+}
+
+.report .report-map-card {
+  break-inside: avoid;
+}
+
+.report .report-map {
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.report .report-map-bg {
+  fill: #eef6f1;
+}
+
+.report .report-map-radius {
+  fill: rgba(59, 130, 246, 0.11);
+  stroke: #3b82f6;
+  stroke-dasharray: 7 6;
+  stroke-width: 2;
+}
+
+.report .report-map-route {
+  fill: none;
+  stroke: #2563eb;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 5;
+}
+
+.report .report-map-stop circle {
+  fill: #065f46;
+  stroke: white;
+  stroke-width: 3;
+}
+
+.report .report-map-endpoint rect {
+  fill: #10201a;
+  stroke: white;
+  stroke-width: 3;
+}
+
+.report .report-map-stop text,
+.report .report-map-endpoint text {
+  fill: white;
+  font-size: 11px;
+  font-weight: 900;
+  text-anchor: middle;
+}
+
+.report .report-note {
+  color: var(--muted-strong);
+  font-size: 0.88rem;
+  margin: 6px 0 0;
+}
+
+.report .report-stop-order,
+.report .report-target-list,
+.report .report-fallback-list {
+  margin: 6px 0 0;
+  padding-left: 22px;
+  font-size: 0.9rem;
+}
+
+.report .report-stop-order li,
+.report .report-target-list li,
+.report .report-fallback-list li {
+  margin: 5px 0;
+}
+
+.report .report-stop-order span,
+.report .report-target-list span {
+  display: block;
+  color: var(--muted-strong);
+}
+
+.report .report-stop-order a {
+  color: #065f46;
+  font-weight: 800;
 }
 
 .report .report-stop {
@@ -3221,6 +3574,10 @@ a {
   .report .report-route,
   .report .report-stop-route {
     grid-template-columns: 1fr;
+  }
+
+  .report .report-section-heading {
+    display: block;
   }
 
   .report .report-stop ul {
