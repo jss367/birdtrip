@@ -2390,6 +2390,7 @@ function renderResults() {
     node.querySelector(".stop-preview").textContent = speciesPreview(candidate);
     node.querySelector(".stop-chips").innerHTML = candidateChips(candidate);
     node.querySelector(".score-pill").textContent = candidate.score;
+    node.querySelector(".stop-reason p").textContent = candidateReasonText(candidate, isArea);
     const detourWrap = node.querySelector(".metric-detour-wrap");
     const offrouteWrap = node.querySelector(".metric-offroute-wrap");
     if (isArea) {
@@ -2468,6 +2469,10 @@ function renderDetails(candidate) {
   els.detailsContent.innerHTML = `
     <h3>${escapeHtml(candidate.name)}</h3>
     <p class="detail-subtitle">${candidate.score} score; ${isArea ? `${offRouteMi} mi from ${escapeHtml(state.routeName)}.` : `+${Math.round(candidate.addedMinutes)} min and +${candidate.addedMiles.toFixed(1)} mi detour.`}</p>
+    <section class="reason-line">
+      <h4>Why This Stop?</h4>
+      <p>${escapeHtml(candidateReasonText(candidate, isArea))}</p>
+    </section>
     <div class="detail-grid">
       <div><b>${candidate.species.size}</b><small>recent species</small></div>
       <div><b>${candidate.observations.length}</b><small>records</small></div>
@@ -2734,6 +2739,40 @@ function speciesPreview(candidate) {
   return names.length ? names.join(", ") : "Recent observations available";
 }
 
+function candidateReasonText(candidate, isArea = state.params?.mode === "area") {
+  const reasons = [];
+  const targetCount = candidate.targetMatches.length;
+  const liferCount = candidate.liferSpecies.length;
+  const notableCount = uniqueNotableCount(candidate);
+
+  if (targetCount) reasons.push(`${targetCount} ${pluralize("target", targetCount)}`);
+  if (liferCount) reasons.push(`${liferCount} likely ${pluralize("lifer", liferCount)}`);
+  if (notableCount === 1) {
+    reasons.push("recent rarity");
+  } else if (notableCount > 1) {
+    reasons.push(`${notableCount} recent rarities`);
+  }
+
+  if (!reasons.length) {
+    reasons.push(`${candidate.species.size} recent ${pluralize("species", candidate.species.size)}`);
+  }
+
+  if (isArea) {
+    reasons.push(`~${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi from center`);
+  } else {
+    const addedMinutes = Math.round(candidate.addedMinutes);
+    const lowImpact = addedMinutes <= 20 || addedMinutes <= Math.round((state.params?.maxDetour || 0) / 2);
+    reasons.push(`${lowImpact ? "only " : ""}+${addedMinutes} min`);
+  }
+
+  return `Best for: ${reasons.join(", ")}`;
+}
+
+function pluralize(noun, count) {
+  if (noun === "species") return "species";
+  return count === 1 ? noun : `${noun}s`;
+}
+
 function candidateChips(candidate) {
   const chips = [];
   if (candidate.targetMatches.length) chips.push(`<span class="stop-chip chip-target">${candidate.targetMatches.length} target</span>`);
@@ -2996,6 +3035,7 @@ function buildReportMarkup() {
               ${candidate.targetMatches.length} targets ·
               ${candidate.liferSpecies.length} likely lifers
             </p>
+            <p class="report-stop-reason">${escapeHtml(candidateReasonText(candidate, isArea))}</p>
             <dl class="report-stop-route">
               ${param("Coordinates", `${candidate.lat.toFixed(5)}, ${candidate.lng.toFixed(5)}`)}
               ${param("Directions", `<a href="${escapeHtml(links.mapsUrl)}">${escapeHtml(links.mapsUrl)}</a>`, { raw: true })}
