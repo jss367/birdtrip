@@ -2322,7 +2322,9 @@ async function recalculateItinerary() {
 }
 
 function renderRouteTradeoff() {
-  const isArea = state.params?.mode === "area";
+  const mode = state.params?.mode || state.mode;
+  const isArea = mode === "area";
+  const maxDetour = currentRouteTradeoffMaxDetour();
   if (!els.routeTradeoffPanel || isArea || !state.route || !state.results.length) {
     if (els.routeTradeoffPanel) els.routeTradeoffPanel.hidden = true;
     if (els.budgetUnlocks) els.budgetUnlocks.innerHTML = "";
@@ -2350,7 +2352,7 @@ function renderRouteTradeoff() {
 
   els.routeTradeoffPanel.hidden = false;
   els.routeTradeoffTitle.textContent = `+${Math.round(best.addedMinutes)}m can route you through ${best.name}`;
-  els.routeTradeoffSummary.textContent = `${state.params.maxDetour}m of flexibility unlocks ${state.results.length} ranked stops with ${stats.speciesCount} recent species${notableText}${targetText}${liferText}.${tenMinuteText}`;
+  els.routeTradeoffSummary.textContent = `${maxDetour}m of flexibility unlocks ${state.results.length} ranked stops with ${stats.speciesCount} recent species${notableText}${targetText}${liferText}.${tenMinuteText}`;
   els.fastestRouteTime.textContent = formatMinutes(directMinutes);
   els.fastestRouteMeta.textContent = `${miles(state.route.distanceMeters).toFixed(0)} mi direct drive`;
   els.birdingRouteTime.textContent = formatMinutes(birdingMinutes);
@@ -2380,6 +2382,7 @@ function setTradeoffButtonState(best) {
 
   const pinned = isPinned(best.id);
   els.pinBirdingRouteButton.disabled = !pinned && state.pinnedIds.length >= 5;
+  els.pinBirdingRouteButton.setAttribute("aria-pressed", String(pinned));
   els.pinBirdingRouteButton.title = pinned
     ? `${best.name} is already pinned`
     : "Pin the best birding option to the itinerary";
@@ -2388,6 +2391,7 @@ function setTradeoffButtonState(best) {
     : '<i data-lucide="pin"></i>Pin Best';
 
   const compared = state.comparisonIds.includes(best.id);
+  els.compareBirdingRouteButton.setAttribute("aria-pressed", String(compared));
   els.compareBirdingRouteButton.innerHTML = compared
     ? '<i data-lucide="columns-3"></i>Compared'
     : '<i data-lucide="columns-3"></i>Compare';
@@ -2402,7 +2406,7 @@ function renderBudgetUnlocks() {
 
   els.budgetUnlocks.innerHTML = steps.map((minutes) => {
     const candidate = bestWithinBudget(minutes);
-    const isCurrent = Math.round(minutes) === Math.round(state.params.maxDetour);
+    const isCurrent = Math.round(minutes) === currentRouteTradeoffMaxDetour();
     if (!candidate) {
       return `
         <div class="budget-unlock is-empty">
@@ -2428,12 +2432,19 @@ function renderBudgetUnlocks() {
 }
 
 function tradeoffBudgetSteps() {
-  const max = Math.round(state.params?.maxDetour || 0);
+  const max = currentRouteTradeoffMaxDetour();
   if (max <= 0) return [];
-  const steps = [10, 20, 30, 45, 60, 90, 120]
-    .filter((minutes) => minutes <= max);
-  if (!steps.includes(max)) steps.push(max);
-  return [...new Set(steps)].sort((a, b) => a - b).slice(0, 6);
+  const presets = [10, 20, 30, 45, 60, 90, 120]
+    .filter((minutes) => minutes < max);
+  const sorted = [...new Set([...presets, max])].sort((a, b) => a - b);
+  if (sorted.length <= 6) return sorted;
+  return [...sorted.filter((minutes) => minutes !== max).slice(0, 5), max];
+}
+
+function currentRouteTradeoffMaxDetour() {
+  return Math.round(Number.isFinite(state.params?.maxDetour)
+    ? state.params.maxDetour
+    : clamp(Number(els.maxDetour?.value || 60), 0, 240));
 }
 
 function bestBirdingRouteCandidate() {
