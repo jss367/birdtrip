@@ -821,6 +821,10 @@ function useSampleRoute() {
 function resetAutocomplete(field) {
   const ctx = autocomplete[field];
   if (!ctx) return;
+  if (ctx.timer) {
+    clearTimeout(ctx.timer);
+    ctx.timer = 0;
+  }
   ctx.resolved = null;
   ctx.items = [];
   ctx.activeIndex = -1;
@@ -1484,24 +1488,27 @@ async function fetchAutocomplete(field, query) {
   const ctx = autocomplete[field];
   const provider = providerFromInput();
   if (ctx.controller) ctx.controller.abort();
-  ctx.controller = new AbortController();
+  const controller = new AbortController();
+  ctx.controller = controller;
   renderAutocompleteStatus(field, "loading");
   try {
     const matches = await apiJson(
       `/api/geocode?q=${encodeURIComponent(query)}&provider=${provider}`,
-      { signal: ctx.controller.signal }
+      { signal: controller.signal }
     );
+    if (ctx.controller !== controller) return;
     ctx.lastQuery = query;
     ctx.items = Array.isArray(matches) ? matches : [];
     ctx.activeIndex = -1;
     renderAutocompleteItems(field);
   } catch (error) {
     if (error.name === "AbortError") return;
+    if (ctx.controller !== controller) return;
     ctx.items = [];
     ctx.activeIndex = -1;
     renderAutocompleteStatus(field, "empty");
   } finally {
-    ctx.controller = null;
+    if (ctx.controller === controller) ctx.controller = null;
   }
 }
 
@@ -1529,6 +1536,8 @@ function renderAutocompleteItems(field) {
   ctx.items.forEach((item, index) => {
     const li = document.createElement("li");
     li.setAttribute("role", "option");
+    li.id = `${field}AutocompleteOption${index}`;
+    li.setAttribute("aria-selected", "false");
     li.dataset.index = String(index);
     li.innerHTML = `<i data-lucide="map-pin"></i><span class="ac-name"></span>`;
     li.querySelector(".ac-name").textContent = item.name || "";
@@ -1555,7 +1564,10 @@ function hideAutocomplete(field) {
   const ctx = autocomplete[field];
   const inputEl = els[field];
   if (ctx.listEl) ctx.listEl.hidden = true;
-  if (inputEl) inputEl.setAttribute("aria-expanded", "false");
+  if (inputEl) {
+    inputEl.setAttribute("aria-expanded", "false");
+    inputEl.removeAttribute("aria-activedescendant");
+  }
   ctx.activeIndex = -1;
 }
 
@@ -1569,10 +1581,17 @@ function moveAutocompleteSelection(field, delta) {
 
 function setAutocompleteActive(field, index) {
   const ctx = autocomplete[field];
+  const inputEl = els[field];
   if (!ctx.listEl) return;
   ctx.activeIndex = index;
   Array.from(ctx.listEl.children).forEach((li, i) => {
-    li.classList.toggle("is-active", i === index);
+    const isActive = i === index;
+    li.classList.toggle("is-active", isActive);
+    li.setAttribute("aria-selected", String(isActive));
+    if (isActive && inputEl && li.id) {
+      inputEl.setAttribute("aria-activedescendant", li.id);
+      li.scrollIntoView({ block: "nearest" });
+    }
   });
 }
 
