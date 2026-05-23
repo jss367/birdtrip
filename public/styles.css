@@ -836,7 +836,7 @@ select {
     linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.98)),
     var(--panel);
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto auto auto minmax(0, 1fr);
 }
 
 .results-header {
@@ -929,6 +929,177 @@ select {
   color: var(--muted-strong);
   font-size: 0.86rem;
   line-height: 1.35;
+}
+
+.route-tradeoff-panel {
+  margin: 14px 22px 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: linear-gradient(180deg, #ffffff, #f8fafc);
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.07);
+  overflow: hidden;
+}
+
+.route-tradeoff-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: start;
+  padding: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.route-tradeoff-kicker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--accent-strong);
+  font-size: 0.76rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.route-tradeoff-kicker svg {
+  width: 16px;
+  height: 16px;
+}
+
+.route-tradeoff-header h3 {
+  margin: 7px 0 0;
+  font-size: 1rem;
+  line-height: 1.25;
+}
+
+.route-tradeoff-header p {
+  margin: 5px 0 0;
+  color: var(--muted-strong);
+  font-size: 0.86rem;
+  line-height: 1.35;
+}
+
+.route-tradeoff-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.route-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 12px 14px;
+}
+
+.route-choice-card {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  padding: 10px;
+}
+
+.route-choice-card-birding {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+}
+
+.route-choice-card span,
+.route-choice-card small {
+  display: block;
+}
+
+.route-choice-card span {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.route-choice-card b {
+  display: block;
+  margin-top: 4px;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 1.18rem;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.route-choice-card small {
+  margin-top: 5px;
+  color: var(--muted-strong);
+  font-size: 0.78rem;
+  line-height: 1.25;
+}
+
+.budget-unlocks {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(154px, 1fr));
+  gap: 8px;
+  padding: 0 14px 14px;
+}
+
+.budget-unlock {
+  min-width: 0;
+  min-height: 82px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  padding: 10px;
+  color: var(--text);
+  text-align: left;
+  box-shadow: none;
+}
+
+button.budget-unlock {
+  cursor: pointer;
+}
+
+button.budget-unlock:hover,
+button.budget-unlock:focus-visible {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.budget-unlock.is-current {
+  border-color: var(--amber-border);
+  background: #fffbeb;
+}
+
+.budget-unlock.is-empty {
+  background: var(--panel-soft);
+  color: var(--muted);
+}
+
+.budget-unlock span,
+.budget-unlock b,
+.budget-unlock small {
+  display: block;
+}
+
+.budget-unlock span {
+  color: var(--blue);
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.budget-unlock b {
+  margin-top: 5px;
+  overflow: hidden;
+  font-size: 0.86rem;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.budget-unlock small {
+  margin-top: 4px;
+  color: var(--muted-strong);
+  font-size: 0.76rem;
+  line-height: 1.25;
 }
 
 .itinerary-builder {
@@ -1861,6 +2032,18 @@ select {
     grid-template-columns: 1fr;
   }
 
+  .route-tradeoff-header {
+    grid-template-columns: 1fr;
+  }
+
+  .route-tradeoff-actions {
+    justify-content: flex-start;
+  }
+
+  .route-choice-grid {
+    grid-template-columns: 1fr;
+  }
+
 }
 
 @media (max-width: 700px) {
@@ -1910,8 +2093,18 @@ select {
     padding: 14px;
   }
 
+  .route-tradeoff-panel,
   .itinerary-builder {
     margin: 14px 14px 0;
+  }
+
+  .route-tradeoff-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .budget-unlocks {
+    grid-template-columns: 1fr;
   }
 
   .itinerary-stats {

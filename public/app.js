@@ -94,6 +94,19 @@ const els = {
   tripPlanSummary: document.querySelector("#tripPlanSummary"),
   targetSpeciesSummary: document.querySelector("#targetSpeciesSummary"),
   sightingSummary: document.querySelector("#sightingSummary"),
+  routeTradeoffPanel: document.querySelector("#routeTradeoffPanel"),
+  routeTradeoffTitle: document.querySelector("#routeTradeoffTitle"),
+  routeTradeoffSummary: document.querySelector("#routeTradeoffSummary"),
+  fastestRouteTime: document.querySelector("#fastestRouteTime"),
+  fastestRouteMeta: document.querySelector("#fastestRouteMeta"),
+  birdingRouteTime: document.querySelector("#birdingRouteTime"),
+  birdingRouteMeta: document.querySelector("#birdingRouteMeta"),
+  birdingRouteExtra: document.querySelector("#birdingRouteExtra"),
+  birdingValuePerMinute: document.querySelector("#birdingValuePerMinute"),
+  budgetUnlocks: document.querySelector("#budgetUnlocks"),
+  previewBirdingRouteButton: document.querySelector("#previewBirdingRouteButton"),
+  pinBirdingRouteButton: document.querySelector("#pinBirdingRouteButton"),
+  compareBirdingRouteButton: document.querySelector("#compareBirdingRouteButton"),
   comparisonPanel: document.querySelector("#comparisonPanel"),
   comparisonSummary: document.querySelector("#comparisonSummary"),
   comparisonContent: document.querySelector("#comparisonContent"),
@@ -202,6 +215,9 @@ function init() {
   });
   els.clearComparisonButton.addEventListener("click", clearComparison);
   els.clearItinerary.addEventListener("click", clearPinnedStops);
+  els.previewBirdingRouteButton.addEventListener("click", previewBestBirdingRoute);
+  els.pinBirdingRouteButton.addEventListener("click", pinBestBirdingRoute);
+  els.compareBirdingRouteButton.addEventListener("click", compareBestBirdingRoute);
   window.addEventListener("beforeprint", renderReport);
   els.closeDetails.addEventListener("click", () => {
     els.detailsPanel.hidden = true;
@@ -667,6 +683,7 @@ function restoreTripState(trip) {
     els.resultContext.textContent = state.routeName ? `${state.routeName}; no saved stops.` : "No route searched yet.";
   }
 
+  renderRouteTradeoff();
   renderComparison();
   renderItineraryBuilder();
   renderWarnings();
@@ -956,6 +973,7 @@ function clearResults() {
   els.liferCount.textContent = "-";
   updateInputSummaries();
   renderInsights();
+  renderRouteTradeoff();
   renderComparison();
   renderItineraryBuilder();
   els.detailsPanel.hidden = true;
@@ -1540,6 +1558,7 @@ function clearSearchArtifacts() {
   els.candidateCount.textContent = "-";
   els.liferCount.textContent = state.lifeList.species.size ? "0" : "-";
   renderInsights();
+  renderRouteTradeoff();
   renderComparison();
   renderItineraryBuilder();
   if (window.lucide) window.lucide.createIcons();
@@ -2302,6 +2321,210 @@ async function recalculateItinerary() {
   renderReport();
 }
 
+function renderRouteTradeoff() {
+  const isArea = state.params?.mode === "area";
+  if (!els.routeTradeoffPanel || isArea || !state.route || !state.results.length) {
+    if (els.routeTradeoffPanel) els.routeTradeoffPanel.hidden = true;
+    if (els.budgetUnlocks) els.budgetUnlocks.innerHTML = "";
+    return;
+  }
+
+  const best = bestBirdingRouteCandidate();
+  if (!best) {
+    els.routeTradeoffPanel.hidden = true;
+    return;
+  }
+
+  const directMinutes = state.route.durationSeconds / 60;
+  const birdingMinutes = best.viaRoute?.durationSeconds
+    ? best.viaRoute.durationSeconds / 60
+    : directMinutes + best.addedMinutes;
+  const stats = tradeoffStats(state.results);
+  const notableText = stats.notableCount ? `, ${stats.notableCount} notable` : "";
+  const targetText = stats.targetCount ? `, ${stats.targetCount} target` : "";
+  const liferText = state.lifeList.species.size ? `, ${stats.liferCount} likely lifers` : "";
+  const tenMinute = bestWithinBudget(10);
+  const tenMinuteText = tenMinute
+    ? ` At +10m, ${tenMinute.name} is already on the table.`
+    : "";
+
+  els.routeTradeoffPanel.hidden = false;
+  els.routeTradeoffTitle.textContent = `+${Math.round(best.addedMinutes)}m can route you through ${best.name}`;
+  els.routeTradeoffSummary.textContent = `${state.params.maxDetour}m of flexibility unlocks ${state.results.length} ranked stops with ${stats.speciesCount} recent species${notableText}${targetText}${liferText}.${tenMinuteText}`;
+  els.fastestRouteTime.textContent = formatMinutes(directMinutes);
+  els.fastestRouteMeta.textContent = `${miles(state.route.distanceMeters).toFixed(0)} mi direct drive`;
+  els.birdingRouteTime.textContent = formatMinutes(birdingMinutes);
+  els.birdingRouteMeta.textContent = `${best.name}; ${best.species.size} species, ${uniqueNotableCount(best)} notable`;
+  els.birdingRouteExtra.textContent = `+${formatMinutes(best.addedMinutes)}`;
+  els.birdingValuePerMinute.textContent = `${birdingValuePerMinute(best).toFixed(1)} score/min`;
+
+  setTradeoffButtonState(best);
+  renderBudgetUnlocks();
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function setTradeoffButtonState(best) {
+  const buttons = [
+    els.previewBirdingRouteButton,
+    els.pinBirdingRouteButton,
+    els.compareBirdingRouteButton
+  ];
+  buttons.forEach((button) => {
+    button.dataset.bestId = best.id;
+  });
+
+  els.previewBirdingRouteButton.disabled = !best.viaRoute?.geometry?.coordinates?.length;
+  els.previewBirdingRouteButton.title = els.previewBirdingRouteButton.disabled
+    ? "No route preview geometry is available for this stop"
+    : `Preview the route through ${best.name}`;
+
+  const pinned = isPinned(best.id);
+  els.pinBirdingRouteButton.disabled = !pinned && state.pinnedIds.length >= 5;
+  els.pinBirdingRouteButton.title = pinned
+    ? `${best.name} is already pinned`
+    : "Pin the best birding option to the itinerary";
+  els.pinBirdingRouteButton.innerHTML = pinned
+    ? '<i data-lucide="pin"></i>Pinned'
+    : '<i data-lucide="pin"></i>Pin Best';
+
+  const compared = state.comparisonIds.includes(best.id);
+  els.compareBirdingRouteButton.innerHTML = compared
+    ? '<i data-lucide="columns-3"></i>Compared'
+    : '<i data-lucide="columns-3"></i>Compare';
+}
+
+function renderBudgetUnlocks() {
+  const steps = tradeoffBudgetSteps();
+  if (!steps.length) {
+    els.budgetUnlocks.innerHTML = "";
+    return;
+  }
+
+  els.budgetUnlocks.innerHTML = steps.map((minutes) => {
+    const candidate = bestWithinBudget(minutes);
+    const isCurrent = Math.round(minutes) === Math.round(state.params.maxDetour);
+    if (!candidate) {
+      return `
+        <div class="budget-unlock is-empty">
+          <span>+${Math.round(minutes)}m</span>
+          <b>No ranked stop</b>
+          <small>Try a wider corridor or longer recent window</small>
+        </div>
+      `;
+    }
+    const notableCount = uniqueNotableCount(candidate);
+    return `
+      <button type="button" class="budget-unlock${isCurrent ? " is-current" : ""}" data-select-id="${escapeHtml(candidate.id)}">
+        <span>+${Math.round(minutes)}m</span>
+        <b>${escapeHtml(candidate.name)}</b>
+        <small>${candidate.species.size} species${notableCount ? `, ${notableCount} notable` : ""}; score ${candidate.score}</small>
+      </button>
+    `;
+  }).join("");
+
+  els.budgetUnlocks.querySelectorAll("[data-select-id]").forEach((button) => {
+    button.addEventListener("click", () => selectCandidate(button.dataset.selectId));
+  });
+}
+
+function tradeoffBudgetSteps() {
+  const max = Math.round(state.params?.maxDetour || 0);
+  if (max <= 0) return [];
+  const steps = [10, 20, 30, 45, 60, 90, 120]
+    .filter((minutes) => minutes <= max);
+  if (!steps.includes(max)) steps.push(max);
+  return [...new Set(steps)].sort((a, b) => a - b).slice(0, 6);
+}
+
+function bestBirdingRouteCandidate() {
+  return [...state.results]
+    .filter((candidate) => Number.isFinite(candidate.addedMinutes))
+    .sort(compareBirdingRouteValue)[0] || null;
+}
+
+function bestWithinBudget(minutes) {
+  return [...state.results]
+    .filter((candidate) => Number.isFinite(candidate.addedMinutes) && candidate.addedMinutes <= minutes)
+    .sort(compareBirdingRouteValue)[0] || null;
+}
+
+function compareBirdingRouteValue(a, b) {
+  if (b.score !== a.score) return b.score - a.score;
+  const bValue = birdingValuePerMinute(b);
+  const aValue = birdingValuePerMinute(a);
+  if (bValue !== aValue) return bValue - aValue;
+  return a.addedMinutes - b.addedMinutes;
+}
+
+function birdingValuePerMinute(candidate) {
+  return candidate.score / Math.max(candidate.addedMinutes, 1);
+}
+
+function tradeoffStats(candidates) {
+  const species = new Set();
+  const notable = new Set();
+  const targets = new Set();
+  const lifers = new Set();
+  for (const candidate of candidates) {
+    for (const speciesKey of candidate.species.keys()) species.add(speciesKey);
+    for (const obs of candidate.notable || []) {
+      const key = normalizeName(obs.comName || obs.sciName);
+      if (key) notable.add(key);
+    }
+    for (const obs of candidate.targetMatches || []) {
+      const key = normalizeName(obs.comName || obs.sciName);
+      if (key) targets.add(key);
+    }
+    for (const obs of candidate.liferSpecies || []) {
+      const key = normalizeName(obs.comName || obs.sciName || obs.speciesCode);
+      if (key) lifers.add(key);
+    }
+  }
+  return {
+    speciesCount: species.size,
+    notableCount: notable.size,
+    targetCount: targets.size,
+    liferCount: lifers.size
+  };
+}
+
+function tradeoffBestCandidateFromButton(button) {
+  const id = button?.dataset?.bestId;
+  return state.results.find((candidate) => candidate.id === id) || bestBirdingRouteCandidate();
+}
+
+function previewBestBirdingRoute() {
+  const best = tradeoffBestCandidateFromButton(els.previewBirdingRouteButton);
+  if (!best?.viaRoute?.geometry?.coordinates?.length) {
+    setStatus("No preview available", "This stop does not have route geometry to preview.");
+    return;
+  }
+  selectCandidate(best.id);
+  renderItineraryRoute(best.viaRoute.geometry.coordinates);
+  setStatus("Previewing birding route", `${best.name} adds ${formatMinutes(best.addedMinutes)} to the direct drive.`);
+}
+
+function pinBestBirdingRoute() {
+  const best = tradeoffBestCandidateFromButton(els.pinBirdingRouteButton);
+  if (!best) return;
+  if (isPinned(best.id)) {
+    selectCandidate(best.id);
+    setStatus("Already pinned", `${best.name} is already in the itinerary.`);
+    return;
+  }
+  togglePinned(best.id);
+}
+
+function compareBestBirdingRoute() {
+  const best = tradeoffBestCandidateFromButton(els.compareBirdingRouteButton);
+  if (!best) return;
+  if (!state.comparisonIds.includes(best.id)) {
+    toggleComparison(best.id);
+  } else {
+    setStatus("Already compared", `${best.name} is already in the stop comparison.`);
+  }
+}
+
 function renderItineraryBuilder() {
   const stops = pinnedStops();
   els.itineraryStopCount.textContent = `${stops.length}/5`;
@@ -2369,6 +2592,7 @@ function renderResults() {
     ? `${state.routeName}; ${state.results.length} stops within ${state.params.radiusKm} km.`
     : `${state.routeName}; ${state.results.length} stops within budget.`;
   renderInsights();
+  renderRouteTradeoff();
   els.resultsList.className = "results-list";
   els.resultsList.innerHTML = "";
 
@@ -2553,6 +2777,7 @@ function toggleComparison(id) {
   }
   syncComparisonButtons();
   renderComparison();
+  renderRouteTradeoff();
   if (window.lucide) window.lucide.createIcons();
 }
 
@@ -2560,6 +2785,7 @@ function clearComparison() {
   state.comparisonIds = [];
   syncComparisonButtons();
   renderComparison();
+  renderRouteTradeoff();
   if (window.lucide) window.lucide.createIcons();
 }
 
