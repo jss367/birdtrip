@@ -1133,9 +1133,14 @@ async function shareCurrentTrip() {
 
   try {
     if (navigator.share) {
-      await navigator.share(shareData);
-      setStatus("Share link ready", "Shared a link that refreshes this trip when opened.");
-      return;
+      try {
+        await navigator.share(shareData);
+        setStatus("Share link ready", "Shared a link that refreshes this trip when opened.");
+        return;
+      } catch (error) {
+        if (error?.name === "AbortError") return;
+        console.error(error);
+      }
     }
     await copyTextToClipboard(shareUrl);
     setStatus("Link copied", "Copied a share link that refreshes this trip when opened.");
