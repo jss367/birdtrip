@@ -1153,12 +1153,11 @@ async function shareCurrentTrip() {
   }
 
   const shareUrl = updateSharedUrlFromCurrentInputs({ autoRun: true });
-  const routeText = state.mode === "area"
-    ? `Birdtrip area: ${els.origin.value.trim()}`
-    : `Birdtrip route: ${els.origin.value.trim()} to ${els.destination.value.trim()}`;
+  // Intentionally omit `text` — share targets that don't fully support Web Share
+  // concatenate text + url into one blob, which auto-linkers then fold back into
+  // the URL and corrupt the query string (e.g. run=1 becomes run=1 Birdtrip…).
   const shareData = {
     title: "Birdtrip",
-    text: routeText,
     url: shareUrl
   };
 
