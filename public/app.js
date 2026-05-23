@@ -889,11 +889,11 @@ async function runRouteSearch(params) {
   renderRoute(route.geometry.coordinates);
   updateRouteSummary(route);
 
-  if (!params.token) {
-    setStatus("Token needed", "Route loaded. Add an eBird API token to rank live birding stops.");
-    els.resultContext.textContent = "Route loaded, but live bird data needs an eBird token.";
+  if (!hasEbirdAccess()) {
+    setStatus("Token needed", "Route loaded. Add an eBird token or configure EBIRD_API_KEY to rank live birding stops.");
+    els.resultContext.textContent = "Route loaded, but live bird data needs eBird access.";
     els.resultsList.className = "results-list empty";
-    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add an eBird API token to rank live birding stops.</p></div>';
+    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add an eBird token or configure EBIRD_API_KEY to rank live birding stops.</p></div>';
     if (window.lucide) window.lucide.createIcons();
     return;
   }
@@ -946,11 +946,11 @@ async function runAreaSearch(params) {
   renderArea(center, params.radiusKm);
   updateAreaSummary(params.radiusKm);
 
-  if (!params.token) {
-    setStatus("Token needed", "Area loaded. Add an eBird API token to rank live birding stops.");
-    els.resultContext.textContent = "Area loaded, but live bird data needs an eBird token.";
+  if (!hasEbirdAccess()) {
+    setStatus("Token needed", "Area loaded. Add an eBird token or configure EBIRD_API_KEY to rank live birding stops.");
+    els.resultContext.textContent = "Area loaded, but live bird data needs eBird access.";
     els.resultsList.className = "results-list empty";
-    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add an eBird API token to rank live birding stops.</p></div>';
+    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add an eBird token or configure EBIRD_API_KEY to rank live birding stops.</p></div>';
     if (window.lucide) window.lucide.createIcons();
     return;
   }
