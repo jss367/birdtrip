@@ -30,7 +30,8 @@ const state = {
       osm: { enabled: true },
       google: { enabled: false, browserKey: "", serverConfigured: false }
     }
-  }
+  },
+  configReady: null
 };
 
 const els = {
@@ -129,7 +130,7 @@ function init() {
   updateInputSummaries();
   renderSavedTrips();
   setMapProvider("osm", { persist: false, preserveData: false });
-  loadAppConfig(preferredProvider);
+  state.configReady = loadAppConfig(preferredProvider);
 
   els.form.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -849,12 +850,13 @@ function clearResults() {
 
 async function runSearch() {
   savePreferences();
-  const params = readParams();
   setBusy(true);
-  clearSearchArtifacts();
-  state.params = params;
 
   try {
+    await waitForAppConfig();
+    const params = readParams();
+    clearSearchArtifacts();
+    state.params = params;
     if (params.mode === "area") {
       await runAreaSearch(params);
     } else {
@@ -866,6 +868,10 @@ async function runSearch() {
   } finally {
     setBusy(false);
   }
+}
+
+async function waitForAppConfig() {
+  if (state.configReady) await state.configReady;
 }
 
 async function runRouteSearch(params) {
