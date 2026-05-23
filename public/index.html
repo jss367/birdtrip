@@ -78,12 +78,24 @@
           </div>
           <label>
             <span id="originLabelText">Origin</span>
-            <input id="origin" name="origin" autocomplete="street-address" value="Yuma, AZ" required>
+            <div class="autocomplete">
+              <input id="origin" name="origin" autocomplete="off" autocapitalize="words" spellcheck="false"
+                value="Yuma, AZ" required
+                role="combobox" aria-autocomplete="list" aria-expanded="false"
+                aria-controls="originSuggestions" aria-haspopup="listbox">
+              <ul class="autocomplete-list" id="originSuggestions" role="listbox" hidden></ul>
+            </div>
             <small class="field-error" id="originError" hidden></small>
           </label>
           <label id="destinationField">
             <span>Destination</span>
-            <input id="destination" name="destination" autocomplete="street-address" value="Phoenix, AZ" required>
+            <div class="autocomplete">
+              <input id="destination" name="destination" autocomplete="off" autocapitalize="words" spellcheck="false"
+                value="Phoenix, AZ" required
+                role="combobox" aria-autocomplete="list" aria-expanded="false"
+                aria-controls="destinationSuggestions" aria-haspopup="listbox">
+              <ul class="autocomplete-list" id="destinationSuggestions" role="listbox" hidden></ul>
+            </div>
             <small class="field-error" id="destinationError" hidden></small>
           </label>
           <label>

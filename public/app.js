@@ -110,7 +110,14 @@ const els = {
   modalSampleButton: document.querySelector("#modalSampleButton"),
   modalExploreButton: document.querySelector("#modalExploreButton"),
   submitLabel: document.querySelector("#submitLabel"),
-  mapAreaLegend: document.querySelector("#mapAreaLegend")
+  mapAreaLegend: document.querySelector("#mapAreaLegend"),
+  originSuggestions: document.querySelector("#originSuggestions"),
+  destinationSuggestions: document.querySelector("#destinationSuggestions")
+};
+
+const autocomplete = {
+  origin: { listEl: null, timer: 0, controller: null, items: [], activeIndex: -1, resolved: null, lastQuery: "" },
+  destination: { listEl: null, timer: 0, controller: null, items: [], activeIndex: -1, resolved: null, lastQuery: "" }
 };
 
 const PREF_FIELDS = ["origin", "destination", "mapProvider", "maxDetour", "recentDays", "radiusKm", "maxStops", "targets"];
@@ -194,6 +201,10 @@ function init() {
     updateSelectedCard();
     renderMarkers();
   });
+
+  setupLocationAutocomplete("origin");
+  setupLocationAutocomplete("destination");
+  document.addEventListener("click", handleAutocompleteOutsideClick);
 
   renderItineraryBuilder();
   renderComparison();
@@ -802,7 +813,23 @@ function useSampleRoute() {
     els.maxStops.value = "10";
     els.targets.value = "Gilded Flicker\nAbert's Towhee\nRosy-faced Lovebird\nBendire's Thrasher";
   }
+  resetAutocomplete("origin");
+  resetAutocomplete("destination");
   updateInputSummaries();
+}
+
+function resetAutocomplete(field) {
+  const ctx = autocomplete[field];
+  if (!ctx) return;
+  ctx.resolved = null;
+  ctx.items = [];
+  ctx.activeIndex = -1;
+  ctx.lastQuery = "";
+  if (ctx.controller) {
+    ctx.controller.abort();
+    ctx.controller = null;
+  }
+  hideAutocomplete(field);
 }
 
 function clearResults() {
@@ -1337,7 +1364,8 @@ async function apiJson(url, options = {}) {
     headers: {
       "accept": "application/json",
       ...(options.token ? { "x-ebird-api-token": options.token } : {})
-    }
+    },
+    signal: options.signal
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -1372,6 +1400,10 @@ function truncate(value, max) {
 }
 
 async function geocodeField(field, query, provider) {
+  const cached = autocomplete[field]?.resolved;
+  if (cached && cached.name === query && cached.provider === provider) {
+    return cached;
+  }
   let matches;
   try {
     matches = await apiJson(`/api/geocode?q=${encodeURIComponent(query)}&provider=${provider}`);
@@ -1384,6 +1416,190 @@ async function geocodeField(field, query, provider) {
     throw new Error(`Could not geocode ${field}: ${query}`);
   }
   return matches[0];
+}
+
+function setupLocationAutocomplete(field) {
+  const inputEl = els[field];
+  const listEl = els[`${field}Suggestions`];
+  if (!inputEl || !listEl) return;
+  const ctx = autocomplete[field];
+  ctx.listEl = listEl;
+
+  inputEl.addEventListener("input", () => {
+    ctx.resolved = null;
+    const value = inputEl.value.trim();
+    if (ctx.timer) clearTimeout(ctx.timer);
+    if (ctx.controller) {
+      ctx.controller.abort();
+      ctx.controller = null;
+    }
+    if (value.length < 3) {
+      hideAutocomplete(field);
+      return;
+    }
+    if (value === ctx.lastQuery && ctx.items.length) {
+      openAutocomplete(field);
+      return;
+    }
+    ctx.timer = setTimeout(() => fetchAutocomplete(field, value), 250);
+  });
+
+  inputEl.addEventListener("keydown", (event) => {
+    if (listEl.hidden || !ctx.items.length) {
+      if (event.key === "ArrowDown" && inputEl.value.trim().length >= 3) {
+        event.preventDefault();
+        fetchAutocomplete(field, inputEl.value.trim());
+      }
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      moveAutocompleteSelection(field, 1);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      moveAutocompleteSelection(field, -1);
+    } else if (event.key === "Enter") {
+      if (ctx.activeIndex >= 0) {
+        event.preventDefault();
+        selectAutocompleteItem(field, ctx.activeIndex);
+      }
+    } else if (event.key === "Escape") {
+      hideAutocomplete(field);
+    }
+  });
+
+  inputEl.addEventListener("blur", () => {
+    // Defer so a click on a suggestion can register before we hide.
+    setTimeout(() => hideAutocomplete(field), 120);
+  });
+
+  inputEl.addEventListener("focus", () => {
+    if (ctx.items.length && inputEl.value.trim() === ctx.lastQuery) {
+      openAutocomplete(field);
+    }
+  });
+}
+
+async function fetchAutocomplete(field, query) {
+  const ctx = autocomplete[field];
+  const provider = providerFromInput();
+  if (ctx.controller) ctx.controller.abort();
+  ctx.controller = new AbortController();
+  renderAutocompleteStatus(field, "loading");
+  try {
+    const matches = await apiJson(
+      `/api/geocode?q=${encodeURIComponent(query)}&provider=${provider}`,
+      { signal: ctx.controller.signal }
+    );
+    ctx.lastQuery = query;
+    ctx.items = Array.isArray(matches) ? matches : [];
+    ctx.activeIndex = -1;
+    renderAutocompleteItems(field);
+  } catch (error) {
+    if (error.name === "AbortError") return;
+    ctx.items = [];
+    ctx.activeIndex = -1;
+    renderAutocompleteStatus(field, "empty");
+  } finally {
+    ctx.controller = null;
+  }
+}
+
+function renderAutocompleteStatus(field, kind) {
+  const ctx = autocomplete[field];
+  const listEl = ctx.listEl;
+  if (!listEl) return;
+  listEl.innerHTML = "";
+  const li = document.createElement("li");
+  li.className = kind === "loading" ? "is-loading" : "is-empty";
+  li.textContent = kind === "loading" ? "Searching…" : "No matches.";
+  listEl.appendChild(li);
+  openAutocomplete(field);
+}
+
+function renderAutocompleteItems(field) {
+  const ctx = autocomplete[field];
+  const listEl = ctx.listEl;
+  if (!listEl) return;
+  listEl.innerHTML = "";
+  if (!ctx.items.length) {
+    renderAutocompleteStatus(field, "empty");
+    return;
+  }
+  ctx.items.forEach((item, index) => {
+    const li = document.createElement("li");
+    li.setAttribute("role", "option");
+    li.dataset.index = String(index);
+    li.innerHTML = `<i data-lucide="map-pin"></i><span class="ac-name"></span>`;
+    li.querySelector(".ac-name").textContent = item.name || "";
+    li.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      selectAutocompleteItem(field, index);
+    });
+    li.addEventListener("mouseenter", () => setAutocompleteActive(field, index));
+    listEl.appendChild(li);
+  });
+  if (window.lucide) window.lucide.createIcons();
+  openAutocomplete(field);
+}
+
+function openAutocomplete(field) {
+  const ctx = autocomplete[field];
+  const inputEl = els[field];
+  if (!ctx.listEl) return;
+  ctx.listEl.hidden = false;
+  if (inputEl) inputEl.setAttribute("aria-expanded", "true");
+}
+
+function hideAutocomplete(field) {
+  const ctx = autocomplete[field];
+  const inputEl = els[field];
+  if (ctx.listEl) ctx.listEl.hidden = true;
+  if (inputEl) inputEl.setAttribute("aria-expanded", "false");
+  ctx.activeIndex = -1;
+}
+
+function moveAutocompleteSelection(field, delta) {
+  const ctx = autocomplete[field];
+  if (!ctx.items.length) return;
+  const next = ctx.activeIndex + delta;
+  const wrapped = (next + ctx.items.length) % ctx.items.length;
+  setAutocompleteActive(field, wrapped);
+}
+
+function setAutocompleteActive(field, index) {
+  const ctx = autocomplete[field];
+  if (!ctx.listEl) return;
+  ctx.activeIndex = index;
+  Array.from(ctx.listEl.children).forEach((li, i) => {
+    li.classList.toggle("is-active", i === index);
+  });
+}
+
+function selectAutocompleteItem(field, index) {
+  const ctx = autocomplete[field];
+  const item = ctx.items[index];
+  const inputEl = els[field];
+  if (!item || !inputEl) return;
+  inputEl.value = item.name || "";
+  ctx.resolved = item;
+  ctx.lastQuery = item.name || "";
+  hideAutocomplete(field);
+  clearFieldErrors();
+  if (inputEl === els.origin || inputEl === els.destination) {
+    savePreferences();
+  }
+}
+
+function handleAutocompleteOutsideClick(event) {
+  for (const field of ["origin", "destination"]) {
+    const ctx = autocomplete[field];
+    const inputEl = els[field];
+    if (!ctx.listEl || ctx.listEl.hidden) continue;
+    if (event.target === inputEl) continue;
+    if (ctx.listEl.contains(event.target)) continue;
+    hideAutocomplete(field);
+  }
 }
 
 function fieldLabel(field) {
