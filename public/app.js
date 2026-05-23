@@ -117,6 +117,7 @@ const els = {
 
 const PREF_FIELDS = ["origin", "destination", "mapProvider", "maxDetour", "recentDays", "radiusKm", "maxStops", "targets"];
 const SAVED_TRIPS_KEY = "birdtripSavedTrips";
+const CONFIG_WAIT_TIMEOUT_MS = 6000;
 
 function init() {
   const saved = restorePreferences();
@@ -668,7 +669,12 @@ async function loadAppConfig(preferredProvider) {
   }
   setupProviderControl();
   updateSetupStatus();
-  await setMapProvider(resolveProvider(preferredProvider || state.config.defaultMapProvider || providerFromInput()), { persist: false });
+  try {
+    await setMapProvider(resolveProvider(preferredProvider || state.config.defaultMapProvider || providerFromInput()), { persist: false });
+  } catch (error) {
+    addWarning(`Map could not be initialized: ${error.message}. Searches can continue with the current setup.`);
+    renderWarnings();
+  }
 }
 
 function setupProviderControl() {
@@ -870,8 +876,29 @@ async function runSearch() {
   }
 }
 
-async function waitForAppConfig() {
-  if (state.configReady) await state.configReady;
+async function waitForAppConfig(timeoutMs = CONFIG_WAIT_TIMEOUT_MS) {
+  if (!state.configReady) return;
+
+  let timeoutId;
+  const timeout = new Promise((resolve) => {
+    timeoutId = setTimeout(() => resolve("timeout"), timeoutMs);
+  });
+
+  const result = await Promise.race([
+    state.configReady.then(() => "ready", (error) => ({ error })),
+    timeout
+  ]);
+  if (timeoutId) clearTimeout(timeoutId);
+
+  if (result === "timeout") {
+    state.configReady = null;
+    addWarning("Setup check is taking longer than expected. Continuing with the current setup state.");
+    renderWarnings();
+  } else if (result?.error) {
+    state.configReady = null;
+    addWarning(`Setup check failed: ${result.error.message}. Continuing with the current setup state.`);
+    renderWarnings();
+  }
 }
 
 async function runRouteSearch(params) {
