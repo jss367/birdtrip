@@ -1876,6 +1876,26 @@ select {
   border-bottom: 1px solid var(--line-strong);
 }
 
+.report .report-section-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin: 22px 0 8px;
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.report .report-section-heading h2 {
+  margin: 0;
+  border-bottom: 0;
+}
+
+.report .report-section-heading a {
+  color: var(--accent-strong);
+  font-size: 0.85rem;
+  font-weight: 800;
+}
+
 .report .report-params,
 .report .report-route,
 .report .report-stop-route {
@@ -1919,6 +1939,88 @@ select {
   overflow-wrap: anywhere;
 }
 
+.report .report-map-card {
+  break-inside: avoid;
+}
+
+.report .report-map {
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.report .report-map-bg {
+  fill: #eef6f1;
+}
+
+.report .report-map-radius {
+  fill: rgba(59, 130, 246, 0.11);
+  stroke: #3b82f6;
+  stroke-dasharray: 7 6;
+  stroke-width: 2;
+}
+
+.report .report-map-route {
+  fill: none;
+  stroke: #2563eb;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 5;
+}
+
+.report .report-map-stop circle {
+  fill: #065f46;
+  stroke: white;
+  stroke-width: 3;
+}
+
+.report .report-map-endpoint rect {
+  fill: #10201a;
+  stroke: white;
+  stroke-width: 3;
+}
+
+.report .report-map-stop text,
+.report .report-map-endpoint text {
+  fill: white;
+  font-size: 11px;
+  font-weight: 900;
+  text-anchor: middle;
+}
+
+.report .report-note {
+  color: var(--muted-strong);
+  font-size: 0.88rem;
+  margin: 6px 0 0;
+}
+
+.report .report-stop-order,
+.report .report-target-list,
+.report .report-fallback-list {
+  margin: 6px 0 0;
+  padding-left: 22px;
+  font-size: 0.9rem;
+}
+
+.report .report-stop-order li,
+.report .report-target-list li,
+.report .report-fallback-list li {
+  margin: 5px 0;
+}
+
+.report .report-stop-order span,
+.report .report-target-list span {
+  display: block;
+  color: var(--muted-strong);
+}
+
+.report .report-stop-order a {
+  color: var(--accent-strong);
+  font-weight: 800;
+}
+
 .report .report-stop {
   break-inside: avoid;
   border: 1px solid var(--line-strong);
@@ -1957,6 +2059,10 @@ select {
   .report .report-route,
   .report .report-stop-route {
     grid-template-columns: 1fr;
+  }
+
+  .report .report-section-heading {
+    display: block;
   }
 
   .report .report-stop ul {
