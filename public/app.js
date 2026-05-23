@@ -1037,6 +1037,16 @@ async function waitForAppConfig(timeoutMs = CONFIG_WAIT_TIMEOUT_MS) {
   if (timeoutId) clearTimeout(timeoutId);
 
   if (result === "timeout") {
+    state.configReady = null;
+    state.config = {
+      ...state.config,
+      ebirdConfigured: false,
+      ebird: {
+        ...state.config.ebird,
+        serverConfigured: false
+      }
+    };
+    updateSetupStatus();
     addWarning("Setup check is taking longer than expected. Continuing with the current setup state.");
     renderWarnings();
   } else if (result?.error) {
@@ -1339,7 +1349,7 @@ function hasEbirdAccess() {
 }
 
 function shouldAttemptEbirdSearch() {
-  return hasEbirdAccess() || state.config.ebirdConfigured === null;
+  return hasEbirdAccess();
 }
 
 function updateInputSummaries() {
