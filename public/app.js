@@ -8,6 +8,7 @@ const state = {
   savedTrips: [],
   comparisonIds: [],
   pinnedIds: [],
+  pendingPinnedIds: [],
   itinerary: null,
   itineraryRequestId: 0,
   warnings: [],
@@ -28,12 +29,16 @@ const state = {
     providers: {
       osm: { enabled: true },
       google: { enabled: false, browserKey: "", serverConfigured: false }
+    },
+    ebird: {
+      serverConfigured: false
     }
   }
 };
 
 const els = {
   quickStartButton: document.querySelector("#quickStartButton"),
+  shareTripButton: document.querySelector("#shareTripButton"),
   downloadReportButton: document.querySelector("#downloadReportButton"),
   settingsButton: document.querySelector("#settingsButton"),
   setupStatus: document.querySelector("#setupStatus"),
@@ -122,20 +127,22 @@ const autocomplete = {
 
 const PREF_FIELDS = ["origin", "destination", "mapProvider", "maxDetour", "recentDays", "radiusKm", "maxStops", "targets"];
 const SAVED_TRIPS_KEY = "birdtripSavedTrips";
+const SHARE_URL_VERSION = "1";
 
 function init() {
+  const sharedSearch = readSharedSearchFromUrl();
   const saved = restorePreferences();
   state.savedTrips = readSavedTrips();
-  state.mode = saved.searchMode === "area" ? "area" : "route";
-  const preferredProvider = typeof saved.mapProvider === "string" ? providerFromInput() : null;
+  state.mode = sharedSearch?.mode || (saved.searchMode === "area" ? "area" : "route");
+  const preferredProvider = sharedSearch?.mapProvider || (typeof saved.mapProvider === "string" ? providerFromInput() : null);
   state.provider = preferredProvider || "osm";
   setupProviderControl();
   setSearchMode(state.mode, { persist: false });
+  if (sharedSearch) applySharedSearch(sharedSearch);
   updateSetupStatus();
   updateInputSummaries();
   renderSavedTrips();
-  setMapProvider("osm", { persist: false, preserveData: false });
-  loadAppConfig(preferredProvider);
+  initializeStartupMap(preferredProvider, sharedSearch);
 
   els.form.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -160,6 +167,7 @@ function init() {
   els.clearLifeListButton.addEventListener("click", clearLifeList);
   els.maxDetour.addEventListener("input", updateInputSummaries);
   els.quickStartButton.addEventListener("click", openQuickStart);
+  els.shareTripButton.addEventListener("click", shareCurrentTrip);
   els.downloadReportButton.addEventListener("click", downloadHtmlReport);
   els.settingsButton.addEventListener("click", () => {
     els.maxDetour.scrollIntoView({ block: "center", behavior: "smooth" });
@@ -209,6 +217,91 @@ function init() {
   renderItineraryBuilder();
   renderComparison();
   if (window.lucide) window.lucide.createIcons();
+}
+
+async function initializeStartupMap(preferredProvider, sharedSearch) {
+  try {
+    await setMapProvider("osm", { persist: false, preserveData: false });
+    await loadAppConfig(preferredProvider);
+    updateSetupStatus();
+    if (sharedSearch?.autoRun && hasRunnableSearchInputs()) {
+      setStatus("Refreshing shared trip", "Loading the route and latest birding stops from this link.");
+      await runSearch({ persistPreferences: false });
+    }
+  } catch (error) {
+    setStatus("Map setup failed", error.message || "The map could not be initialized.");
+    console.error(error);
+  }
+}
+
+function readSharedSearchFromUrl() {
+  const search = new URLSearchParams(window.location.search);
+  if (search.get("bt") !== SHARE_URL_VERSION) return null;
+
+  const mode = search.get("mode") === "area" ? "area" : "route";
+  const shared = {
+    mode,
+    origin: cleanSharedText(search.get("origin"), 160),
+    destination: cleanSharedText(search.get("destination"), 160),
+    mapProvider: search.get("mapProvider") === "google" ? "google" : "osm",
+    maxDetour: cleanSharedNumber(search.get("maxDetour"), 0, 240),
+    recentDays: cleanSharedNumber(search.get("recentDays"), 1, 30),
+    radiusKm: cleanSharedNumber(search.get("radiusKm"), 1, 50),
+    maxStops: cleanSharedNumber(search.get("maxStops"), 3, 20),
+    targets: cleanSharedTargets(search.get("targets"), 1200),
+    pins: cleanSharedIdList(search.getAll("pin"), 5),
+    autoRun: search.get("run") === "1"
+  };
+  return shared.origin ? shared : null;
+}
+
+function applySharedSearch(shared) {
+  setSearchMode(shared.mode, { persist: false });
+  if (shared.origin) els.origin.value = shared.origin;
+  if (shared.mode === "area") {
+    els.destination.value = "";
+  } else if (shared.destination) {
+    els.destination.value = shared.destination;
+  }
+  if (shared.mapProvider) els.mapProvider.value = shared.mapProvider;
+  if (shared.maxDetour) els.maxDetour.value = shared.maxDetour;
+  if (shared.recentDays) els.recentDays.value = shared.recentDays;
+  if (shared.radiusKm) els.radiusKm.value = shared.radiusKm;
+  if (shared.maxStops) els.maxStops.value = shared.maxStops;
+  if (shared.targets) els.targets.value = shared.targets;
+  state.pendingPinnedIds = shared.pins || [];
+  updateInputSummaries();
+  setStatus(
+    "Shared trip loaded",
+    shared.autoRun ? "Refreshing this shared trip." : "Review the shared settings, then run a search."
+  );
+}
+
+function cleanSharedText(value, maxLength) {
+  return String(value || "").replace(/\s+/g, " ").trim().slice(0, maxLength);
+}
+
+function cleanSharedTargets(value, maxLength) {
+  return String(value || "")
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n")
+    .slice(0, maxLength);
+}
+
+function cleanSharedIdList(values, maxItems) {
+  return values
+    .map((item) => item.trim())
+    .filter((item) => /^[\w:.,-]{1,80}$/.test(item))
+    .slice(0, maxItems);
+}
+
+function cleanSharedNumber(value, min, max) {
+  if (value === null) return "";
+  const number = clamp(Number(value), min, max);
+  return Number.isFinite(number) ? String(number) : "";
 }
 
 function restorePreferences() {
@@ -544,6 +637,7 @@ function restoreTripState(trip) {
   state.areaCenter = savedState.areaCenter || null;
   state.comparisonIds = [];
   state.pinnedIds = [];
+  state.pendingPinnedIds = [];
   state.itinerary = null;
   state.itineraryRequestId += 1;
 
@@ -843,6 +937,7 @@ function clearResults() {
   state.selectedId = null;
   state.comparisonIds = [];
   state.pinnedIds = [];
+  state.pendingPinnedIds = [];
   state.itinerary = null;
   state.itineraryRequestId += 1;
   state.params = null;
@@ -867,11 +962,13 @@ function clearResults() {
   setStatus("Ready", state.mode === "area"
     ? "Enter a city, park, or lodging location and run a search."
     : "Enter a route and run a search.");
+  clearSharedUrl();
   if (window.lucide) window.lucide.createIcons();
 }
 
-async function runSearch() {
-  savePreferences();
+async function runSearch(options = {}) {
+  const { persistPreferences = true } = options;
+  if (persistPreferences) savePreferences();
   const params = readParams();
   setBusy(true);
   clearSearchArtifacts();
@@ -883,6 +980,8 @@ async function runSearch() {
     } else {
       await runRouteSearch(params);
     }
+    applyPendingSharedPins();
+    updateSharedUrlFromCurrentInputs({ autoRun: true });
   } catch (error) {
     setStatus("Search failed", error.message || "Something went wrong.");
     console.error(error);
@@ -912,7 +1011,7 @@ async function runRouteSearch(params) {
   renderRoute(route.geometry.coordinates);
   updateRouteSummary(route);
 
-  if (!params.token) {
+  if (!canUseBirdData(params)) {
     setStatus("Token needed", "Route loaded. Add an eBird API token to rank live birding stops.");
     els.resultContext.textContent = "Route loaded, but live bird data needs an eBird token.";
     els.resultsList.className = "results-list empty";
@@ -969,7 +1068,7 @@ async function runAreaSearch(params) {
   renderArea(center, params.radiusKm);
   updateAreaSummary(params.radiusKm);
 
-  if (!params.token) {
+  if (!canUseBirdData(params)) {
     setStatus("Token needed", "Area loaded. Add an eBird API token to rank live birding stops.");
     els.resultContext.textContent = "Area loaded, but live bird data needs an eBird token.";
     els.resultsList.className = "results-list empty";
@@ -1030,6 +1129,120 @@ function readParams() {
   };
 }
 
+function canUseBirdData(params = readParams()) {
+  return Boolean(params.token || state.config.ebird?.serverConfigured);
+}
+
+function applyPendingSharedPins() {
+  if (!state.pendingPinnedIds.length || !state.results.length) return;
+  const resultIds = new Set(state.results.map((candidate) => candidate.id));
+  const pinnedIds = state.pendingPinnedIds.filter((id) => resultIds.has(id)).slice(0, 5);
+  state.pendingPinnedIds = [];
+  if (!pinnedIds.length || state.mode === "area") return;
+  state.pinnedIds = pinnedIds;
+  renderResults();
+  renderItineraryBuilder();
+  renderMarkers();
+  recalculateItinerary();
+}
+
+async function shareCurrentTrip() {
+  if (!hasRunnableSearchInputs()) {
+    setStatus("Nothing to share", "Add a route or area before creating a share link.");
+    return;
+  }
+
+  const shareUrl = updateSharedUrlFromCurrentInputs({ autoRun: true });
+  const routeText = state.mode === "area"
+    ? `Birdtrip area: ${els.origin.value.trim()}`
+    : `Birdtrip route: ${els.origin.value.trim()} to ${els.destination.value.trim()}`;
+  const shareData = {
+    title: "Birdtrip",
+    text: routeText,
+    url: shareUrl
+  };
+
+  try {
+    if (navigator.share) {
+      try {
+        await navigator.share(shareData);
+        setStatus("Share link ready", "Shared a link that refreshes this trip when opened.");
+        return;
+      } catch (error) {
+        if (error?.name === "AbortError") return;
+        console.error(error);
+      }
+    }
+    await copyTextToClipboard(shareUrl);
+    setStatus("Link copied", "Copied a share link that refreshes this trip when opened.");
+  } catch (error) {
+    if (error?.name === "AbortError") return;
+    console.error(error);
+    setStatus("Share failed", "The share link could not be copied.");
+  }
+}
+
+function updateSharedUrlFromCurrentInputs(options = {}) {
+  const url = buildShareUrl(options);
+  window.history.replaceState(null, "", url);
+  return url;
+}
+
+function clearSharedUrl() {
+  const url = new URL(window.location.href);
+  if (url.searchParams.get("bt") !== SHARE_URL_VERSION) return;
+  url.search = "";
+  url.hash = "";
+  window.history.replaceState(null, "", url);
+}
+
+function refreshSharedUrlIfPresent() {
+  if (new URLSearchParams(window.location.search).get("bt") !== SHARE_URL_VERSION) return;
+  updateSharedUrlFromCurrentInputs({ autoRun: Boolean(state.params) });
+}
+
+function buildShareUrl(options = {}) {
+  const { autoRun = false } = options;
+  const url = new URL(window.location.href);
+  url.search = "";
+  url.hash = "";
+  url.searchParams.set("bt", SHARE_URL_VERSION);
+  url.searchParams.set("mode", state.mode);
+  url.searchParams.set("origin", els.origin.value.trim());
+  if (state.mode !== "area") url.searchParams.set("destination", els.destination.value.trim());
+  url.searchParams.set("mapProvider", providerFromInput());
+  url.searchParams.set("maxDetour", String(clamp(Number(els.maxDetour.value || 60), 0, 240)));
+  url.searchParams.set("recentDays", String(clamp(Number(els.recentDays.value || 14), 1, 30)));
+  url.searchParams.set("radiusKm", String(clamp(Number(els.radiusKm.value || 25), 1, 50)));
+  url.searchParams.set("maxStops", String(clamp(Number(els.maxStops.value || 10), 3, 20)));
+  if (els.targets.value.trim()) url.searchParams.set("targets", els.targets.value.trim());
+  for (const id of state.pinnedIds.slice(0, 5)) url.searchParams.append("pin", id);
+  if (autoRun) url.searchParams.set("run", "1");
+  return url.toString();
+}
+
+function hasRunnableSearchInputs() {
+  return els.origin.value.trim().length >= 2 && (state.mode === "area" || els.destination.value.trim().length >= 2);
+}
+
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.top = "-1000px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) throw new Error("Clipboard copy failed");
+}
+
 function openQuickStart() {
   els.quickStartModal.hidden = false;
   if (window.lucide) window.lucide.createIcons();
@@ -1043,9 +1256,10 @@ function closeQuickStart() {
 
 function updateSetupStatus() {
   const hasToken = Boolean(els.apiToken.value.trim());
-  els.setupStatus.classList.toggle("setup-ready", hasToken);
-  els.setupStatus.classList.toggle("setup-needed", !hasToken);
-  els.setupStatus.innerHTML = hasToken
+  const hasBirdData = hasToken || state.config.ebird?.serverConfigured;
+  els.setupStatus.classList.toggle("setup-ready", hasBirdData);
+  els.setupStatus.classList.toggle("setup-needed", !hasBirdData);
+  els.setupStatus.innerHTML = hasBirdData
     ? '<i data-lucide="check-circle-2"></i>Ready to Search'
     : '<i data-lucide="circle-alert"></i>Setup Required';
   renderInsights();
@@ -1335,6 +1549,7 @@ function setBusy(isBusy) {
   const controls = [
     ...els.form.querySelectorAll("button, input, select, textarea"),
     els.quickStartButton,
+    els.shareTripButton,
     els.downloadReportButton,
     els.settingsButton,
     els.modalSampleButton,
@@ -1999,6 +2214,7 @@ function togglePinned(id) {
   renderMarkers();
   updateVisibleDetails();
   recalculateItinerary();
+  refreshSharedUrlIfPresent();
 }
 
 function clearPinnedStops() {
@@ -2012,6 +2228,7 @@ function clearPinnedStops() {
   updateVisibleDetails();
   renderInsights();
   renderReport();
+  refreshSharedUrlIfPresent();
 }
 
 function movePinnedStop(id, direction) {
@@ -2027,6 +2244,7 @@ function movePinnedStop(id, direction) {
   renderMarkers();
   updateVisibleDetails();
   recalculateItinerary();
+  refreshSharedUrlIfPresent();
 }
 
 function removePinnedStop(id) {
@@ -2038,6 +2256,7 @@ function removePinnedStop(id) {
   renderMarkers();
   updateVisibleDetails();
   recalculateItinerary();
+  refreshSharedUrlIfPresent();
 }
 
 async function recalculateItinerary() {
@@ -2591,7 +2810,7 @@ function observationAliases(obs) {
 function renderInsights() {
   const liveDetour = clamp(Number(els.maxDetour.value || 60), 0, 240);
   const liveTargets = parseTargetsInput();
-  const hasToken = Boolean(els.apiToken.value.trim());
+  const hasBirdData = Boolean(els.apiToken.value.trim() || state.config.ebird?.serverConfigured);
   const lifeListCount = state.lifeList.displayNames.length || state.lifeList.species.size;
   if (state.mode === "area") {
     els.tripPlanSummary.textContent = state.areaCenter
@@ -2625,8 +2844,8 @@ function renderInsights() {
     const liferCount = uniqueLiferCount(state.results);
     els.sightingSummary.textContent = `${speciesCount} recent species across ${state.results.length} ranked stops, including ${notableCount} notable species${state.lifeList.species.size ? ` and ${liferCount} likely lifers` : ""}.`;
   } else {
-    const searchedWithoutToken = state.mode === "area" ? state.areaCenter && !hasToken : state.route && !hasToken;
-    els.sightingSummary.textContent = searchedWithoutToken
+    const searchedWithoutBirdData = state.mode === "area" ? state.areaCenter && !hasBirdData : state.route && !hasBirdData;
+    els.sightingSummary.textContent = searchedWithoutBirdData
       ? `${state.mode === "area" ? "Area" : "Route"} is ready. Add an eBird token to load recent sightings and notable reports.`
       : "Recent eBird activity and notable reports appear after search.";
   }

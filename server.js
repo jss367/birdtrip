@@ -337,6 +337,9 @@ async function handleApi(req, res, url) {
             browserKey: GOOGLE_MAPS_BROWSER_KEY || "",
             serverConfigured: Boolean(GOOGLE_MAPS_SERVER_KEY)
           }
+        },
+        ebird: {
+          serverConfigured: Boolean(process.env.EBIRD_API_KEY)
         }
       });
     }
