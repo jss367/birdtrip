@@ -514,6 +514,12 @@ select {
   height: 17px;
 }
 
+.setup-checking {
+  color: var(--muted-strong);
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+}
+
 .setup-needed {
   color: var(--amber-strong);
   background: var(--amber-soft);

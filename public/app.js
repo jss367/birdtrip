@@ -24,6 +24,7 @@ const state = {
   },
   config: {
     defaultMapProvider: "osm",
+    ebirdConfigured: false,
     providers: {
       osm: { enabled: true },
       google: { enabled: false, browserKey: "", serverConfigured: false }
@@ -115,7 +116,7 @@ function init() {
   state.provider = preferredProvider || "osm";
   setupProviderControl();
   setSearchMode(state.mode, { persist: false });
-  updateSetupStatus();
+  if (els.apiToken.value.trim()) updateSetupStatus();
   updateInputSummaries();
   setMapProvider("osm", { persist: false, preserveData: false });
   loadAppConfig(preferredProvider);
@@ -158,7 +159,13 @@ function init() {
     els.origin.focus();
   });
   els.modalExploreButton.addEventListener("click", () => {
-    setStatus("Explore without setup", "Enter a route to preview distance and drive time. Add an eBird token when you want live bird rankings.");
+    const needsToken = !hasEbirdAccess();
+    setStatus(
+      needsToken ? "Explore without setup" : "Ready",
+      needsToken
+        ? "Enter a route to preview distance and drive time. Add an eBird token when you want live bird rankings."
+        : "Enter a route to load recent sightings and notable reports."
+    );
     closeQuickStart();
     els.origin.focus();
   });
@@ -293,6 +300,7 @@ async function loadAppConfig(preferredProvider) {
     renderWarnings();
   }
   setupProviderControl();
+  updateSetupStatus();
   await setMapProvider(resolveProvider(preferredProvider || state.config.defaultMapProvider || providerFromInput()), { persist: false });
 }
 
@@ -643,14 +651,19 @@ function closeQuickStart() {
 }
 
 function updateSetupStatus() {
-  const hasToken = Boolean(els.apiToken.value.trim());
-  els.setupStatus.classList.toggle("setup-ready", hasToken);
-  els.setupStatus.classList.toggle("setup-needed", !hasToken);
-  els.setupStatus.innerHTML = hasToken
+  const hasAccess = hasEbirdAccess();
+  els.setupStatus.classList.remove("setup-checking");
+  els.setupStatus.classList.toggle("setup-ready", hasAccess);
+  els.setupStatus.classList.toggle("setup-needed", !hasAccess);
+  els.setupStatus.innerHTML = hasAccess
     ? '<i data-lucide="check-circle-2"></i>Ready to Search'
     : '<i data-lucide="circle-alert"></i>Setup Required';
   renderInsights();
   if (window.lucide) window.lucide.createIcons();
+}
+
+function hasEbirdAccess() {
+  return Boolean(els.apiToken.value.trim() || state.config.ebirdConfigured);
 }
 
 function updateInputSummaries() {
@@ -1982,7 +1995,7 @@ function observationAliases(obs) {
 function renderInsights() {
   const liveDetour = clamp(Number(els.maxDetour.value || 60), 0, 240);
   const liveTargets = parseTargetsInput();
-  const hasToken = Boolean(els.apiToken.value.trim());
+  const hasAccess = hasEbirdAccess();
   const lifeListCount = state.lifeList.displayNames.length || state.lifeList.species.size;
   if (state.mode === "area") {
     els.tripPlanSummary.textContent = state.areaCenter
@@ -2016,7 +2029,7 @@ function renderInsights() {
     const liferCount = uniqueLiferCount(state.results);
     els.sightingSummary.textContent = `${speciesCount} recent species across ${state.results.length} ranked stops, including ${notableCount} notable species${state.lifeList.species.size ? ` and ${liferCount} likely lifers` : ""}.`;
   } else {
-    const searchedWithoutToken = state.mode === "area" ? state.areaCenter && !hasToken : state.route && !hasToken;
+    const searchedWithoutToken = state.mode === "area" ? state.areaCenter && !hasAccess : state.route && !hasAccess;
     els.sightingSummary.textContent = searchedWithoutToken
       ? `${state.mode === "area" ? "Area" : "Route"} is ready. Add an eBird token to load recent sightings and notable reports.`
       : "Recent eBird activity and notable reports appear after search.";
