@@ -413,11 +413,55 @@ function savePreferences() {
     addWarning("The imported life list was too large to save in this browser, but it will work until the page is refreshed.");
     renderWarnings();
   }
+  queueProfileUpsert();
 }
+
+const PROFILE_UPSERT_DEBOUNCE_MS = 750;
+let profileUpsertTimer = 0;
+let profileUpsertFailed = false;
 
 // Set by hydrate/merge to suppress the write-through that would otherwise
 // echo just-fetched account data back to the account.
 let suppressProfileUpsert = false;
+
+function buildProfilePatch() {
+  const lifeListEmpty = state.lifeList.species.size === 0;
+  return {
+    life_list: lifeListEmpty ? {} : {
+      source: state.lifeList.source,
+      fileName: state.lifeList.fileName,
+      importedAt: state.lifeList.importedAt,
+      species: Array.from(state.lifeList.species),
+      displayNames: state.lifeList.displayNames
+    },
+    targets: els.targets.value || "",
+    ebird_token: els.rememberToken.checked ? (els.apiToken.value || null) : null,
+    preferences: PREF_FIELDS.reduce((acc, field) => {
+      acc[field] = els[field].value;
+      return acc;
+    }, {})
+  };
+}
+
+function queueProfileUpsert() {
+  if (suppressProfileUpsert) return;
+  if (!window.birdtripAuth || !window.birdtripAuth.user) return;
+  if (profileUpsertTimer) clearTimeout(profileUpsertTimer);
+  profileUpsertTimer = setTimeout(async () => {
+    profileUpsertTimer = 0;
+    const patch = buildProfilePatch();
+    const result = await window.birdtripAuth.upsertProfile(patch);
+    if (!result || !result.ok) {
+      if (!profileUpsertFailed) {
+        addWarning("Couldn't save to your account - still saved in this browser.");
+        renderWarnings();
+        profileUpsertFailed = true;
+      }
+    } else if (profileUpsertFailed) {
+      profileUpsertFailed = false;
+    }
+  }, PROFILE_UPSERT_DEBOUNCE_MS);
+}
 
 function hydrateFromAccount() {
   if (!window.birdtripAuth || !window.birdtripAuth.user) return Promise.resolve();
