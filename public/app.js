@@ -1621,6 +1621,9 @@ function truncate(value, max) {
 }
 
 async function geocodeField(field, query, provider) {
+  const currentLocation = parseCurrentLocationFallback(query, provider);
+  if (currentLocation) return currentLocation;
+
   const cached = autocomplete[field]?.resolved;
   if (cached && cached.name === query && (cached.userLocation || cached.provider === provider)) {
     return cached;
@@ -1637,6 +1640,29 @@ async function geocodeField(field, query, provider) {
     throw new Error(`Could not geocode ${field}: ${query}`);
   }
   return matches[0];
+}
+
+function formatCurrentLocationFallback(lat, lng) {
+  return `Current location (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
+}
+
+function parseCurrentLocationFallback(query, provider) {
+  const match = String(query || "").trim().match(/^Current location \((-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)\)$/);
+  if (!match) return null;
+
+  const lat = Number(match[1]);
+  const lng = Number(match[2]);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+    return null;
+  }
+
+  return {
+    name: formatCurrentLocationFallback(lat, lng),
+    lat,
+    lng,
+    provider,
+    userLocation: true
+  };
 }
 
 async function useCurrentLocationForOrigin() {
@@ -1675,7 +1701,7 @@ async function useCurrentLocationForOrigin() {
       displayName = "";
     }
     if (!displayName) {
-      displayName = `Current location (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
+      displayName = formatCurrentLocationFallback(lat, lng);
     }
     els.origin.value = displayName;
     autocomplete.origin.resolved = {
@@ -1690,6 +1716,7 @@ async function useCurrentLocationForOrigin() {
     autocomplete.origin.lastQuery = displayName;
     hideAutocomplete("origin");
     updateInputSummaries();
+    savePreferences();
   } catch (error) {
     const message = describeGeolocationError(error);
     setFieldError("origin", message);

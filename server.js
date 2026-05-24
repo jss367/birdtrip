@@ -30,7 +30,12 @@ function logApiRequest(req, res, url) {
   const started = Date.now();
   res.on("finish", () => {
     const elapsed = Date.now() - started;
-    console.log(`[api] ${req.method} ${url.pathname}${url.search} ${res.statusCode} ${elapsed}ms`);
+    const logUrl = new URL(url);
+    if (logUrl.pathname === "/api/reverse-geocode") {
+      logUrl.searchParams.delete("lat");
+      logUrl.searchParams.delete("lng");
+    }
+    console.log(`[api] ${req.method} ${logUrl.pathname}${logUrl.search} ${res.statusCode} ${elapsed}ms`);
   });
 }
 
@@ -395,10 +400,23 @@ async function handleApi(req, res, url) {
     }
 
     if (url.pathname === "/api/reverse-geocode") {
-      const lat = boundedNumber(url.searchParams.get("lat"), NaN, -90, 90);
-      const lng = boundedNumber(url.searchParams.get("lng"), NaN, -180, 180);
-      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-        return sendError(res, 400, "lat and lng are required");
+      const latRaw = url.searchParams.get("lat");
+      const lngRaw = url.searchParams.get("lng");
+      const lat = Number(latRaw);
+      const lng = Number(lngRaw);
+      if (
+        latRaw === null ||
+        lngRaw === null ||
+        latRaw.trim() === "" ||
+        lngRaw.trim() === "" ||
+        !Number.isFinite(lat) ||
+        !Number.isFinite(lng) ||
+        lat < -90 ||
+        lat > 90 ||
+        lng < -180 ||
+        lng > 180
+      ) {
+        return sendError(res, 400, "lat and lng are required and must be within valid ranges");
       }
       const provider = mapProviderFrom(url);
       const result = provider === "google"
