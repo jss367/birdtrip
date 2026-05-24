@@ -415,6 +415,55 @@ function savePreferences() {
   }
 }
 
+// Set by hydrate/merge to suppress the write-through that would otherwise
+// echo just-fetched account data back to the account.
+let suppressProfileUpsert = false;
+
+function hydrateFromAccount() {
+  if (!window.birdtripAuth || !window.birdtripAuth.user) return Promise.resolve();
+  return window.birdtripAuth.getProfile().then((profile) => {
+    if (!profile) return;
+    applyAccountProfile(profile, { lifeList: true, targets: true, token: true, preferences: true });
+    suppressProfileUpsert = true;
+    try { savePreferences(); } finally { suppressProfileUpsert = false; }
+  });
+}
+
+function applyAccountProfile(profile, which) {
+  if (which.lifeList && profile.life_list && typeof profile.life_list === "object"
+      && Array.isArray(profile.life_list.species) && profile.life_list.species.length) {
+    state.lifeList = {
+      source: typeof profile.life_list.source === "string" ? profile.life_list.source : "",
+      fileName: typeof profile.life_list.fileName === "string" ? profile.life_list.fileName : "",
+      importedAt: typeof profile.life_list.importedAt === "string" ? profile.life_list.importedAt : "",
+      species: new Set(profile.life_list.species.map(normalizeName).filter(Boolean)),
+      displayNames: (profile.life_list.displayNames || []).map(String).filter(Boolean)
+    };
+    updateLifeListStatus();
+  }
+
+  if (which.targets && typeof profile.targets === "string" && profile.targets.length) {
+    els.targets.value = profile.targets;
+  }
+
+  if (which.token && typeof profile.ebird_token === "string" && profile.ebird_token.length) {
+    els.apiToken.value = profile.ebird_token;
+    els.rememberToken.checked = true;
+    updateSetupStatus();
+  }
+
+  if (which.preferences && profile.preferences && typeof profile.preferences === "object") {
+    for (const field of PREF_FIELDS) {
+      const value = profile.preferences[field];
+      if (typeof value === "string" && value.length) {
+        els[field].value = value;
+      }
+    }
+  }
+
+  updateInputSummaries();
+}
+
 function setSearchMode(mode, options = {}) {
   const { persist = true } = options;
   const previousMode = state.mode;
