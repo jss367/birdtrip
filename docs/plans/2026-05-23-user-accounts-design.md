@@ -1,6 +1,6 @@
 # User Accounts & Personalization — Design
 
-Status: Validated through brainstorming, 2026-05-23. Not yet implemented.
+Status: Implemented 2026-05-23 per `docs/plans/2026-05-23-user-accounts-plan.md`, behind a `?auth=1` feature flag pending end-to-end verification. Follow-ups listed at bottom remain open.
 
 ## Goal
 
