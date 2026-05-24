@@ -77,6 +77,48 @@
     setSession(null);
   };
 
+  auth.getProfile = async function getProfile() {
+    if (!auth.client || !auth.user) return null;
+    try {
+      const { data, error } = await auth.client
+        .from("profiles")
+        .select("life_list, targets, ebird_token, preferences")
+        .eq("user_id", auth.user.id)
+        .maybeSingle();
+      if (error) {
+        console.warn("Profile fetch failed:", error.message);
+        return null;
+      }
+      return data || {
+        life_list: {},
+        targets: "",
+        ebird_token: null,
+        preferences: {}
+      };
+    } catch (err) {
+      console.warn("Profile fetch threw:", err && err.message);
+      return null;
+    }
+  };
+
+  auth.upsertProfile = async function upsertProfile(patch) {
+    if (!auth.client || !auth.user) return { ok: false, reason: "not-signed-in" };
+    const payload = { user_id: auth.user.id, ...patch };
+    try {
+      const { error } = await auth.client
+        .from("profiles")
+        .upsert(payload, { onConflict: "user_id" });
+      if (error) {
+        console.warn("Profile upsert failed:", error.message);
+        return { ok: false, reason: error.message };
+      }
+      return { ok: true };
+    } catch (err) {
+      console.warn("Profile upsert threw:", err && err.message);
+      return { ok: false, reason: (err && err.message) || "unknown" };
+    }
+  };
+
   auth.onChange = function onChange(fn) {
     auth.listeners.add(fn);
     // Fire immediately with current state so callers don't have to special-case.
