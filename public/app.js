@@ -17,6 +17,7 @@ const state = {
   destination: null,
   areaCenter: null,
   provider: "osm",
+  userSelectedProvider: false,
   lifeList: {
     source: "",
     fileName: "",
@@ -26,6 +27,7 @@ const state = {
   },
   config: {
     defaultMapProvider: "osm",
+    ebirdConfigured: null,
     providers: {
       osm: { enabled: true },
       google: { enabled: false, browserKey: "", serverConfigured: false }
@@ -33,7 +35,8 @@ const state = {
     ebird: {
       serverConfigured: false
     }
-  }
+  },
+  configReady: null
 };
 
 const els = {
@@ -140,6 +143,7 @@ const autocomplete = {
 
 const PREF_FIELDS = ["origin", "destination", "mapProvider", "maxDetour", "recentDays", "radiusKm", "maxStops", "targets"];
 const SAVED_TRIPS_KEY = "birdtripSavedTrips";
+const CONFIG_WAIT_TIMEOUT_MS = 6000;
 const SHARE_URL_VERSION = "1";
 
 function init() {
@@ -155,6 +159,11 @@ function init() {
   updateSetupStatus();
   updateInputSummaries();
   renderSavedTrips();
+  const configReady = loadAppConfig();
+  state.configReady = configReady;
+  configReady.then(() => {
+    if (!state.configReady) reapplyStartupProvider(preferredProvider);
+  });
   initializeStartupMap(preferredProvider, sharedSearch);
 
   els.form.addEventListener("submit", (event) => {
@@ -174,7 +183,10 @@ function init() {
     updateSetupStatus();
   });
   els.apiToken.addEventListener("input", updateSetupStatus);
-  els.mapProvider.addEventListener("change", () => setMapProvider(providerFromInput()));
+  els.mapProvider.addEventListener("change", () => {
+    state.userSelectedProvider = true;
+    setMapProvider(providerFromInput());
+  });
   els.targets.addEventListener("input", updateInputSummaries);
   els.lifeListInput.addEventListener("change", handleLifeListFile);
   els.clearLifeListButton.addEventListener("click", clearLifeList);
@@ -196,7 +208,13 @@ function init() {
     els.origin.focus();
   });
   els.modalExploreButton.addEventListener("click", () => {
-    setStatus("Explore without setup", "Enter a route to preview distance and drive time. Add an eBird token when you want live bird rankings.");
+    const needsToken = !shouldAttemptEbirdSearch();
+    setStatus(
+      needsToken ? "Explore without setup" : "Ready",
+      needsToken
+        ? "Enter a route to preview distance and drive time. Add an eBird token when you want live bird rankings."
+        : "Enter a route to load recent sightings and notable reports."
+    );
     closeQuickStart();
     els.origin.focus();
   });
@@ -238,15 +256,33 @@ function init() {
 async function initializeStartupMap(preferredProvider, sharedSearch) {
   try {
     await setMapProvider("osm", { persist: false, preserveData: false });
-    await loadAppConfig(preferredProvider);
-    updateSetupStatus();
-    if (sharedSearch?.autoRun && hasRunnableSearchInputs()) {
-      setStatus("Refreshing shared trip", "Loading the route and latest birding stops from this link.");
-      await runSearch({ persistPreferences: false });
-    }
   } catch (error) {
     setStatus("Map setup failed", error.message || "The map could not be initialized.");
     console.error(error);
+  }
+
+  await waitForAppConfig();
+  try {
+    await setMapProvider(resolveProvider(preferredProvider || state.config.defaultMapProvider || providerFromInput()), { persist: false });
+  } catch (error) {
+    addWarning(`Map could not be initialized: ${error.message}. Searches can continue with the current setup.`);
+    renderWarnings();
+  }
+  if (sharedSearch?.autoRun && hasRunnableSearchInputs()) {
+    setStatus("Refreshing shared trip", "Loading the route and latest birding stops from this link.");
+    await runSearch({ persistPreferences: false });
+  }
+}
+
+async function reapplyStartupProvider(preferredProvider) {
+  if (state.userSelectedProvider) return;
+  const nextProvider = resolveProvider(preferredProvider || state.config.defaultMapProvider || providerFromInput());
+  if (state.provider === nextProvider) return;
+  try {
+    await setMapProvider(nextProvider, { persist: false });
+  } catch (error) {
+    addWarning(`Map could not be initialized: ${error.message}. Searches can continue with the current setup.`);
+    renderWarnings();
   }
 }
 
@@ -765,23 +801,38 @@ function createTripId() {
   return `trip-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-async function loadAppConfig(preferredProvider) {
+async function loadAppConfig() {
   try {
     const config = await apiJson("/api/config");
+    const ebirdServerConfigured = Boolean(config.ebirdConfigured || config.ebird?.serverConfigured);
     state.config = {
       ...state.config,
       ...config,
+      ebirdConfigured: ebirdServerConfigured,
       providers: {
         ...state.config.providers,
         ...(config.providers || {})
+      },
+      ebird: {
+        ...state.config.ebird,
+        ...(config.ebird || {}),
+        serverConfigured: ebirdServerConfigured
       }
     };
   } catch (error) {
+    state.config = {
+      ...state.config,
+      ebirdConfigured: false,
+      ebird: {
+        ...state.config.ebird,
+        serverConfigured: false
+      }
+    };
     addWarning(`Map service setup could not be checked: ${error.message}`);
     renderWarnings();
   }
   setupProviderControl();
-  await setMapProvider(resolveProvider(preferredProvider || state.config.defaultMapProvider || providerFromInput()), { persist: false });
+  updateSetupStatus();
 }
 
 function setupProviderControl() {
@@ -987,12 +1038,13 @@ function clearResults() {
 async function runSearch(options = {}) {
   const { persistPreferences = true } = options;
   if (persistPreferences) savePreferences();
-  const params = readParams();
   setBusy(true);
-  clearSearchArtifacts();
-  state.params = params;
 
   try {
+    await waitForAppConfig();
+    const params = readParams();
+    clearSearchArtifacts();
+    state.params = params;
     if (params.mode === "area") {
       await runAreaSearch(params);
     } else {
@@ -1005,6 +1057,49 @@ async function runSearch(options = {}) {
     console.error(error);
   } finally {
     setBusy(false);
+  }
+}
+
+async function waitForAppConfig(timeoutMs = CONFIG_WAIT_TIMEOUT_MS) {
+  if (!state.configReady) return;
+
+  let timeoutId;
+  const timeout = new Promise((resolve) => {
+    timeoutId = setTimeout(() => resolve("timeout"), timeoutMs);
+  });
+
+  const result = await Promise.race([
+    state.configReady.then(() => "ready", (error) => ({ error })),
+    timeout
+  ]);
+  if (timeoutId) clearTimeout(timeoutId);
+
+  if (result === "timeout") {
+    state.configReady = null;
+    state.config = {
+      ...state.config,
+      ebirdConfigured: false,
+      ebird: {
+        ...state.config.ebird,
+        serverConfigured: false
+      }
+    };
+    updateSetupStatus();
+    addWarning("Setup check is taking longer than expected. Continuing with the current setup state.");
+    renderWarnings();
+  } else if (result?.error) {
+    state.configReady = null;
+    state.config = {
+      ...state.config,
+      ebirdConfigured: false,
+      ebird: {
+        ...state.config.ebird,
+        serverConfigured: false
+      }
+    };
+    updateSetupStatus();
+    addWarning(`Setup check failed: ${result.error.message}. Continuing with the current setup state.`);
+    renderWarnings();
   }
 }
 
@@ -1029,11 +1124,11 @@ async function runRouteSearch(params) {
   renderRoute(route.geometry.coordinates);
   updateRouteSummary(route);
 
-  if (!canUseBirdData(params)) {
-    setStatus("Token needed", "Route loaded. Add an eBird API token to rank live birding stops.");
-    els.resultContext.textContent = "Route loaded, but live bird data needs an eBird token.";
+  if (!shouldAttemptEbirdSearch()) {
+    setStatus("Token needed", "Route loaded. Add an eBird token or configure EBIRD_API_KEY to rank live birding stops.");
+    els.resultContext.textContent = "Route loaded, but live bird data needs eBird access.";
     els.resultsList.className = "results-list empty";
-    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add an eBird API token to rank live birding stops.</p></div>';
+    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add an eBird token or configure EBIRD_API_KEY to rank live birding stops.</p></div>';
     if (window.lucide) window.lucide.createIcons();
     return;
   }
@@ -1086,11 +1181,11 @@ async function runAreaSearch(params) {
   renderArea(center, params.radiusKm);
   updateAreaSummary(params.radiusKm);
 
-  if (!canUseBirdData(params)) {
-    setStatus("Token needed", "Area loaded. Add an eBird API token to rank live birding stops.");
-    els.resultContext.textContent = "Area loaded, but live bird data needs an eBird token.";
+  if (!shouldAttemptEbirdSearch()) {
+    setStatus("Token needed", "Area loaded. Add an eBird token or configure EBIRD_API_KEY to rank live birding stops.");
+    els.resultContext.textContent = "Area loaded, but live bird data needs eBird access.";
     els.resultsList.className = "results-list empty";
-    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add an eBird API token to rank live birding stops.</p></div>';
+    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add an eBird token or configure EBIRD_API_KEY to rank live birding stops.</p></div>';
     if (window.lucide) window.lucide.createIcons();
     return;
   }
@@ -1145,10 +1240,6 @@ function readParams() {
       .filter(Boolean),
     lifeList: new Set(state.lifeList.species)
   };
-}
-
-function canUseBirdData(params = readParams()) {
-  return Boolean(params.token || state.config.ebird?.serverConfigured);
 }
 
 function applyPendingSharedPins() {
@@ -1272,15 +1363,30 @@ function closeQuickStart() {
 }
 
 function updateSetupStatus() {
-  const hasToken = Boolean(els.apiToken.value.trim());
-  const hasBirdData = hasToken || state.config.ebird?.serverConfigured;
-  els.setupStatus.classList.toggle("setup-ready", hasBirdData);
-  els.setupStatus.classList.toggle("setup-needed", !hasBirdData);
-  els.setupStatus.innerHTML = hasBirdData
-    ? '<i data-lucide="check-circle-2"></i>Ready to Search'
-    : '<i data-lucide="circle-alert"></i>Setup Required';
+  const hasAccess = hasEbirdAccess();
+  const isChecking = state.config.ebirdConfigured === null && !els.apiToken.value.trim();
+  els.setupStatus.classList.toggle("setup-checking", isChecking);
+  els.setupStatus.classList.toggle("setup-ready", hasAccess);
+  els.setupStatus.classList.toggle("setup-needed", !isChecking && !hasAccess);
+  els.setupStatus.innerHTML = isChecking
+    ? '<i data-lucide="loader-circle"></i>Checking Setup'
+    : hasAccess
+      ? '<i data-lucide="check-circle-2"></i>Ready to Search'
+      : '<i data-lucide="circle-alert"></i>Setup Required';
   renderInsights();
   if (window.lucide) window.lucide.createIcons();
+}
+
+function hasEbirdAccess() {
+  return Boolean(
+    els.apiToken.value.trim() ||
+    state.config.ebirdConfigured === true ||
+    state.config.ebird?.serverConfigured === true
+  );
+}
+
+function shouldAttemptEbirdSearch() {
+  return hasEbirdAccess();
 }
 
 function updateInputSummaries() {
@@ -3085,7 +3191,7 @@ function observationAliases(obs) {
 function renderInsights() {
   const liveDetour = clamp(Number(els.maxDetour.value || 60), 0, 240);
   const liveTargets = parseTargetsInput();
-  const hasBirdData = Boolean(els.apiToken.value.trim() || state.config.ebird?.serverConfigured);
+  const canAttemptSearch = shouldAttemptEbirdSearch();
   const lifeListCount = state.lifeList.displayNames.length || state.lifeList.species.size;
   if (state.mode === "area") {
     els.tripPlanSummary.textContent = state.areaCenter
@@ -3119,8 +3225,8 @@ function renderInsights() {
     const liferCount = uniqueLiferCount(state.results);
     els.sightingSummary.textContent = `${speciesCount} recent species across ${state.results.length} ranked stops, including ${notableCount} notable species${state.lifeList.species.size ? ` and ${liferCount} likely lifers` : ""}.`;
   } else {
-    const searchedWithoutBirdData = state.mode === "area" ? state.areaCenter && !hasBirdData : state.route && !hasBirdData;
-    els.sightingSummary.textContent = searchedWithoutBirdData
+    const searchedWithoutToken = state.mode === "area" ? state.areaCenter && !canAttemptSearch : state.route && !canAttemptSearch;
+    els.sightingSummary.textContent = searchedWithoutToken
       ? `${state.mode === "area" ? "Area" : "Route"} is ready. Add an eBird token to load recent sightings and notable reports.`
       : "Recent eBird activity and notable reports appear after search.";
   }

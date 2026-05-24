@@ -582,6 +582,12 @@ select {
   height: 17px;
 }
 
+.setup-checking {
+  color: var(--muted-strong);
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+}
+
 .saved-trip-actions {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 44px;

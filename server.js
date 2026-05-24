@@ -328,6 +328,7 @@ async function handleApi(req, res, url) {
     if (url.pathname === "/api/config") {
       return sendJson(res, 200, {
         defaultMapProvider: DEFAULT_MAP_PROVIDER,
+        ebirdConfigured: Boolean(process.env.EBIRD_API_KEY),
         providers: {
           osm: {
             enabled: true
