@@ -374,6 +374,42 @@ select {
   background: transparent;
 }
 
+.current-location-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 4px 8px;
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  color: var(--accent-strong);
+  font-size: 0.74rem;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.current-location-button:hover {
+  background: var(--panel-soft);
+  border-color: var(--accent);
+}
+
+.current-location-button:disabled {
+  cursor: progress;
+  color: var(--muted);
+  border-color: var(--line-strong);
+  background: transparent;
+}
+
+.current-location-button svg {
+  width: 14px;
+  height: 14px;
+}
+
 .field-error {
   color: var(--rose);
   font-size: 0.76rem;

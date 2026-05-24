@@ -133,7 +133,9 @@ const els = {
   submitLabel: document.querySelector("#submitLabel"),
   mapAreaLegend: document.querySelector("#mapAreaLegend"),
   originSuggestions: document.querySelector("#originSuggestions"),
-  destinationSuggestions: document.querySelector("#destinationSuggestions")
+  destinationSuggestions: document.querySelector("#destinationSuggestions"),
+  useCurrentLocationButton: document.querySelector("#useCurrentLocationButton"),
+  useCurrentLocationLabel: document.querySelector("#useCurrentLocationLabel")
 };
 
 const autocomplete = {
@@ -247,6 +249,7 @@ function init() {
   setupLocationAutocomplete("origin");
   setupLocationAutocomplete("destination");
   document.addEventListener("click", handleAutocompleteOutsideClick);
+  els.useCurrentLocationButton.addEventListener("click", useCurrentLocationForOrigin);
 
   renderItineraryBuilder();
   renderComparison();
@@ -1743,8 +1746,11 @@ function truncate(value, max) {
 }
 
 async function geocodeField(field, query, provider) {
+  const currentLocation = parseCurrentLocationFallback(query, provider);
+  if (currentLocation) return currentLocation;
+
   const cached = autocomplete[field]?.resolved;
-  if (cached && cached.name === query && cached.provider === provider) {
+  if (cached && cached.name === query && (cached.userLocation || cached.provider === provider)) {
     return cached;
   }
   let matches;
@@ -1759,6 +1765,100 @@ async function geocodeField(field, query, provider) {
     throw new Error(`Could not geocode ${field}: ${query}`);
   }
   return matches[0];
+}
+
+function formatCurrentLocationFallback(lat, lng) {
+  return `Current location (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
+}
+
+function parseCurrentLocationFallback(query, provider) {
+  const match = String(query || "").trim().match(/^Current location \((-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)\)$/);
+  if (!match) return null;
+
+  const lat = Number(match[1]);
+  const lng = Number(match[2]);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+    return null;
+  }
+
+  return {
+    name: formatCurrentLocationFallback(lat, lng),
+    lat,
+    lng,
+    provider,
+    userLocation: true
+  };
+}
+
+async function useCurrentLocationForOrigin() {
+  if (!("geolocation" in navigator)) {
+    setFieldError("origin", "This browser does not support location access.");
+    return;
+  }
+  const button = els.useCurrentLocationButton;
+  const label = els.useCurrentLocationLabel;
+  const originalLabel = label.textContent;
+  button.disabled = true;
+  label.textContent = "Locating…";
+  clearFieldErrors();
+  try {
+    const position = await new Promise((resolve, reject) => {
+      navigator.geolocation.getCurrentPosition(resolve, reject, {
+        enableHighAccuracy: true,
+        timeout: 15000,
+        maximumAge: 60000
+      });
+    });
+    const lat = Number(position.coords.latitude);
+    const lng = Number(position.coords.longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      throw new Error("Location coordinates were unavailable.");
+    }
+    const provider = providerFromInput();
+    label.textContent = "Resolving…";
+    let displayName = "";
+    try {
+      const reverse = await apiJson(
+        `/api/reverse-geocode?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}&provider=${provider}`
+      );
+      displayName = reverse && typeof reverse.name === "string" ? reverse.name.trim() : "";
+    } catch {
+      displayName = "";
+    }
+    if (!displayName) {
+      displayName = formatCurrentLocationFallback(lat, lng);
+    }
+    els.origin.value = displayName;
+    autocomplete.origin.resolved = {
+      name: displayName,
+      lat,
+      lng,
+      provider,
+      userLocation: true
+    };
+    autocomplete.origin.items = [];
+    autocomplete.origin.activeIndex = -1;
+    autocomplete.origin.lastQuery = displayName;
+    hideAutocomplete("origin");
+    updateInputSummaries();
+    savePreferences();
+  } catch (error) {
+    const message = describeGeolocationError(error);
+    setFieldError("origin", message);
+  } finally {
+    button.disabled = false;
+    label.textContent = originalLabel;
+  }
+}
+
+function describeGeolocationError(error) {
+  if (!error) return "Could not get current location.";
+  if (typeof error.code === "number") {
+    if (error.code === 1) return "Location permission was denied. Enable it in your browser settings to use this option.";
+    if (error.code === 2) return "Could not determine your location right now. Try again or enter it manually.";
+    if (error.code === 3) return "Location request timed out. Try again or enter your origin manually.";
+  }
+  return error.message || "Could not get current location.";
 }
 
 function setupLocationAutocomplete(field) {
