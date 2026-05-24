@@ -322,6 +322,47 @@
             <p id="sightingSummary">Recent eBird activity and notable reports appear after search.</p>
           </section>
         </div>
+        <section id="routeTradeoffPanel" class="route-tradeoff-panel" hidden>
+          <div class="route-tradeoff-header">
+            <div>
+              <div class="route-tradeoff-kicker"><i data-lucide="split"></i><span>Route Tradeoff</span></div>
+              <h3 id="routeTradeoffTitle">Fastest route vs birding route</h3>
+              <p id="routeTradeoffSummary">Run a route search to see what extra birding a small time tradeoff unlocks.</p>
+            </div>
+            <div class="route-tradeoff-actions">
+              <button type="button" id="previewBirdingRouteButton" class="ghost-button">
+                <i data-lucide="map"></i>
+                Preview
+              </button>
+              <button type="button" id="pinBirdingRouteButton" class="ghost-button">
+                <i data-lucide="pin"></i>
+                Pin Best
+              </button>
+              <button type="button" id="compareBirdingRouteButton" class="ghost-button">
+                <i data-lucide="columns-3"></i>
+                Compare
+              </button>
+            </div>
+          </div>
+          <div class="route-choice-grid">
+            <article class="route-choice-card">
+              <span>Fastest</span>
+              <b id="fastestRouteTime">-</b>
+              <small id="fastestRouteMeta">Direct drive</small>
+            </article>
+            <article class="route-choice-card route-choice-card-birding">
+              <span>Birding Option</span>
+              <b id="birdingRouteTime">-</b>
+              <small id="birdingRouteMeta">Best ranked stop within budget</small>
+            </article>
+            <article class="route-choice-card">
+              <span>Extra Time</span>
+              <b id="birdingRouteExtra">-</b>
+              <small id="birdingValuePerMinute">Birding value per minute</small>
+            </article>
+          </div>
+          <div id="budgetUnlocks" class="budget-unlocks" aria-label="Birding unlocked by extra time"></div>
+        </section>
         <section id="itineraryBuilder" class="itinerary-builder" aria-live="polite">
           <div class="itinerary-heading">
             <div>
