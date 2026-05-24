@@ -144,6 +144,10 @@ const autocomplete = {
 };
 
 const PREF_FIELDS = ["origin", "destination", "mapProvider", "maxDetour", "recentDays", "radiusKm", "maxStops", "targets"];
+// Fields that have their own column in the profiles row and explicit merge
+// handling; must NOT be re-applied by the silent preferences merge or we'd
+// clobber the user's conflict choice.
+const ACCOUNT_OWNED_FIELDS = new Set(["targets"]);
 const SAVED_TRIPS_KEY = "birdtripSavedTrips";
 const CONFIG_WAIT_TIMEOUT_MS = 6000;
 const SHARE_URL_VERSION = "1";
@@ -437,6 +441,7 @@ function buildProfilePatch() {
     targets: els.targets.value || "",
     ebird_token: els.rememberToken.checked ? (els.apiToken.value || null) : null,
     preferences: PREF_FIELDS.reduce((acc, field) => {
+      if (ACCOUNT_OWNED_FIELDS.has(field)) return acc;
       acc[field] = els[field].value;
       return acc;
     }, {})
@@ -466,13 +471,53 @@ function queueProfileUpsert() {
 // Reentrancy guard: the auth listener can fire repeatedly during sign-in.
 let mergeAndHydrateInFlight = false;
 
+// Clears user-specific state from memory and localStorage on sign-out so a
+// shared browser doesn't leak the previous user's life list, targets, or
+// token to whoever uses the app next. Non-sensitive search preferences
+// (map provider, radius, recent days, etc.) survive.
+function clearStateOnSignOut() {
+  state.lifeList = {
+    source: "",
+    fileName: "",
+    importedAt: "",
+    species: new Set(),
+    displayNames: []
+  };
+  els.targets.value = "";
+  els.apiToken.value = "";
+  els.rememberToken.checked = false;
+  updateLifeListStatus();
+  updateInputSummaries();
+  updateSetupStatus();
+  // Persist the cleared state to localStorage immediately.
+  suppressProfileUpsert = true;
+  try { savePreferences(); } finally { suppressProfileUpsert = false; }
+}
+
+const MERGE_OPTIONS_LIST_CONFLICT = [
+  { value: "use-account", label: "Use account" },
+  { value: "keep-local", label: "Use this browser" },
+  { value: "merge-union", label: "Merge (union)" }
+];
+const MERGE_OPTIONS_SCALAR_CONFLICT = [
+  { value: "use-account", label: "Use account" },
+  { value: "keep-local", label: "Use this browser" }
+];
+
 async function runMergeAndHydrate() {
   if (mergeAndHydrateInFlight) return;
   if (!window.birdtripAuth || !window.birdtripAuth.user) return;
+  const userIdAtStart = window.birdtripAuth.user.id;
   mergeAndHydrateInFlight = true;
   try {
     const account = await window.birdtripAuth.getProfile();
-    if (!account) return;
+    // The user may have signed out (or switched accounts) while we were awaiting.
+    if (!window.birdtripAuth.user || window.birdtripAuth.user.id !== userIdAtStart) return;
+    if (!account) {
+      addWarning("Couldn't load your account data - using browser state for now.");
+      renderWarnings();
+      return;
+    }
 
     const conflicts = [];
     const decisions = {};
@@ -496,7 +541,7 @@ async function runMergeAndHydrate() {
       conflicts.push({
         key: "lifeList",
         label: `Life list (browser: ${localLLSize}, account: ${accountLLSize})`,
-        options: ["Use account", "Use this browser", "Merge (union)"]
+        options: MERGE_OPTIONS_LIST_CONFLICT
       });
     }
 
@@ -515,7 +560,7 @@ async function runMergeAndHydrate() {
       conflicts.push({
         key: "targets",
         label: "Target species",
-        options: ["Use account", "Use this browser"]
+        options: MERGE_OPTIONS_SCALAR_CONFLICT
       });
     }
 
@@ -534,18 +579,21 @@ async function runMergeAndHydrate() {
       conflicts.push({
         key: "token",
         label: "eBird API token",
-        options: ["Use account", "Use this browser"]
+        options: MERGE_OPTIONS_SCALAR_CONFLICT
       });
     }
 
-    // Preferences are merged silently: account-wins for any non-empty account value,
-    // local wins where account is empty. Not worth a modal for a handful of small fields.
+    // Preferences merge silently: account-wins for any non-empty account value,
+    // local wins where account is empty. Excludes ACCOUNT_OWNED_FIELDS, which
+    // have their own column + explicit conflict handling above.
     decisions.preferences = "merge-silently";
 
     if (conflicts.length) {
       const choices = await showMergeDialog(conflicts);
+      // Re-check user after awaiting modal.
+      if (!window.birdtripAuth.user || window.birdtripAuth.user.id !== userIdAtStart) return;
       for (const c of conflicts) {
-        decisions[c.key] = choices[c.key] || c.options[0];
+        decisions[c.key] = choices[c.key] || c.options[0].value;
       }
     }
 
@@ -562,9 +610,9 @@ async function runMergeAndHydrate() {
 
 function applyMergeDecisions(account, decisions) {
   // life_list
-  if (decisions.lifeList === "use-account" || decisions.lifeList === "Use account") {
+  if (decisions.lifeList === "use-account") {
     applyAccountProfile(account, { lifeList: true });
-  } else if (decisions.lifeList === "Merge (union)") {
+  } else if (decisions.lifeList === "merge-union") {
     const accountSpecies = (account.life_list && Array.isArray(account.life_list.species))
       ? account.life_list.species : [];
     const accountDisplay = (account.life_list && Array.isArray(account.life_list.displayNames))
@@ -586,18 +634,20 @@ function applyMergeDecisions(account, decisions) {
   // "keep-local" / "Use this browser" / "noop": leave local state alone.
 
   // targets
-  if (decisions.targets === "use-account" || decisions.targets === "Use account") {
+  if (decisions.targets === "use-account") {
     applyAccountProfile(account, { targets: true });
   }
 
   // token
-  if (decisions.token === "use-account" || decisions.token === "Use account") {
+  if (decisions.token === "use-account") {
     applyAccountProfile(account, { token: true });
   }
 
-  // preferences: silent account-wins per non-empty field
+  // preferences: silent account-wins per non-empty field, skipping any field
+  // that has its own column + explicit conflict handling.
   if (account.preferences && typeof account.preferences === "object") {
     for (const field of PREF_FIELDS) {
+      if (ACCOUNT_OWNED_FIELDS.has(field)) continue;
       const value = account.preferences[field];
       if (typeof value === "string" && value.length) {
         els[field].value = value;
@@ -626,12 +676,12 @@ function showMergeDialog(conflicts) {
       const select = document.createElement("select");
       for (const opt of c.options) {
         const o = document.createElement("option");
-        o.value = opt;
-        o.textContent = opt;
+        o.value = opt.value;
+        o.textContent = opt.label;
         select.appendChild(o);
       }
       select.addEventListener("change", () => { choices[c.key] = select.value; });
-      choices[c.key] = c.options[0];
+      choices[c.key] = c.options[0].value;
       li.appendChild(label);
       li.appendChild(select);
       list.appendChild(li);
@@ -639,10 +689,15 @@ function showMergeDialog(conflicts) {
     modal.hidden = false;
     const onConfirm = () => {
       confirm.removeEventListener("click", onConfirm);
+      document.removeEventListener("keydown", onKey);
       modal.hidden = true;
       resolve(choices);
     };
+    const onKey = (e) => {
+      if (e.key === "Escape") onConfirm();
+    };
     confirm.addEventListener("click", onConfirm);
+    document.addEventListener("keydown", onKey);
   });
 }
 
@@ -1109,10 +1164,17 @@ async function loadAppConfig() {
       console.warn("Auth init failed:", err && err.message);
     }
     if (typeof window.birdtripAuth.onChange === "function") {
+      let previousUserId = window.birdtripAuth.user ? window.birdtripAuth.user.id : null;
       window.birdtripAuth.onChange(async (user) => {
-        if (!user) return;
-        if (typeof runMergeAndHydrate === "function") {
+        const nextUserId = user ? user.id : null;
+        if (nextUserId === previousUserId) return;
+        const wasSignedIn = Boolean(previousUserId);
+        const isSignedIn = Boolean(nextUserId);
+        previousUserId = nextUserId;
+        if (isSignedIn) {
           await runMergeAndHydrate();
+        } else if (wasSignedIn) {
+          clearStateOnSignOut();
         }
       });
     }

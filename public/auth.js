@@ -59,10 +59,13 @@
 
   auth.signIn = async function signIn() {
     if (!auth.client) return;
-    const redirectTo = window.location.origin + window.location.pathname + "?auth=1";
+    // Preserve any other query params (e.g. shared trip links) across the round trip.
+    const here = new URL(window.location.href);
+    here.searchParams.set("auth", "1");
+    here.hash = "";
     const { error } = await auth.client.auth.signInWithOAuth({
       provider: "google",
-      options: { redirectTo }
+      options: { redirectTo: here.toString() }
     });
     if (error) showAuthStatus(`Sign-in failed: ${error.message}`);
   };
