@@ -473,6 +473,189 @@ function hydrateFromAccount() {
   });
 }
 
+// Reentrancy guard: the auth listener can fire repeatedly during sign-in.
+let mergeAndHydrateInFlight = false;
+
+async function runMergeAndHydrate() {
+  if (mergeAndHydrateInFlight) return;
+  if (!window.birdtripAuth || !window.birdtripAuth.user) return;
+  mergeAndHydrateInFlight = true;
+  try {
+    const account = await window.birdtripAuth.getProfile();
+    if (!account) return;
+
+    const conflicts = [];
+    const decisions = {};
+
+    // life_list
+    const localLLSize = state.lifeList.species.size;
+    const accountLLArr = (account.life_list && Array.isArray(account.life_list.species))
+      ? account.life_list.species : [];
+    const accountLLSize = accountLLArr.length;
+    const lifeListEqual = localLLSize === accountLLSize && localLLSize > 0
+      && accountLLArr.every((s) => state.lifeList.species.has(normalizeName(s)));
+    if (!localLLSize && !accountLLSize) {
+      decisions.lifeList = "noop";
+    } else if (!accountLLSize && localLLSize) {
+      decisions.lifeList = "keep-local";
+    } else if (accountLLSize && !localLLSize) {
+      decisions.lifeList = "use-account";
+    } else if (lifeListEqual) {
+      decisions.lifeList = "noop";
+    } else {
+      conflicts.push({
+        key: "lifeList",
+        label: `Life list (browser: ${localLLSize}, account: ${accountLLSize})`,
+        options: ["Use account", "Use this browser", "Merge (union)"]
+      });
+    }
+
+    // targets (free text)
+    const localTargets = (els.targets.value || "").trim();
+    const accountTargets = (account.targets || "").trim();
+    if (!localTargets && !accountTargets) {
+      decisions.targets = "noop";
+    } else if (!accountTargets && localTargets) {
+      decisions.targets = "keep-local";
+    } else if (accountTargets && !localTargets) {
+      decisions.targets = "use-account";
+    } else if (localTargets === accountTargets) {
+      decisions.targets = "noop";
+    } else {
+      conflicts.push({
+        key: "targets",
+        label: "Target species",
+        options: ["Use account", "Use this browser"]
+      });
+    }
+
+    // ebird_token
+    const localToken = els.rememberToken.checked ? (els.apiToken.value || "") : "";
+    const accountToken = account.ebird_token || "";
+    if (!localToken && !accountToken) {
+      decisions.token = "noop";
+    } else if (!accountToken && localToken) {
+      decisions.token = "keep-local";
+    } else if (accountToken && !localToken) {
+      decisions.token = "use-account";
+    } else if (localToken === accountToken) {
+      decisions.token = "noop";
+    } else {
+      conflicts.push({
+        key: "token",
+        label: "eBird API token",
+        options: ["Use account", "Use this browser"]
+      });
+    }
+
+    // Preferences are merged silently: account-wins for any non-empty account value,
+    // local wins where account is empty. Not worth a modal for a handful of small fields.
+    decisions.preferences = "merge-silently";
+
+    if (conflicts.length) {
+      const choices = await showMergeDialog(conflicts);
+      for (const c of conflicts) {
+        decisions[c.key] = choices[c.key] || c.options[0];
+      }
+    }
+
+    applyMergeDecisions(account, decisions);
+
+    suppressProfileUpsert = true;
+    try { savePreferences(); } finally { suppressProfileUpsert = false; }
+    // Write the merged state back to the account (covers keep-local and union cases).
+    queueProfileUpsert();
+  } finally {
+    mergeAndHydrateInFlight = false;
+  }
+}
+
+function applyMergeDecisions(account, decisions) {
+  // life_list
+  if (decisions.lifeList === "use-account" || decisions.lifeList === "Use account") {
+    applyAccountProfile(account, { lifeList: true });
+  } else if (decisions.lifeList === "Merge (union)") {
+    const accountSpecies = (account.life_list && Array.isArray(account.life_list.species))
+      ? account.life_list.species : [];
+    const accountDisplay = (account.life_list && Array.isArray(account.life_list.displayNames))
+      ? account.life_list.displayNames : [];
+    accountSpecies.map(normalizeName).filter(Boolean).forEach((s) => state.lifeList.species.add(s));
+    const seen = new Set(state.lifeList.displayNames.map((s) => s.toLowerCase()));
+    accountDisplay.map(String).forEach((name) => {
+      const key = name.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        state.lifeList.displayNames.push(name);
+      }
+    });
+    if (!state.lifeList.source && account.life_list && account.life_list.source) {
+      state.lifeList.source = account.life_list.source;
+    }
+    updateLifeListStatus();
+  }
+  // "keep-local" / "Use this browser" / "noop": leave local state alone.
+
+  // targets
+  if (decisions.targets === "use-account" || decisions.targets === "Use account") {
+    applyAccountProfile(account, { targets: true });
+  }
+
+  // token
+  if (decisions.token === "use-account" || decisions.token === "Use account") {
+    applyAccountProfile(account, { token: true });
+  }
+
+  // preferences: silent account-wins per non-empty field
+  if (account.preferences && typeof account.preferences === "object") {
+    for (const field of PREF_FIELDS) {
+      const value = account.preferences[field];
+      if (typeof value === "string" && value.length) {
+        els[field].value = value;
+      }
+    }
+  }
+
+  updateInputSummaries();
+}
+
+function showMergeDialog(conflicts) {
+  return new Promise((resolve) => {
+    const modal = document.querySelector("#authMergeModal");
+    const list = document.querySelector("#authMergeList");
+    const confirm = document.querySelector("#authMergeConfirm");
+    if (!modal || !list || !confirm) {
+      resolve({});
+      return;
+    }
+    list.innerHTML = "";
+    const choices = {};
+    for (const c of conflicts) {
+      const li = document.createElement("li");
+      const label = document.createElement("label");
+      label.textContent = c.label;
+      const select = document.createElement("select");
+      for (const opt of c.options) {
+        const o = document.createElement("option");
+        o.value = opt;
+        o.textContent = opt;
+        select.appendChild(o);
+      }
+      select.addEventListener("change", () => { choices[c.key] = select.value; });
+      choices[c.key] = c.options[0];
+      li.appendChild(label);
+      li.appendChild(select);
+      list.appendChild(li);
+    }
+    modal.hidden = false;
+    const onConfirm = () => {
+      confirm.removeEventListener("click", onConfirm);
+      modal.hidden = true;
+      resolve(choices);
+    };
+    confirm.addEventListener("click", onConfirm);
+  });
+}
+
 function applyAccountProfile(profile, which) {
   if (which.lifeList && profile.life_list && typeof profile.life_list === "object"
       && Array.isArray(profile.life_list.species) && profile.life_list.species.length) {

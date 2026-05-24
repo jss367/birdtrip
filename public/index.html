@@ -502,6 +502,16 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+  <div id="authMergeModal" class="modal-backdrop" hidden role="dialog" aria-modal="true" aria-labelledby="authMergeTitle">
+    <div class="merge-modal">
+      <h2 id="authMergeTitle">Reconcile your account</h2>
+      <p>This browser and your account have different data. Pick which to keep for each item.</p>
+      <ul id="authMergeList" class="merge-list"></ul>
+      <div class="modal-actions">
+        <button id="authMergeConfirm" type="button" class="ghost-button">Apply</button>
+      </div>
+    </div>
+  </div>
   <script src="./auth.js"></script>
   <script src="./app.js"></script>
 </body>
