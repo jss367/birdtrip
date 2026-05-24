@@ -224,6 +224,46 @@ async function geocodeGoogle(q) {
   })).filter((item) => Number.isFinite(item.lat) && Number.isFinite(item.lng));
 }
 
+async function reverseGeocodeOsm(lat, lng) {
+  const endpoint = new URL("https://nominatim.openstreetmap.org/reverse");
+  endpoint.searchParams.set("format", "jsonv2");
+  endpoint.searchParams.set("addressdetails", "1");
+  endpoint.searchParams.set("lat", String(lat));
+  endpoint.searchParams.set("lon", String(lng));
+  const result = await fetchJson(endpoint.toString());
+  if (!result || !result.display_name) return null;
+  return {
+    name: result.display_name,
+    lat: Number(result.lat ?? lat),
+    lng: Number(result.lon ?? lng),
+    type: result.type,
+    provider: "osm"
+  };
+}
+
+async function reverseGeocodeGoogle(lat, lng) {
+  const endpoint = new URL("https://maps.googleapis.com/maps/api/geocode/json");
+  endpoint.searchParams.set("latlng", `${lat},${lng}`);
+  endpoint.searchParams.set("key", requireGoogleServerKey());
+  const result = await fetchJson(endpoint.toString());
+  if (result.status !== "OK" && result.status !== "ZERO_RESULTS") {
+    const error = new Error(result.error_message || result.status || "Google reverse geocoding failed");
+    error.status = 502;
+    error.details = result;
+    throw error;
+  }
+  const first = (result.results || [])[0];
+  if (!first) return null;
+  return {
+    name: first.formatted_address,
+    lat: Number(first.geometry?.location?.lat ?? lat),
+    lng: Number(first.geometry?.location?.lng ?? lng),
+    type: Array.isArray(first.types) ? first.types[0] : "",
+    placeId: first.place_id,
+    provider: "google"
+  };
+}
+
 async function routeOsm(origin, destination, viaPoints = []) {
   const coords = [`${origin.lng},${origin.lat}`];
   viaPoints.forEach((via) => coords.push(`${via.lng},${via.lat}`));
@@ -352,6 +392,19 @@ async function handleApi(req, res, url) {
         ? await geocodeGoogle(q)
         : await geocodeOsm(q);
       return sendJson(res, 200, results);
+    }
+
+    if (url.pathname === "/api/reverse-geocode") {
+      const lat = boundedNumber(url.searchParams.get("lat"), NaN, -90, 90);
+      const lng = boundedNumber(url.searchParams.get("lng"), NaN, -180, 180);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        return sendError(res, 400, "lat and lng are required");
+      }
+      const provider = mapProviderFrom(url);
+      const result = provider === "google"
+        ? await reverseGeocodeGoogle(lat, lng)
+        : await reverseGeocodeOsm(lat, lng);
+      return sendJson(res, 200, result || {});
     }
 
     if (url.pathname === "/api/route" || url.pathname === "/api/route-via" || url.pathname === "/api/route-itinerary") {
