@@ -836,6 +836,21 @@ async function loadAppConfig() {
   }
   setupProviderControl();
   updateSetupStatus();
+  if (window.birdtripAuth && typeof window.birdtripAuth.init === "function") {
+    try {
+      await window.birdtripAuth.init(state.config);
+    } catch (err) {
+      console.warn("Auth init failed:", err && err.message);
+    }
+    if (typeof window.birdtripAuth.onChange === "function") {
+      window.birdtripAuth.onChange(async (user) => {
+        if (!user) return;
+        if (typeof runMergeAndHydrate === "function") {
+          await runMergeAndHydrate();
+        }
+      });
+    }
+  }
 }
 
 function setupProviderControl() {
