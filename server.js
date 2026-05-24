@@ -12,6 +12,8 @@ const DEFAULT_MAP_PROVIDER = MAP_PROVIDERS.has(process.env.MAP_PROVIDER)
   : "osm";
 const GOOGLE_MAPS_BROWSER_KEY = process.env.GOOGLE_MAPS_BROWSER_KEY || process.env.GOOGLE_MAPS_API_KEY || "";
 const GOOGLE_MAPS_SERVER_KEY = process.env.GOOGLE_MAPS_SERVER_KEY || process.env.GOOGLE_MAPS_API_KEY || "";
+const SUPABASE_URL = process.env.SUPABASE_URL || "";
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "";
 const cache = new Map();
 
 const contentTypes = {
@@ -386,6 +388,11 @@ async function handleApi(req, res, url) {
         },
         ebird: {
           serverConfigured: Boolean(process.env.EBIRD_API_KEY)
+        },
+        supabase: {
+          enabled: Boolean(SUPABASE_URL && SUPABASE_ANON_KEY),
+          url: SUPABASE_URL,
+          anonKey: SUPABASE_ANON_KEY
         }
       });
     }
