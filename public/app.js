@@ -463,16 +463,6 @@ function queueProfileUpsert() {
   }, PROFILE_UPSERT_DEBOUNCE_MS);
 }
 
-function hydrateFromAccount() {
-  if (!window.birdtripAuth || !window.birdtripAuth.user) return Promise.resolve();
-  return window.birdtripAuth.getProfile().then((profile) => {
-    if (!profile) return;
-    applyAccountProfile(profile, { lifeList: true, targets: true, token: true, preferences: true });
-    suppressProfileUpsert = true;
-    try { savePreferences(); } finally { suppressProfileUpsert = false; }
-  });
-}
-
 // Reentrancy guard: the auth listener can fire repeatedly during sign-in.
 let mergeAndHydrateInFlight = false;
 
