@@ -73,6 +73,10 @@
             <i data-lucide="map"></i>
             Area
           </button>
+          <button type="button" id="speciesModeButton" data-mode="species" aria-pressed="false">
+            <i data-lucide="bird"></i>
+            Species
+          </button>
         </div>
 
         <section class="form-group" id="locationGroup">
@@ -94,6 +98,18 @@
               <span id="useCurrentLocationLabel">Use current location</span>
             </button>
             <small class="field-error" id="originError" hidden></small>
+          </label>
+          <label id="speciesField" hidden>
+            <span>Species</span>
+            <div class="autocomplete">
+              <input id="speciesQuery" name="speciesQuery" autocomplete="off" spellcheck="false"
+                placeholder="e.g. Vermilion Flycatcher"
+                role="combobox" aria-autocomplete="list" aria-expanded="false"
+                aria-controls="speciesSuggestions" aria-haspopup="listbox">
+              <ul class="autocomplete-list" id="speciesSuggestions" role="listbox" hidden></ul>
+            </div>
+            <small class="field-hint" id="speciesHint">Pick a species to map every recent sighting in the area.</small>
+            <small class="field-error" id="speciesError" hidden></small>
           </label>
           <label id="destinationField">
             <span>Destination</span>
@@ -295,6 +311,7 @@
           <span><b class="legend-dot notable"></b> Notable birds</span>
           <span><b class="legend-dot hotspot"></b> Ranked hotspot</span>
           <span><b class="legend-dot pinned"></b> Pinned stop</span>
+          <span><b class="legend-dot sighting"></b> Species sighting</span>
           <span><b class="legend-line route"></b> <span id="mapAreaLegend">Route corridor</span></span>
         </div>
       </section>

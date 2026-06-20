@@ -368,6 +368,82 @@ async function routeGoogle(origin, destination, viaPoints = []) {
   };
 }
 
+let taxonomyCache = null;
+let taxonomyPromise = null;
+
+async function loadTaxonomy(token) {
+  if (taxonomyCache) return taxonomyCache;
+  if (taxonomyPromise) return taxonomyPromise;
+  taxonomyPromise = (async () => {
+    const endpoint = new URL("https://api.ebird.org/v2/ref/taxonomy/ebird");
+    endpoint.searchParams.set("fmt", "json");
+    endpoint.searchParams.set("cat", "species");
+    endpoint.searchParams.set("locale", "en");
+    const headers = token ? { "x-ebirdapitoken": String(token) } : {};
+    const data = await fetchJson(endpoint.toString(), headers);
+    if (!Array.isArray(data)) {
+      const error = new Error("eBird taxonomy response was not a list");
+      error.status = 502;
+      throw error;
+    }
+    const list = [];
+    const byCode = new Map();
+    for (const item of data) {
+      const code = item.speciesCode;
+      const comName = item.comName;
+      if (!code || !comName) continue;
+      const sciName = item.sciName || "";
+      const entry = {
+        code,
+        comName,
+        sciName,
+        comLower: comName.toLowerCase(),
+        sciLower: sciName.toLowerCase()
+      };
+      list.push(entry);
+      byCode.set(code, entry);
+    }
+    taxonomyCache = { list, byCode };
+    return taxonomyCache;
+  })();
+  try {
+    return await taxonomyPromise;
+  } catch (error) {
+    taxonomyPromise = null;
+    throw error;
+  }
+}
+
+function searchTaxonomy(taxonomy, query, limit = 12) {
+  const q = String(query || "").trim().toLowerCase();
+  if (!q) return [];
+  const starts = [];
+  const contains = [];
+  for (const entry of taxonomy.list) {
+    if (entry.comLower.startsWith(q) || entry.sciLower.startsWith(q)) {
+      starts.push(entry);
+    } else if (entry.comLower.includes(q) || entry.sciLower.includes(q)) {
+      contains.push(entry);
+    }
+    if (starts.length >= limit) break;
+  }
+  return [...starts, ...contains]
+    .slice(0, limit)
+    .map((entry) => ({ speciesCode: entry.code, comName: entry.comName, sciName: entry.sciName }));
+}
+
+function resolveSpecies(taxonomy, name) {
+  const norm = String(name || "").trim().toLowerCase();
+  if (!norm) return null;
+  for (const entry of taxonomy.list) {
+    if (entry.comLower === norm || entry.sciLower === norm) return entry;
+  }
+  const starts = taxonomy.list.filter(
+    (entry) => entry.comLower.startsWith(norm) || entry.sciLower.startsWith(norm)
+  );
+  return starts.length === 1 ? starts[0] : null;
+}
+
 async function handleApi(req, res, url) {
   try {
     if (url.pathname === "/api/config") {
@@ -481,6 +557,68 @@ async function handleApi(req, res, url) {
 
       const data = await fetchJson(endpoint.toString(), { "x-ebirdapitoken": String(token) });
       return sendJson(res, 200, data);
+    }
+
+    if (url.pathname === "/api/ebird/taxonomy/search") {
+      const token = req.headers["x-ebird-api-token"] || process.env.EBIRD_API_KEY;
+      const q = String(url.searchParams.get("q") || "").trim();
+      if (q.length < 1) return sendJson(res, 200, []);
+      const taxonomy = await loadTaxonomy(token);
+      return sendJson(res, 200, searchTaxonomy(taxonomy, q));
+    }
+
+    if (url.pathname === "/api/ebird/species") {
+      const token = req.headers["x-ebird-api-token"] || process.env.EBIRD_API_KEY;
+      if (!token) return sendError(res, 401, "An eBird API token is required");
+
+      const lat = boundedNumber(url.searchParams.get("lat"), NaN, -90, 90);
+      const lng = boundedNumber(url.searchParams.get("lng"), NaN, -180, 180);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        return sendError(res, 400, "lat and lng are required");
+      }
+
+      let speciesCode = String(url.searchParams.get("speciesCode") || "").trim();
+      let resolved = null;
+      if (speciesCode) {
+        const taxonomy = await loadTaxonomy(token).catch(() => null);
+        if (taxonomy) resolved = taxonomy.byCode.get(speciesCode) || null;
+      } else {
+        const name = String(url.searchParams.get("name") || "").trim();
+        if (!name) return sendError(res, 400, "A species code or name is required");
+        const taxonomy = await loadTaxonomy(token);
+        resolved = resolveSpecies(taxonomy, name);
+        if (!resolved) {
+          return sendError(res, 404, `No eBird species matched "${name}"`, {
+            suggestions: searchTaxonomy(taxonomy, name, 6)
+          });
+        }
+        speciesCode = resolved.code;
+      }
+      if (!/^[a-z0-9]+$/i.test(speciesCode)) {
+        return sendError(res, 400, "Invalid species code");
+      }
+
+      const dist = boundedNumber(url.searchParams.get("dist"), 25, 1, 50);
+      const back = boundedNumber(url.searchParams.get("back"), 14, 1, 30);
+      const maxResults = boundedNumber(url.searchParams.get("maxResults"), 1000, 1, 10000);
+      const endpoint = new URL(
+        `https://api.ebird.org/v2/data/obs/geo/recent/${encodeURIComponent(speciesCode)}`
+      );
+      endpoint.searchParams.set("lat", String(lat));
+      endpoint.searchParams.set("lng", String(lng));
+      endpoint.searchParams.set("dist", String(dist));
+      endpoint.searchParams.set("back", String(back));
+      endpoint.searchParams.set("maxResults", String(maxResults));
+      endpoint.searchParams.set("includeProvisional", "true");
+
+      const observations = await fetchJson(endpoint.toString(), { "x-ebirdapitoken": String(token) });
+      return sendJson(res, 200, {
+        speciesCode,
+        species: resolved
+          ? { speciesCode: resolved.code, comName: resolved.comName, sciName: resolved.sciName }
+          : null,
+        observations: Array.isArray(observations) ? observations : []
+      });
     }
 
     return sendError(res, 404, "Unknown API endpoint");

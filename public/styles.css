@@ -181,7 +181,7 @@ textarea:disabled {
 
 .mode-switch {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 4px;
   padding: 4px;
   border: 1px solid var(--line);
@@ -933,6 +933,11 @@ select {
 
 .marker-standard {
   background: var(--blue);
+}
+
+.legend-dot.sighting,
+.marker-sighting {
+  background: #0891b2;
 }
 
 .insight-strip {
@@ -1950,6 +1955,80 @@ button.budget-unlock:focus-visible {
 
 .marker-selected {
   outline: 4px solid rgba(59, 130, 246, 0.28);
+}
+
+.sighting-card {
+  border: 1px solid rgba(216, 223, 211, 0.95);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: var(--soft-shadow);
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  gap: 11px;
+  align-items: center;
+  padding: 12px 13px;
+  text-align: left;
+  width: 100%;
+  cursor: pointer;
+  transition: border 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+}
+
+.sighting-card:hover,
+.sighting-card.is-selected {
+  border-color: rgba(8, 145, 178, 0.6);
+  box-shadow: 0 14px 34px rgba(31, 47, 34, 0.12);
+  transform: translateY(-1px);
+}
+
+.sighting-card .sighting-rank {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  background: #0891b2;
+  color: white;
+  font-weight: 900;
+  font-size: 0.82rem;
+}
+
+.sighting-card .sighting-copy {
+  min-width: 0;
+}
+
+.sighting-card .sighting-loc {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 750;
+  line-height: 1.25;
+}
+
+.sighting-card .sighting-meta {
+  display: block;
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin-top: 2px;
+}
+
+.sighting-card .sighting-when {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.sighting-card .sighting-when b {
+  display: block;
+  font-size: 0.86rem;
+}
+
+.sighting-card .sighting-when small {
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.sighting-card .sighting-ebird {
+  color: var(--blue);
 }
 
 .modal-backdrop {
