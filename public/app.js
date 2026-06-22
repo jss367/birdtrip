@@ -958,6 +958,7 @@ async function initializeMap(provider, options = {}) {
   const areaRadiusKm = preserveData ? state.params?.radiusKm : null;
   const results = preserveData ? state.results : [];
   const selectedId = preserveData ? state.selectedId : null;
+  const sightingLocations = preserveData && Array.isArray(state.sightingLocations) ? state.sightingLocations : [];
 
   if (state.mapAdapter) {
     state.mapAdapter.destroy();
@@ -978,6 +979,9 @@ async function initializeMap(provider, options = {}) {
   if (results.length) {
     state.selectedId = selectedId;
     renderMarkers();
+  }
+  if (sightingLocations.length) {
+    renderSightingMarkers();
   }
 }
 
@@ -1365,8 +1369,8 @@ async function runSpeciesSearch(params) {
   const label = resolvedSpecies?.comName || params.speciesQuery;
   setStatus(
     "Complete",
-    observations.length
-      ? `Mapped ${observations.length} ${label} ${pluralize("sighting", observations.length)} across ${state.sightingLocations.length} ${pluralize("location", state.sightingLocations.length)}.`
+    state.sightingLocations.length
+      ? `Mapped ${state.sightingLocations.length} ${pluralize("location", state.sightingLocations.length)} with recent ${label} sightings (latest observation per location).`
       : `No recent ${label} sightings within ${params.radiusKm} km. Try a wider radius or longer recent window.`
   );
 }
@@ -1409,16 +1413,15 @@ function groupSightings(observations) {
 
 function renderSightings(species, center, params) {
   const locations = state.sightingLocations;
-  const totalSightings = state.sightings.length;
   const speciesLabel = species?.comName || params.speciesQuery;
 
   els.candidateCount.textContent = String(locations.length);
   els.notableCount.textContent = "-";
   els.hotspotCount.textContent = "-";
   els.liferCount.textContent = "-";
-  els.targetCount.textContent = String(totalSightings);
-  els.resultContext.textContent = totalSightings
-    ? `${speciesLabel}: ${totalSightings} recent ${pluralize("sighting", totalSightings)} at ${locations.length} ${pluralize("location", locations.length)} within ${params.radiusKm} km.`
+  els.targetCount.textContent = String(locations.length);
+  els.resultContext.textContent = locations.length
+    ? `${speciesLabel}: ${locations.length} ${pluralize("location", locations.length)} with recent sightings within ${params.radiusKm} km (latest observation per location).`
     : `No recent ${speciesLabel} sightings within ${params.radiusKm} km.`;
 
   renderInsights();
@@ -1443,8 +1446,7 @@ function renderSightings(species, center, params) {
     card.setAttribute("role", "button");
     card.tabIndex = 0;
     if (loc.id === state.selectedSightingId) card.classList.add("is-selected");
-    const countText = `${loc.count} ${pluralize("report", loc.count)}`;
-    const howManyText = loc.maxCount ? ` · up to ${loc.maxCount} seen` : "";
+    const metaText = loc.maxCount ? `Latest observation · ${loc.maxCount} ${pluralize("bird", loc.maxCount)} counted` : "Latest observation";
     card.innerHTML = `
       <span class="sighting-rank">${index + 1}</span>
       <span class="sighting-copy">
@@ -1456,7 +1458,7 @@ function renderSightings(species, center, params) {
         <small></small>
       </span>`;
     card.querySelector(".sighting-loc").textContent = loc.name;
-    card.querySelector(".sighting-meta").textContent = `${countText}${howManyText}`;
+    card.querySelector(".sighting-meta").textContent = metaText;
     card.querySelector(".sighting-when b").textContent = formatFreshness(loc.latest);
     card.querySelector(".sighting-when small").textContent = loc.latest || "";
     card.addEventListener("click", () => selectSighting(loc.id));
@@ -3774,8 +3776,8 @@ function renderInsights() {
       : speciesLabel
         ? `Showing matches for "${speciesLabel}".`
         : "Choose a species to begin.";
-    if (state.sightings.length) {
-      els.sightingSummary.textContent = `${state.sightings.length} recent ${pluralize("sighting", state.sightings.length)} from the last ${recent} days across ${state.sightingLocations.length} ${pluralize("location", state.sightingLocations.length)}.`;
+    if (state.sightingLocations.length) {
+      els.sightingSummary.textContent = `${state.sightingLocations.length} ${pluralize("location", state.sightingLocations.length)} with recent sightings in the last ${recent} days (latest observation per location).`;
     } else {
       els.sightingSummary.textContent = canAttemptSearch
         ? "Recent sightings appear after you map a species."
@@ -4250,7 +4252,6 @@ function buildSpeciesReportMarkup() {
   const center = state.areaCenter;
   const speciesLabel = state.species?.comName || p.speciesQuery || "Species";
   const locations = state.sightingLocations;
-  const totalSightings = state.sightings.length;
   const provider = p.mapProvider || state.provider;
   const param = (label, value, options = {}) => {
     const renderedValue = options.raw ? String(value) : escapeHtml(String(value));
@@ -4273,8 +4274,8 @@ function buildSpeciesReportMarkup() {
       ${param("Species", speciesLabel)}
       ${param("Location", state.routeName || p.origin)}
       ${param("Radius", `${p.radiusKm} km`)}
-      ${param("Recent sightings", totalSightings)}
-      ${param("Locations", locations.length)}
+      ${param("Locations with recent sightings", locations.length)}
+      ${param("Records", `${locations.length} (latest observation per location)`)}
       ${center ? param("Center coordinates", `${center.lat.toFixed(5)}, ${center.lng.toFixed(5)}`) : ""}
     </dl>`;
 
@@ -4284,12 +4285,11 @@ function buildSpeciesReportMarkup() {
           ? `https://ebird.org/hotspot/${encodeURIComponent(loc.locId)}`
           : `https://ebird.org/map?lat=${loc.lat}&lng=${loc.lng}`;
         const mapsUrl = directionsUrlForPoints([center, loc].filter(Boolean), provider);
-        const countText = `${loc.count} ${pluralize("report", loc.count)}`;
-        const howManyText = loc.maxCount ? ` · up to ${loc.maxCount} seen` : "";
+        const howManyText = loc.maxCount ? `${loc.maxCount} ${pluralize("bird", loc.maxCount)} counted · ` : "";
         return `
           <div class="report-stop">
             <h3>${index + 1}. ${escapeHtml(loc.name)}</h3>
-            <p class="report-stop-meta">${escapeHtml(countText)}${escapeHtml(howManyText)} · ${escapeHtml(formatFreshness(loc.latest))}${loc.latest ? ` <small>${escapeHtml(loc.latest)}</small>` : ""}</p>
+            <p class="report-stop-meta">Latest observation · ${escapeHtml(howManyText)}${escapeHtml(formatFreshness(loc.latest))}${loc.latest ? ` <small>${escapeHtml(loc.latest)}</small>` : ""}</p>
             <dl class="report-stop-route">
               ${param("Coordinates", `${loc.lat.toFixed(5)}, ${loc.lng.toFixed(5)}`)}
               ${mapsUrl ? param("Directions", `<a href="${escapeHtml(mapsUrl)}">${escapeHtml(mapsUrl)}</a>`, { raw: true }) : ""}
@@ -4967,8 +4967,8 @@ function markerHtml(candidate, index, selectedId) {
 function markerPopup(candidate) {
   if (candidate.__sighting) {
     const when = candidate.latest ? formatFreshness(candidate.latest) : "recently";
-    const howMany = candidate.maxCount ? `; up to ${candidate.maxCount} seen` : "";
-    return `<strong>${escapeHtml(candidate.name)}</strong><br>${candidate.count} ${pluralize("report", candidate.count)} (${escapeHtml(when)})${howMany}`;
+    const howMany = candidate.maxCount ? `; ${candidate.maxCount} ${pluralize("bird", candidate.maxCount)} counted` : "";
+    return `<strong>${escapeHtml(candidate.name)}</strong><br>Latest observation ${escapeHtml(when)}${howMany}`;
   }
   const pinnedIndex = state.pinnedIds.indexOf(candidate.id);
   const pinnedText = pinnedIndex >= 0 ? `<br>Pinned stop ${pinnedIndex + 1}` : "";
