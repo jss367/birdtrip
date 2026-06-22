@@ -53,8 +53,16 @@ The public endpoints are appropriate for local/personal use and demos. A product
 - eBird API endpoints accessed through the local server:
   - Nearby recent observations: `/v2/data/obs/geo/recent`
   - Nearby recent notable observations: `/v2/data/obs/geo/recent/notable`
+  - Recent observations of a single species: `/v2/data/obs/geo/recent/{speciesCode}`
+  - eBird taxonomy (`/v2/ref/taxonomy/ebird`), loaded once and cached in memory for species name → code lookup and autocomplete.
 
 The app accepts an API token in the UI and stores it in browser local storage. The server can also read `EBIRD_API_KEY` from the environment.
+
+## Search Modes
+
+- **Route** (default): rank birding stops along a driving corridor between origin and destination, filtered by an added-time detour budget.
+- **Area**: rank birding hotspots within a radius of a single location.
+- **Species**: answer "show me all the X sightings in this area." Pick a species (autocomplete backed by the eBird taxonomy) and a location, then map every recent sighting of that species within the radius. Sightings are grouped by location into individual map pins (not score-ranked hotspots); each pin and list row shows the report count, highest count seen, and how recent the latest sighting is.
 
 ## Product Shape
 

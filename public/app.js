@@ -16,6 +16,10 @@ const state = {
   origin: null,
   destination: null,
   areaCenter: null,
+  species: null,
+  sightings: [],
+  sightingLocations: [],
+  selectedSightingId: null,
   provider: "osm",
   userSelectedProvider: false,
   lifeList: {
@@ -54,6 +58,11 @@ const els = {
   destinationField: document.querySelector("#destinationField"),
   origin: document.querySelector("#origin"),
   destination: document.querySelector("#destination"),
+  speciesField: document.querySelector("#speciesField"),
+  speciesQuery: document.querySelector("#speciesQuery"),
+  speciesSuggestions: document.querySelector("#speciesSuggestions"),
+  speciesHint: document.querySelector("#speciesHint"),
+  speciesError: document.querySelector("#speciesError"),
   mapProvider: document.querySelector("#mapProvider"),
   mapProviderHint: document.querySelector("#mapProviderHint"),
   maxDetour: document.querySelector("#maxDetour"),
@@ -143,7 +152,13 @@ const autocomplete = {
   destination: { listEl: null, timer: 0, controller: null, items: [], activeIndex: -1, resolved: null, lastQuery: "" }
 };
 
-const PREF_FIELDS = ["origin", "destination", "mapProvider", "maxDetour", "recentDays", "radiusKm", "maxStops", "targets"];
+const speciesAutocomplete = { timer: 0, controller: null, items: [], activeIndex: -1, lastQuery: "" };
+
+const PREF_FIELDS = ["origin", "destination", "mapProvider", "maxDetour", "recentDays", "radiusKm", "maxStops", "targets", "speciesQuery"];
+
+function normalizeMode(mode) {
+  return mode === "area" || mode === "species" ? mode : "route";
+}
 const SAVED_TRIPS_KEY = "birdtripSavedTrips";
 const CONFIG_WAIT_TIMEOUT_MS = 6000;
 const SHARE_URL_VERSION = "1";
@@ -152,7 +167,7 @@ function init() {
   const sharedSearch = readSharedSearchFromUrl();
   const saved = restorePreferences();
   state.savedTrips = readSavedTrips();
-  state.mode = sharedSearch?.mode || (saved.searchMode === "area" ? "area" : "route");
+  state.mode = normalizeMode(sharedSearch?.mode || saved.searchMode);
   const preferredProvider = sharedSearch?.mapProvider || (typeof saved.mapProvider === "string" ? providerFromInput() : null);
   state.provider = preferredProvider || "osm";
   setupProviderControl();
@@ -248,6 +263,7 @@ function init() {
 
   setupLocationAutocomplete("origin");
   setupLocationAutocomplete("destination");
+  setupSpeciesAutocomplete();
   document.addEventListener("click", handleAutocompleteOutsideClick);
   els.useCurrentLocationButton.addEventListener("click", useCurrentLocationForOrigin);
 
@@ -293,11 +309,12 @@ function readSharedSearchFromUrl() {
   const search = new URLSearchParams(window.location.search);
   if (search.get("bt") !== SHARE_URL_VERSION) return null;
 
-  const mode = search.get("mode") === "area" ? "area" : "route";
+  const mode = normalizeMode(search.get("mode"));
   const shared = {
     mode,
     origin: cleanSharedText(search.get("origin"), 160),
     destination: cleanSharedText(search.get("destination"), 160),
+    species: cleanSharedText(search.get("species"), 80),
     mapProvider: search.get("mapProvider") === "google" ? "google" : "osm",
     maxDetour: cleanSharedNumber(search.get("maxDetour"), 0, 240),
     recentDays: cleanSharedNumber(search.get("recentDays"), 1, 30),
@@ -313,10 +330,14 @@ function readSharedSearchFromUrl() {
 function applySharedSearch(shared) {
   setSearchMode(shared.mode, { persist: false });
   if (shared.origin) els.origin.value = shared.origin;
-  if (shared.mode === "area") {
+  if (shared.mode !== "route") {
     els.destination.value = "";
   } else if (shared.destination) {
     els.destination.value = shared.destination;
+  }
+  if (shared.mode === "species" && shared.species) {
+    els.speciesQuery.value = shared.species;
+    state.species = null;
   }
   if (shared.mapProvider) els.mapProvider.value = shared.mapProvider;
   if (shared.maxDetour) els.maxDetour.value = shared.maxDetour;
@@ -418,8 +439,10 @@ function savePreferences() {
 function setSearchMode(mode, options = {}) {
   const { persist = true } = options;
   const previousMode = state.mode;
-  state.mode = mode === "area" ? "area" : "route";
+  state.mode = normalizeMode(mode);
   const isArea = state.mode === "area";
+  const isSpecies = state.mode === "species";
+  const isAreaLike = isArea || isSpecies;
   els.form.dataset.mode = state.mode;
 
   els.modeButtons.forEach((button) => {
@@ -428,25 +451,30 @@ function setSearchMode(mode, options = {}) {
     button.setAttribute("aria-pressed", String(isActive));
   });
 
-  els.locationGroupTitle.textContent = isArea ? "Area" : "Route";
-  els.originLabelText.textContent = isArea ? "Location" : "Origin";
-  els.origin.placeholder = isArea ? "City, park, hotel, or address" : "";
-  els.destinationField.hidden = isArea;
-  els.destination.required = !isArea;
-  els.maxDetourLabel.textContent = isArea ? "Area limit" : "Max added";
-  els.maxDetourUnit.textContent = isArea ? "off" : "min";
-  els.maxDetour.disabled = isArea;
-  els.submitLabel.textContent = isArea ? "Search Area" : "Find Stops";
-  els.routeDistanceLabel.textContent = isArea ? "Area Radius" : "Route Miles";
-  els.maxAddedLabel.textContent = isArea ? "Area Mode" : "Added Time Budget";
-  els.mapAreaLegend.textContent = isArea ? "Search area" : "Route corridor";
-  els.sampleButton.title = isArea ? "Use sample area" : "Use sample route";
-  els.progressMessage.textContent = isArea && els.progressTitle.textContent === "Ready"
-    ? "Enter a city, park, or lodging location and run a search."
-    : els.progressMessage.textContent;
+  els.locationGroupTitle.textContent = isSpecies ? "Species" : isArea ? "Area" : "Route";
+  els.originLabelText.textContent = isAreaLike ? "Location" : "Origin";
+  els.origin.placeholder = isAreaLike ? "City, park, hotel, or address" : "";
+  els.speciesField.hidden = !isSpecies;
+  els.destinationField.hidden = isAreaLike;
+  els.destination.required = !isAreaLike;
+  els.maxDetourLabel.textContent = isAreaLike ? "Area limit" : "Max added";
+  els.maxDetourUnit.textContent = isAreaLike ? "off" : "min";
+  els.maxDetour.disabled = isAreaLike;
+  els.submitLabel.textContent = isSpecies ? "Map Sightings" : isArea ? "Search Area" : "Find Stops";
+  els.routeDistanceLabel.textContent = isSpecies ? "Search Radius" : isArea ? "Area Radius" : "Route Miles";
+  els.maxAddedLabel.textContent = isSpecies ? "Species Mode" : isArea ? "Area Mode" : "Added Time Budget";
+  els.mapAreaLegend.textContent = isAreaLike ? "Search area" : "Route corridor";
+  els.sampleButton.title = isSpecies ? "Use sample species search" : isArea ? "Use sample area" : "Use sample route";
+  if (els.progressTitle.textContent === "Ready") {
+    if (isSpecies) {
+      els.progressMessage.textContent = "Pick a species and a location, then map every recent sighting.";
+    } else if (isArea) {
+      els.progressMessage.textContent = "Enter a city, park, or lodging location and run a search.";
+    }
+  }
 
   clearFieldErrors();
-  if (persist && previousMode !== state.mode && (state.route || state.areaCenter || state.results.length)) {
+  if (persist && previousMode !== state.mode && (state.route || state.areaCenter || state.results.length || state.sightings.length)) {
     clearResults();
   }
   updateInputSummaries();
@@ -620,6 +648,7 @@ function readTripSettings() {
       radiusKm: Number.isFinite(state.params.radiusKm) ? String(state.params.radiusKm) : els.radiusKm.value,
       maxStops: Number.isFinite(state.params.maxStops) ? String(state.params.maxStops) : els.maxStops.value,
       targets: Array.isArray(state.params.targets) ? state.params.targets.join("\n") : els.targets.value,
+      speciesQuery: typeof state.params.speciesQuery === "string" ? state.params.speciesQuery : els.speciesQuery.value,
       searchMode: typeof state.params.mode === "string" ? state.params.mode : state.mode
     };
   }
@@ -650,7 +679,11 @@ function serializeTripState() {
     params: state.params ? { ...state.params, token: "" } : null,
     origin: state.origin,
     destination: state.destination,
-    areaCenter: state.areaCenter
+    areaCenter: state.areaCenter,
+    species: state.species,
+    sightings: state.sightings,
+    sightingLocations: state.sightingLocations,
+    selectedSightingId: state.selectedSightingId
   };
 }
 
@@ -690,6 +723,12 @@ function restoreTripState(trip) {
   state.origin = savedState.origin || state.route?.origin || null;
   state.destination = savedState.destination || state.route?.destination || null;
   state.areaCenter = savedState.areaCenter || null;
+  state.species = isObjectRecord(savedState.species) ? savedState.species : null;
+  state.sightings = Array.isArray(savedState.sightings) ? savedState.sightings.filter(isObjectRecord) : [];
+  state.sightingLocations = Array.isArray(savedState.sightingLocations)
+    ? savedState.sightingLocations.filter(isObjectRecord)
+    : [];
+  state.selectedSightingId = savedState.selectedSightingId || null;
   state.comparisonIds = [];
   state.pinnedIds = [];
   state.pendingPinnedIds = [];
@@ -710,7 +749,10 @@ function restoreTripState(trip) {
     els.routeDistance.textContent = "-";
   }
 
-  if (state.results.length) {
+  if (state.params?.mode === "species") {
+    if (els.speciesQuery) els.speciesQuery.value = state.species?.comName || state.params.speciesQuery || els.speciesQuery.value;
+    renderSightings(state.species, state.areaCenter, state.params);
+  } else if (state.results.length) {
     renderResults();
     renderMarkers();
   } else {
@@ -916,6 +958,7 @@ async function initializeMap(provider, options = {}) {
   const areaRadiusKm = preserveData ? state.params?.radiusKm : null;
   const results = preserveData ? state.results : [];
   const selectedId = preserveData ? state.selectedId : null;
+  const sightingLocations = preserveData && Array.isArray(state.sightingLocations) ? state.sightingLocations : [];
 
   if (state.mapAdapter) {
     state.mapAdapter.destroy();
@@ -936,6 +979,9 @@ async function initializeMap(provider, options = {}) {
   if (results.length) {
     state.selectedId = selectedId;
     renderMarkers();
+  }
+  if (sightingLocations.length) {
+    renderSightingMarkers();
   }
 }
 
@@ -963,6 +1009,16 @@ function loadGoogleMapsScript(key) {
 }
 
 function useSampleRoute() {
+  if (state.mode === "species") {
+    els.origin.value = "Papago Park, Phoenix, AZ";
+    els.speciesQuery.value = "Rosy-faced Lovebird";
+    state.species = null;
+    els.recentDays.value = "14";
+    els.radiusKm.value = "25";
+    resetAutocomplete("origin");
+    updateInputSummaries();
+    return;
+  }
   if (state.mode === "area") {
     els.origin.value = "Papago Park, Phoenix, AZ";
     els.recentDays.value = "14";
@@ -1005,6 +1061,9 @@ function clearResults() {
   state.results = [];
   state.route = null;
   state.areaCenter = null;
+  state.sightings = [];
+  state.sightingLocations = [];
+  state.selectedSightingId = null;
   state.selectedId = null;
   state.comparisonIds = [];
   state.pinnedIds = [];
@@ -1019,7 +1078,9 @@ function clearResults() {
   els.report.innerHTML = "";
   els.resultsList.className = "results-list empty";
   els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="binoculars"></i><p>Results will appear here after the first search.</p></div>';
-  els.resultContext.textContent = state.mode === "area" ? "No area searched yet." : "No route searched yet.";
+  els.resultContext.textContent = state.mode === "species"
+    ? "No species mapped yet."
+    : state.mode === "area" ? "No area searched yet." : "No route searched yet.";
   els.routeDistance.textContent = "-";
   els.notableCount.textContent = "-";
   els.hotspotCount.textContent = "-";
@@ -1031,9 +1092,11 @@ function clearResults() {
   renderComparison();
   renderItineraryBuilder();
   els.detailsPanel.hidden = true;
-  setStatus("Ready", state.mode === "area"
-    ? "Enter a city, park, or lodging location and run a search."
-    : "Enter a route and run a search.");
+  setStatus("Ready", state.mode === "species"
+    ? "Pick a species and a location, then map every recent sighting."
+    : state.mode === "area"
+      ? "Enter a city, park, or lodging location and run a search."
+      : "Enter a route and run a search.");
   clearSharedUrl();
   if (window.lucide) window.lucide.createIcons();
 }
@@ -1048,7 +1111,9 @@ async function runSearch(options = {}) {
     const params = readParams();
     clearSearchArtifacts();
     state.params = params;
-    if (params.mode === "area") {
+    if (params.mode === "species") {
+      await runSpeciesSearch(params);
+    } else if (params.mode === "area") {
       await runAreaSearch(params);
     } else {
       await runRouteSearch(params);
@@ -1226,6 +1291,223 @@ async function runAreaSearch(params) {
   setStatus("Complete", `Found ${state.results.length} stops within ${params.radiusKm} km.`);
 }
 
+async function runSpeciesSearch(params) {
+  if (!params.speciesQuery) {
+    setSpeciesError("Enter a species to map its recent sightings.");
+    setStatus("Species needed", "Type a species name (for example, Vermilion Flycatcher).");
+    els.resultsList.className = "results-list empty";
+    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="bird"></i><p>Choose a species to map its recent sightings.</p></div>';
+    if (window.lucide) window.lucide.createIcons();
+    return;
+  }
+  clearSpeciesError();
+
+  setStatus("Geocoding", "Resolving search location.");
+  const center = await geocodeField("origin", params.origin, params.mapProvider);
+  state.origin = center;
+  state.areaCenter = center;
+  const speciesLabel = params.species?.comName || params.speciesQuery;
+  state.routeName = `${speciesLabel} near ${shortName(center.name) || params.origin}`;
+  if (!els.tripName.value.trim()) els.tripName.value = state.routeName;
+  renderArea(center, params.radiusKm);
+  updateAreaSummary(params.radiusKm);
+
+  if (!shouldAttemptEbirdSearch()) {
+    setStatus("Token needed", "Location loaded. Add an eBird token or configure EBIRD_API_KEY to map species sightings.");
+    els.resultContext.textContent = "Location loaded, but live bird data needs eBird access.";
+    els.resultsList.className = "results-list empty";
+    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add an eBird token or configure EBIRD_API_KEY to map species sightings.</p></div>';
+    if (window.lucide) window.lucide.createIcons();
+    return;
+  }
+
+  setStatus("Mapping sightings", `Requesting recent ${speciesLabel} sightings within ${params.radiusKm} km.`);
+  const url = new URL("/api/ebird/species", window.location.origin);
+  url.searchParams.set("lat", String(center.lat));
+  url.searchParams.set("lng", String(center.lng));
+  url.searchParams.set("dist", String(params.radiusKm));
+  url.searchParams.set("back", String(params.recentDays));
+  url.searchParams.set("maxResults", "1000");
+  if (params.species?.speciesCode) {
+    url.searchParams.set("speciesCode", params.species.speciesCode);
+  } else {
+    url.searchParams.set("name", params.speciesQuery);
+  }
+
+  let payload;
+  try {
+    payload = await apiJson(`${url.pathname}${url.search}`, { token: params.token });
+  } catch (error) {
+    const suggestions = error.details?.suggestions;
+    if (error.status === 404 && Array.isArray(suggestions) && suggestions.length) {
+      const names = suggestions.map((item) => item.comName).slice(0, 5).join(", ");
+      setSpeciesError(`No exact match. Try: ${names}`);
+      setStatus("Species not found", `No eBird species matched "${params.speciesQuery}". Did you mean: ${names}?`);
+      els.resultsList.className = "results-list empty";
+      els.resultsList.innerHTML = `<div class="empty-state"><i data-lucide="search-x"></i><p>No species matched "${escapeHtml(params.speciesQuery)}". Did you mean ${escapeHtml(names)}?</p></div>`;
+      if (window.lucide) window.lucide.createIcons();
+      return;
+    }
+    throw error;
+  }
+
+  const resolvedSpecies = payload.species || params.species || null;
+  if (resolvedSpecies) {
+    state.species = resolvedSpecies;
+    els.speciesQuery.value = resolvedSpecies.comName;
+    state.routeName = `${resolvedSpecies.comName} near ${shortName(center.name) || params.origin}`;
+    if (!els.tripName.value.trim()) els.tripName.value = state.routeName;
+  }
+
+  const observations = Array.isArray(payload.observations) ? payload.observations : [];
+  state.sightings = observations;
+  state.sightingLocations = groupSightings(observations);
+  state.selectedSightingId = null;
+
+  renderSightings(resolvedSpecies, center, params);
+  renderWarnings();
+  const label = resolvedSpecies?.comName || params.speciesQuery;
+  setStatus(
+    "Complete",
+    state.sightingLocations.length
+      ? `Mapped ${state.sightingLocations.length} ${pluralize("location", state.sightingLocations.length)} with recent ${label} sightings (latest observation per location).`
+      : `No recent ${label} sightings within ${params.radiusKm} km. Try a wider radius or longer recent window.`
+  );
+}
+
+function groupSightings(observations) {
+  const byKey = new Map();
+  observations.forEach((obs) => {
+    const lat = Number(obs.lat);
+    const lng = Number(obs.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+    const key = obs.locId || `${lat.toFixed(4)},${lng.toFixed(4)}`;
+    let loc = byKey.get(key);
+    if (!loc) {
+      loc = {
+        id: key,
+        locId: obs.locId || "",
+        lat,
+        lng,
+        name: obs.locName || "Unnamed location",
+        observations: [],
+        count: 0,
+        maxCount: 0,
+        latest: "",
+        __sighting: true
+      };
+      byKey.set(key, loc);
+    }
+    loc.observations.push(obs);
+    loc.count += 1;
+    const howMany = Number(obs.howMany);
+    if (Number.isFinite(howMany)) loc.maxCount = Math.max(loc.maxCount, howMany);
+    const obsDt = String(obs.obsDt || "");
+    if (!loc.latest || obsDt > loc.latest) loc.latest = obsDt;
+  });
+  return Array.from(byKey.values()).sort((a, b) => {
+    if (a.latest !== b.latest) return a.latest > b.latest ? -1 : 1;
+    return b.count - a.count;
+  });
+}
+
+function renderSightings(species, center, params) {
+  const locations = state.sightingLocations;
+  const speciesLabel = species?.comName || params.speciesQuery;
+
+  els.candidateCount.textContent = String(locations.length);
+  els.notableCount.textContent = "-";
+  els.hotspotCount.textContent = "-";
+  els.liferCount.textContent = "-";
+  els.targetCount.textContent = String(locations.length);
+  els.resultContext.textContent = locations.length
+    ? `${speciesLabel}: ${locations.length} ${pluralize("location", locations.length)} with recent sightings within ${params.radiusKm} km (latest observation per location).`
+    : `No recent ${speciesLabel} sightings within ${params.radiusKm} km.`;
+
+  renderInsights();
+  renderRouteTradeoff();
+  renderComparison();
+  renderItineraryBuilder();
+  renderSightingMarkers();
+
+  els.resultsList.className = "results-list";
+  els.resultsList.innerHTML = "";
+  if (!locations.length) {
+    els.resultsList.className = "results-list empty";
+    els.resultsList.innerHTML = `<div class="empty-state"><i data-lucide="search-x"></i><p>No recent ${escapeHtml(speciesLabel)} sightings here. Try a wider radius or longer recent window.</p></div>`;
+    if (window.lucide) window.lucide.createIcons();
+    return;
+  }
+
+  locations.forEach((loc, index) => {
+    const card = document.createElement("div");
+    card.className = "sighting-card";
+    card.dataset.id = loc.id;
+    card.setAttribute("role", "button");
+    card.tabIndex = 0;
+    if (loc.id === state.selectedSightingId) card.classList.add("is-selected");
+    const metaText = loc.maxCount ? `Latest observation · ${loc.maxCount} ${pluralize("bird", loc.maxCount)} counted` : "Latest observation";
+    card.innerHTML = `
+      <span class="sighting-rank">${index + 1}</span>
+      <span class="sighting-copy">
+        <strong class="sighting-loc"></strong>
+        <small class="sighting-meta"></small>
+      </span>
+      <span class="sighting-when">
+        <b></b>
+        <small></small>
+      </span>`;
+    card.querySelector(".sighting-loc").textContent = loc.name;
+    card.querySelector(".sighting-meta").textContent = metaText;
+    card.querySelector(".sighting-when b").textContent = formatFreshness(loc.latest);
+    card.querySelector(".sighting-when small").textContent = loc.latest || "";
+    card.addEventListener("click", () => selectSighting(loc.id));
+    card.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        selectSighting(loc.id);
+      }
+    });
+    els.resultsList.appendChild(card);
+  });
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function renderSightingMarkers() {
+  if (!state.mapAdapter) return;
+  state.mapAdapter.setMarkers(state.sightingLocations, state.selectedSightingId, selectSighting);
+}
+
+function selectSighting(id) {
+  const loc = state.sightingLocations.find((item) => item.id === id);
+  if (!loc) return;
+  state.selectedSightingId = id;
+  let selectedCard = null;
+  els.resultsList.querySelectorAll(".sighting-card").forEach((card) => {
+    const isSelected = card.dataset.id === id;
+    card.classList.toggle("is-selected", isSelected);
+    if (isSelected) selectedCard = card;
+  });
+  renderSightingMarkers();
+  if (state.mapAdapter) state.mapAdapter.flyTo(loc, 12);
+  if (selectedCard) selectedCard.scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+
+function setSpeciesError(message) {
+  if (!els.speciesError) return;
+  els.speciesError.textContent = message;
+  els.speciesError.hidden = false;
+  els.speciesError.setAttribute("role", "alert");
+  els.speciesQuery.setAttribute("aria-invalid", "true");
+}
+
+function clearSpeciesError() {
+  if (!els.speciesError) return;
+  els.speciesError.textContent = "";
+  els.speciesError.hidden = true;
+  els.speciesQuery.removeAttribute("aria-invalid");
+}
+
 function readParams() {
   return {
     mode: state.mode,
@@ -1237,6 +1519,10 @@ function readParams() {
     maxStops: clamp(Number(els.maxStops.value || 10), 3, 20),
     mapProvider: state.provider,
     token: els.apiToken.value.trim(),
+    speciesQuery: els.speciesQuery.value.trim(),
+    species: state.species && normalizeName(state.species.comName) === normalizeName(els.speciesQuery.value)
+      ? state.species
+      : null,
     targets: els.targets.value
       .split(/\n|,/)
       .map((target) => normalizeName(target))
@@ -1320,7 +1606,10 @@ function buildShareUrl(options = {}) {
   url.searchParams.set("bt", SHARE_URL_VERSION);
   url.searchParams.set("mode", state.mode);
   url.searchParams.set("origin", els.origin.value.trim());
-  if (state.mode !== "area") url.searchParams.set("destination", els.destination.value.trim());
+  if (state.mode === "route") url.searchParams.set("destination", els.destination.value.trim());
+  if (state.mode === "species" && els.speciesQuery.value.trim()) {
+    url.searchParams.set("species", els.speciesQuery.value.trim());
+  }
   url.searchParams.set("mapProvider", providerFromInput());
   url.searchParams.set("maxDetour", String(clamp(Number(els.maxDetour.value || 60), 0, 240)));
   url.searchParams.set("recentDays", String(clamp(Number(els.recentDays.value || 14), 1, 30)));
@@ -1333,7 +1622,10 @@ function buildShareUrl(options = {}) {
 }
 
 function hasRunnableSearchInputs() {
-  return els.origin.value.trim().length >= 2 && (state.mode === "area" || els.destination.value.trim().length >= 2);
+  if (els.origin.value.trim().length < 2) return false;
+  if (state.mode === "species") return els.speciesQuery.value.trim().length >= 2;
+  if (state.mode === "area") return true;
+  return els.destination.value.trim().length >= 2;
 }
 
 async function copyTextToClipboard(text) {
@@ -1395,9 +1687,11 @@ function shouldAttemptEbirdSearch() {
 function updateInputSummaries() {
   const targets = parseTargetsInput();
   els.targetCount.textContent = String(targets.length);
-  els.maxAdded.textContent = state.mode === "area"
-    ? "Area"
-    : `${clamp(Number(els.maxDetour.value || 60), 0, 240)}m`;
+  els.maxAdded.textContent = state.mode === "species"
+    ? "Species"
+    : state.mode === "area"
+      ? "Area"
+      : `${clamp(Number(els.maxDetour.value || 60), 0, 240)}m`;
   updateLifeListStatus();
   renderInsights();
 }
@@ -1654,13 +1948,16 @@ function clearSearchArtifacts() {
   state.origin = null;
   state.destination = null;
   state.areaCenter = null;
+  state.sightings = [];
+  state.sightingLocations = [];
+  state.selectedSightingId = null;
   clearFieldErrors();
   clearWarning();
   els.report.innerHTML = "";
   els.detailsPanel.hidden = true;
   if (state.mapAdapter) state.mapAdapter.clear();
   els.resultsList.className = "results-list empty";
-  els.resultsList.innerHTML = `<div class="empty-state"><i data-lucide="loader"></i><p>${state.mode === "area" ? "Searching area..." : "Searching route corridor..."}</p></div>`;
+  els.resultsList.innerHTML = `<div class="empty-state"><i data-lucide="loader"></i><p>${state.mode === "species" ? "Mapping sightings..." : state.mode === "area" ? "Searching area..." : "Searching route corridor..."}</p></div>`;
   els.notableCount.textContent = "-";
   els.hotspotCount.textContent = "-";
   els.candidateCount.textContent = "-";
@@ -1691,7 +1988,7 @@ function setBusy(isBusy) {
   ];
 
   controls.forEach((control) => {
-    if (control === els.maxDetour && state.mode === "area") {
+    if (control === els.maxDetour && state.mode !== "route") {
       control.disabled = true;
       return;
     }
@@ -2058,10 +2355,183 @@ function handleAutocompleteOutsideClick(event) {
     if (ctx.listEl.contains(event.target)) continue;
     hideAutocomplete(field);
   }
+  if (els.speciesSuggestions && !els.speciesSuggestions.hidden
+    && event.target !== els.speciesQuery
+    && !els.speciesSuggestions.contains(event.target)) {
+    hideSpeciesAutocomplete();
+  }
+}
+
+function setupSpeciesAutocomplete() {
+  const inputEl = els.speciesQuery;
+  const listEl = els.speciesSuggestions;
+  if (!inputEl || !listEl) return;
+  const ctx = speciesAutocomplete;
+
+  inputEl.addEventListener("input", () => {
+    state.species = null;
+    clearSpeciesError();
+    const value = inputEl.value.trim();
+    if (ctx.timer) clearTimeout(ctx.timer);
+    if (ctx.controller) {
+      ctx.controller.abort();
+      ctx.controller = null;
+    }
+    if (value.length < 2) {
+      hideSpeciesAutocomplete();
+      return;
+    }
+    if (value === ctx.lastQuery && ctx.items.length) {
+      listEl.hidden = false;
+      inputEl.setAttribute("aria-expanded", "true");
+      return;
+    }
+    ctx.timer = setTimeout(() => fetchSpeciesAutocomplete(value), 220);
+  });
+
+  inputEl.addEventListener("keydown", (event) => {
+    if (listEl.hidden || !ctx.items.length) {
+      if (event.key === "ArrowDown" && inputEl.value.trim().length >= 2) {
+        event.preventDefault();
+        fetchSpeciesAutocomplete(inputEl.value.trim());
+      }
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      moveSpeciesSelection(1);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      moveSpeciesSelection(-1);
+    } else if (event.key === "Enter") {
+      if (ctx.activeIndex >= 0) {
+        event.preventDefault();
+        selectSpeciesItem(ctx.activeIndex);
+      }
+    } else if (event.key === "Escape") {
+      hideSpeciesAutocomplete();
+    }
+  });
+
+  inputEl.addEventListener("blur", () => {
+    setTimeout(() => hideSpeciesAutocomplete(), 120);
+  });
+
+  inputEl.addEventListener("focus", () => {
+    if (ctx.items.length && inputEl.value.trim() === ctx.lastQuery) {
+      listEl.hidden = false;
+      inputEl.setAttribute("aria-expanded", "true");
+    }
+  });
+}
+
+async function fetchSpeciesAutocomplete(query) {
+  const ctx = speciesAutocomplete;
+  const listEl = els.speciesSuggestions;
+  if (ctx.controller) ctx.controller.abort();
+  const controller = new AbortController();
+  ctx.controller = controller;
+  listEl.innerHTML = '<li class="is-loading">Searching…</li>';
+  listEl.hidden = false;
+  els.speciesQuery.setAttribute("aria-expanded", "true");
+  try {
+    const matches = await apiJson(
+      `/api/ebird/taxonomy/search?q=${encodeURIComponent(query)}`,
+      { signal: controller.signal, token: els.apiToken.value.trim() }
+    );
+    if (ctx.controller !== controller) return;
+    ctx.lastQuery = query;
+    ctx.items = Array.isArray(matches) ? matches : [];
+    ctx.activeIndex = -1;
+    renderSpeciesItems();
+  } catch (error) {
+    if (error.name === "AbortError") return;
+    if (ctx.controller !== controller) return;
+    ctx.items = [];
+    ctx.activeIndex = -1;
+    listEl.innerHTML = '<li class="is-empty">No matches.</li>';
+    listEl.hidden = false;
+  } finally {
+    if (ctx.controller === controller) ctx.controller = null;
+  }
+}
+
+function renderSpeciesItems() {
+  const ctx = speciesAutocomplete;
+  const listEl = els.speciesSuggestions;
+  listEl.innerHTML = "";
+  if (!ctx.items.length) {
+    listEl.innerHTML = '<li class="is-empty">No matches.</li>';
+    listEl.hidden = false;
+    return;
+  }
+  ctx.items.forEach((item, index) => {
+    const li = document.createElement("li");
+    li.setAttribute("role", "option");
+    li.id = `speciesAutocompleteOption${index}`;
+    li.setAttribute("aria-selected", "false");
+    li.dataset.index = String(index);
+    li.innerHTML = `<i data-lucide="bird"></i><span class="ac-name"></span>`;
+    const text = item.sciName ? `${item.comName} · ${item.sciName}` : item.comName;
+    li.querySelector(".ac-name").textContent = text;
+    li.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      selectSpeciesItem(index);
+    });
+    li.addEventListener("mouseenter", () => setSpeciesActive(index));
+    listEl.appendChild(li);
+  });
+  if (window.lucide) window.lucide.createIcons();
+  listEl.hidden = false;
+  els.speciesQuery.setAttribute("aria-expanded", "true");
+}
+
+function moveSpeciesSelection(delta) {
+  const ctx = speciesAutocomplete;
+  if (!ctx.items.length) return;
+  const next = ctx.activeIndex + delta;
+  setSpeciesActive((next + ctx.items.length) % ctx.items.length);
+}
+
+function setSpeciesActive(index) {
+  const ctx = speciesAutocomplete;
+  const listEl = els.speciesSuggestions;
+  ctx.activeIndex = index;
+  Array.from(listEl.children).forEach((li, i) => {
+    const isActive = i === index;
+    li.classList.toggle("is-active", isActive);
+    li.setAttribute("aria-selected", String(isActive));
+    if (isActive && li.id) {
+      els.speciesQuery.setAttribute("aria-activedescendant", li.id);
+      li.scrollIntoView({ block: "nearest" });
+    }
+  });
+}
+
+function selectSpeciesItem(index) {
+  const ctx = speciesAutocomplete;
+  const item = ctx.items[index];
+  if (!item) return;
+  els.speciesQuery.value = item.comName;
+  state.species = { speciesCode: item.speciesCode, comName: item.comName, sciName: item.sciName };
+  ctx.lastQuery = item.comName;
+  clearSpeciesError();
+  hideSpeciesAutocomplete();
+  savePreferences();
+}
+
+function hideSpeciesAutocomplete() {
+  const listEl = els.speciesSuggestions;
+  if (listEl) listEl.hidden = true;
+  if (els.speciesQuery) {
+    els.speciesQuery.setAttribute("aria-expanded", "false");
+    els.speciesQuery.removeAttribute("aria-activedescendant");
+  }
+  speciesAutocomplete.activeIndex = -1;
 }
 
 function fieldLabel(field) {
-  if (field === "origin" && state.mode === "area") return "Location";
+  if (field === "origin" && state.mode !== "route") return "Location";
   return field === "origin" ? "Origin" : "Destination";
 }
 
@@ -2079,6 +2549,7 @@ function setFieldError(field, message) {
 }
 
 function clearFieldErrors() {
+  clearSpeciesError();
   for (const field of ["origin", "destination"]) {
     const errorEl = els[`${field}Error`];
     const inputEl = els[field];
@@ -3293,6 +3764,27 @@ function renderInsights() {
   const liveTargets = parseTargetsInput();
   const canAttemptSearch = shouldAttemptEbirdSearch();
   const lifeListCount = state.lifeList.displayNames.length || state.lifeList.species.size;
+  if (state.mode === "species") {
+    const radius = state.params?.radiusKm || els.radiusKm.value || 25;
+    const recent = state.params?.recentDays || els.recentDays.value || 14;
+    const speciesLabel = state.species?.comName || els.speciesQuery.value.trim();
+    els.tripPlanSummary.textContent = speciesLabel
+      ? `${speciesLabel}: mapping recent sightings within ${radius} km${state.areaCenter ? ` of ${shortName(state.areaCenter.name) || ""}` : ""}.`
+      : "Pick a species and a location to map every recent sighting nearby.";
+    els.targetSpeciesSummary.textContent = state.species?.sciName
+      ? `${state.species.comName} (${state.species.sciName}).`
+      : speciesLabel
+        ? `Showing matches for "${speciesLabel}".`
+        : "Choose a species to begin.";
+    if (state.sightingLocations.length) {
+      els.sightingSummary.textContent = `${state.sightingLocations.length} ${pluralize("location", state.sightingLocations.length)} with recent sightings in the last ${recent} days (latest observation per location).`;
+    } else {
+      els.sightingSummary.textContent = canAttemptSearch
+        ? "Recent sightings appear after you map a species."
+        : "Add an eBird token to map recent species sightings.";
+    }
+    return;
+  }
   if (state.mode === "area") {
     els.tripPlanSummary.textContent = state.areaCenter
       ? `${state.routeName}: searching hotspots within ${state.params?.radiusKm || els.radiusKm.value || 25} km.`
@@ -3664,6 +4156,7 @@ function renderReport() {
 
 function buildReportMarkup() {
   const p = state.params;
+  if (p.mode === "species") return buildSpeciesReportMarkup();
   const route = state.route;
   const isArea = p.mode === "area";
   const generated = new Date().toLocaleString();
@@ -3753,9 +4246,71 @@ function buildReportMarkup() {
   `;
 }
 
+function buildSpeciesReportMarkup() {
+  const p = state.params;
+  const generated = new Date().toLocaleString();
+  const center = state.areaCenter;
+  const speciesLabel = state.species?.comName || p.speciesQuery || "Species";
+  const locations = state.sightingLocations;
+  const provider = p.mapProvider || state.provider;
+  const param = (label, value, options = {}) => {
+    const renderedValue = options.raw ? String(value) : escapeHtml(String(value));
+    return `<div><dt>${escapeHtml(label)}</dt><dd>${renderedValue}</dd></div>`;
+  };
+
+  const paramsBlock = `
+    <h2>Search parameters</h2>
+    <dl class="report-params">
+      ${param("Species", state.species?.sciName ? `${speciesLabel} (${state.species.sciName})` : speciesLabel)}
+      ${param("Location", p.origin)}
+      ${param("Map service", providerLabel(p.mapProvider))}
+      ${param("Search radius", `${p.radiusKm} km`)}
+      ${param("Recent window", `${p.recentDays} days`)}
+    </dl>`;
+
+  const summaryBlock = `
+    <h2>Species summary</h2>
+    <dl class="report-route">
+      ${param("Species", speciesLabel)}
+      ${param("Location", state.routeName || p.origin)}
+      ${param("Radius", `${p.radiusKm} km`)}
+      ${param("Locations with recent sightings", locations.length)}
+      ${param("Records", `${locations.length} (latest observation per location)`)}
+      ${center ? param("Center coordinates", `${center.lat.toFixed(5)}, ${center.lng.toFixed(5)}`) : ""}
+    </dl>`;
+
+  const locationsBlock = locations.length
+    ? `<h2>Sighting locations</h2>${locations.map((loc, index) => {
+        const ebirdUrl = loc.locId
+          ? `https://ebird.org/hotspot/${encodeURIComponent(loc.locId)}`
+          : `https://ebird.org/map?lat=${loc.lat}&lng=${loc.lng}`;
+        const mapsUrl = directionsUrlForPoints([center, loc].filter(Boolean), provider);
+        const howManyText = loc.maxCount ? `${loc.maxCount} ${pluralize("bird", loc.maxCount)} counted · ` : "";
+        return `
+          <div class="report-stop">
+            <h3>${index + 1}. ${escapeHtml(loc.name)}</h3>
+            <p class="report-stop-meta">Latest observation · ${escapeHtml(howManyText)}${escapeHtml(formatFreshness(loc.latest))}${loc.latest ? ` <small>${escapeHtml(loc.latest)}</small>` : ""}</p>
+            <dl class="report-stop-route">
+              ${param("Coordinates", `${loc.lat.toFixed(5)}, ${loc.lng.toFixed(5)}`)}
+              ${mapsUrl ? param("Directions", `<a href="${escapeHtml(mapsUrl)}">${escapeHtml(mapsUrl)}</a>`, { raw: true }) : ""}
+              ${param("eBird", `<a href="${escapeHtml(ebirdUrl)}">${escapeHtml(ebirdUrl)}</a>`, { raw: true })}
+            </dl>
+          </div>`;
+      }).join("")}`
+    : `<h2>Sighting locations</h2><p>No recent ${escapeHtml(speciesLabel)} sightings within ${escapeHtml(String(p.radiusKm))} km.</p>`;
+
+  return `
+    <h1>Birdtrip Species Report</h1>
+    <p class="report-sub">${escapeHtml(state.routeName || speciesLabel)} · Generated ${escapeHtml(generated)}</p>
+    ${paramsBlock}
+    ${summaryBlock}
+    ${locationsBlock}
+  `;
+}
+
 function downloadHtmlReport() {
   if (!hasReportableSearch()) {
-    setStatus("Nothing to export", `Run a ${state.mode === "area" ? "area" : "route"} search before downloading a report.`);
+    setStatus("Nothing to export", `Run a ${reportModeNoun()} search before downloading a report.`);
     return;
   }
 
@@ -3774,9 +4329,10 @@ function downloadHtmlReport() {
 }
 
 function buildStandaloneReportDocument(reportMarkup) {
+  const mode = state.params?.mode;
   const title = state.routeName
     ? `Birdtrip - ${state.routeName}`
-    : `Birdtrip ${state.params?.mode === "area" ? "Area" : "Trip"} Report`;
+    : `Birdtrip ${mode === "area" ? "Area" : mode === "species" ? "Species" : "Trip"} Report`;
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -4041,17 +4597,29 @@ a {
 }
 
 function reportFileName() {
-  const fallback = state.params?.mode === "area"
+  const mode = state.params?.mode;
+  const fallback = mode === "area"
     ? state.params.origin
-    : `${state.params.origin} to ${state.params.destination}`;
-  const base = slugify(state.routeName || fallback) || `${state.params?.mode === "area" ? "area" : "trip"}-report`;
+    : mode === "species"
+      ? `${state.species?.comName || state.params.speciesQuery || "species"} ${state.params.origin}`
+      : `${state.params.origin} to ${state.params.destination}`;
+  const base = slugify(state.routeName || fallback)
+    || `${mode === "area" ? "area" : mode === "species" ? "species" : "trip"}-report`;
   const date = new Date().toISOString().slice(0, 10);
   return `birdtrip-${base}-${date}.html`;
 }
 
+function reportModeNoun() {
+  if (state.mode === "area") return "area";
+  if (state.mode === "species") return "species";
+  return "route";
+}
+
 function hasReportableSearch() {
   if (!state.params) return false;
-  return state.params.mode === "area" ? Boolean(state.areaCenter) : Boolean(state.route);
+  if (state.params.mode === "area") return Boolean(state.areaCenter);
+  if (state.params.mode === "species") return Boolean(state.areaCenter);
+  return Boolean(state.route);
 }
 
 function slugify(value) {
@@ -4387,12 +4955,21 @@ function ensureGoogleHtmlMarkerClass() {
 }
 
 function markerHtml(candidate, index, selectedId) {
+  if (candidate.__sighting) {
+    const label = candidate.count > 1 ? candidate.count : "";
+    return `<div class="bird-marker marker-sighting ${candidate.id === selectedId ? "marker-selected" : ""}">${label}</div>`;
+  }
   const pinnedIndex = state.pinnedIds.indexOf(candidate.id);
   const label = pinnedIndex >= 0 ? `P${pinnedIndex + 1}` : index + 1;
   return `<div class="bird-marker ${markerClass(candidate)} ${candidate.id === selectedId ? "marker-selected" : ""}">${label}</div>`;
 }
 
 function markerPopup(candidate) {
+  if (candidate.__sighting) {
+    const when = candidate.latest ? formatFreshness(candidate.latest) : "recently";
+    const howMany = candidate.maxCount ? `; ${candidate.maxCount} ${pluralize("bird", candidate.maxCount)} counted` : "";
+    return `<strong>${escapeHtml(candidate.name)}</strong><br>Latest observation ${escapeHtml(when)}${howMany}`;
+  }
   const pinnedIndex = state.pinnedIds.indexOf(candidate.id);
   const pinnedText = pinnedIndex >= 0 ? `<br>Pinned stop ${pinnedIndex + 1}` : "";
   const impact = state.params?.mode === "area"
