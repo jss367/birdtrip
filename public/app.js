@@ -648,6 +648,7 @@ function readTripSettings() {
       radiusKm: Number.isFinite(state.params.radiusKm) ? String(state.params.radiusKm) : els.radiusKm.value,
       maxStops: Number.isFinite(state.params.maxStops) ? String(state.params.maxStops) : els.maxStops.value,
       targets: Array.isArray(state.params.targets) ? state.params.targets.join("\n") : els.targets.value,
+      speciesQuery: typeof state.params.speciesQuery === "string" ? state.params.speciesQuery : els.speciesQuery.value,
       searchMode: typeof state.params.mode === "string" ? state.params.mode : state.mode
     };
   }
@@ -678,7 +679,11 @@ function serializeTripState() {
     params: state.params ? { ...state.params, token: "" } : null,
     origin: state.origin,
     destination: state.destination,
-    areaCenter: state.areaCenter
+    areaCenter: state.areaCenter,
+    species: state.species,
+    sightings: state.sightings,
+    sightingLocations: state.sightingLocations,
+    selectedSightingId: state.selectedSightingId
   };
 }
 
@@ -718,6 +723,12 @@ function restoreTripState(trip) {
   state.origin = savedState.origin || state.route?.origin || null;
   state.destination = savedState.destination || state.route?.destination || null;
   state.areaCenter = savedState.areaCenter || null;
+  state.species = isObjectRecord(savedState.species) ? savedState.species : null;
+  state.sightings = Array.isArray(savedState.sightings) ? savedState.sightings.filter(isObjectRecord) : [];
+  state.sightingLocations = Array.isArray(savedState.sightingLocations)
+    ? savedState.sightingLocations.filter(isObjectRecord)
+    : [];
+  state.selectedSightingId = savedState.selectedSightingId || null;
   state.comparisonIds = [];
   state.pinnedIds = [];
   state.pendingPinnedIds = [];
@@ -738,7 +749,10 @@ function restoreTripState(trip) {
     els.routeDistance.textContent = "-";
   }
 
-  if (state.results.length) {
+  if (state.params?.mode === "species") {
+    if (els.speciesQuery) els.speciesQuery.value = state.species?.comName || state.params.speciesQuery || els.speciesQuery.value;
+    renderSightings(state.species, state.areaCenter, state.params);
+  } else if (state.results.length) {
     renderResults();
     renderMarkers();
   } else {
@@ -4140,6 +4154,7 @@ function renderReport() {
 
 function buildReportMarkup() {
   const p = state.params;
+  if (p.mode === "species") return buildSpeciesReportMarkup();
   const route = state.route;
   const isArea = p.mode === "area";
   const generated = new Date().toLocaleString();
@@ -4229,9 +4244,73 @@ function buildReportMarkup() {
   `;
 }
 
+function buildSpeciesReportMarkup() {
+  const p = state.params;
+  const generated = new Date().toLocaleString();
+  const center = state.areaCenter;
+  const speciesLabel = state.species?.comName || p.speciesQuery || "Species";
+  const locations = state.sightingLocations;
+  const totalSightings = state.sightings.length;
+  const provider = p.mapProvider || state.provider;
+  const param = (label, value, options = {}) => {
+    const renderedValue = options.raw ? String(value) : escapeHtml(String(value));
+    return `<div><dt>${escapeHtml(label)}</dt><dd>${renderedValue}</dd></div>`;
+  };
+
+  const paramsBlock = `
+    <h2>Search parameters</h2>
+    <dl class="report-params">
+      ${param("Species", state.species?.sciName ? `${speciesLabel} (${state.species.sciName})` : speciesLabel)}
+      ${param("Location", p.origin)}
+      ${param("Map service", providerLabel(p.mapProvider))}
+      ${param("Search radius", `${p.radiusKm} km`)}
+      ${param("Recent window", `${p.recentDays} days`)}
+    </dl>`;
+
+  const summaryBlock = `
+    <h2>Species summary</h2>
+    <dl class="report-route">
+      ${param("Species", speciesLabel)}
+      ${param("Location", state.routeName || p.origin)}
+      ${param("Radius", `${p.radiusKm} km`)}
+      ${param("Recent sightings", totalSightings)}
+      ${param("Locations", locations.length)}
+      ${center ? param("Center coordinates", `${center.lat.toFixed(5)}, ${center.lng.toFixed(5)}`) : ""}
+    </dl>`;
+
+  const locationsBlock = locations.length
+    ? `<h2>Sighting locations</h2>${locations.map((loc, index) => {
+        const ebirdUrl = loc.locId
+          ? `https://ebird.org/hotspot/${encodeURIComponent(loc.locId)}`
+          : `https://ebird.org/map?lat=${loc.lat}&lng=${loc.lng}`;
+        const mapsUrl = directionsUrlForPoints([center, loc].filter(Boolean), provider);
+        const countText = `${loc.count} ${pluralize("report", loc.count)}`;
+        const howManyText = loc.maxCount ? ` · up to ${loc.maxCount} seen` : "";
+        return `
+          <div class="report-stop">
+            <h3>${index + 1}. ${escapeHtml(loc.name)}</h3>
+            <p class="report-stop-meta">${escapeHtml(countText)}${escapeHtml(howManyText)} · ${escapeHtml(formatFreshness(loc.latest))}${loc.latest ? ` <small>${escapeHtml(loc.latest)}</small>` : ""}</p>
+            <dl class="report-stop-route">
+              ${param("Coordinates", `${loc.lat.toFixed(5)}, ${loc.lng.toFixed(5)}`)}
+              ${mapsUrl ? param("Directions", `<a href="${escapeHtml(mapsUrl)}">${escapeHtml(mapsUrl)}</a>`, { raw: true }) : ""}
+              ${param("eBird", `<a href="${escapeHtml(ebirdUrl)}">${escapeHtml(ebirdUrl)}</a>`, { raw: true })}
+            </dl>
+          </div>`;
+      }).join("")}`
+    : `<h2>Sighting locations</h2><p>No recent ${escapeHtml(speciesLabel)} sightings within ${escapeHtml(String(p.radiusKm))} km.</p>`;
+
+  return `
+    <h1>Birdtrip Species Report</h1>
+    <p class="report-sub">${escapeHtml(state.routeName || speciesLabel)} · Generated ${escapeHtml(generated)}</p>
+    ${paramsBlock}
+    ${summaryBlock}
+    ${locationsBlock}
+  `;
+}
+
 function downloadHtmlReport() {
   if (!hasReportableSearch()) {
-    setStatus("Nothing to export", `Run a ${state.mode === "area" ? "area" : "route"} search before downloading a report.`);
+    setStatus("Nothing to export", `Run a ${reportModeNoun()} search before downloading a report.`);
     return;
   }
 
@@ -4250,9 +4329,10 @@ function downloadHtmlReport() {
 }
 
 function buildStandaloneReportDocument(reportMarkup) {
+  const mode = state.params?.mode;
   const title = state.routeName
     ? `Birdtrip - ${state.routeName}`
-    : `Birdtrip ${state.params?.mode === "area" ? "Area" : "Trip"} Report`;
+    : `Birdtrip ${mode === "area" ? "Area" : mode === "species" ? "Species" : "Trip"} Report`;
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -4517,17 +4597,29 @@ a {
 }
 
 function reportFileName() {
-  const fallback = state.params?.mode === "area"
+  const mode = state.params?.mode;
+  const fallback = mode === "area"
     ? state.params.origin
-    : `${state.params.origin} to ${state.params.destination}`;
-  const base = slugify(state.routeName || fallback) || `${state.params?.mode === "area" ? "area" : "trip"}-report`;
+    : mode === "species"
+      ? `${state.species?.comName || state.params.speciesQuery || "species"} ${state.params.origin}`
+      : `${state.params.origin} to ${state.params.destination}`;
+  const base = slugify(state.routeName || fallback)
+    || `${mode === "area" ? "area" : mode === "species" ? "species" : "trip"}-report`;
   const date = new Date().toISOString().slice(0, 10);
   return `birdtrip-${base}-${date}.html`;
 }
 
+function reportModeNoun() {
+  if (state.mode === "area") return "area";
+  if (state.mode === "species") return "species";
+  return "route";
+}
+
 function hasReportableSearch() {
   if (!state.params) return false;
-  return state.params.mode === "area" ? Boolean(state.areaCenter) : Boolean(state.route);
+  if (state.params.mode === "area") return Boolean(state.areaCenter);
+  if (state.params.mode === "species") return Boolean(state.areaCenter);
+  return Boolean(state.route);
 }
 
 function slugify(value) {
