@@ -48,7 +48,10 @@ Replace the `#targets` textarea with a vertical stack of single-species rows.
 - Validation reuses `/api/ebird/taxonomy/search?q=<row text>`: a row is valid
   if any returned entry's common name matches the row text after
   `normalizeName()`. The first non-exact result doubles as the "did you mean"
-  suggestion.
+  suggestion. Because the server search is prefix/substring-only, a typo near
+  the end of a name ("Scarlet Tanger") returns zero results — in that case the
+  client retries with progressively shorter prefixes (removing up to 6
+  characters, never below 3) and offers the first hit as the suggestion.
 - Requests are debounced per row (~300ms) and cached client-side in a `Map`
   keyed by normalized name, so re-validating a restored list doesn't refire
   settled queries. The server holds the whole taxonomy in memory, so calls

@@ -2877,7 +2877,23 @@ async function validateTargetRow(row, name, token) {
   }
   const key = normalizeName(name);
   const exact = items.find((item) => normalizeName(item.comName) === key);
-  setTargetRowStatus(row, exact ? "valid" : "unknown", exact ? null : items[0] || null);
+  let suggestion = exact ? null : items[0] || null;
+  if (!exact && !suggestion) {
+    suggestion = await findTargetSuggestion(name);
+    if (ctx.valToken !== token || cleanTargetName(input.value) !== name) return;
+  }
+  setTargetRowStatus(row, exact ? "valid" : "unknown", suggestion);
+}
+
+// The server search is prefix/substring-only, so a typo near the end of a name
+// ("Scarlet Tanger") returns nothing. Retry with shorter prefixes to find a
+// did-you-mean candidate.
+async function findTargetSuggestion(name) {
+  for (let cut = name.length - 1; cut >= 3 && cut >= name.length - 6; cut -= 1) {
+    const items = await targetTaxonomyLookup(name.slice(0, cut));
+    if (items && items.length) return items[0];
+  }
+  return null;
 }
 
 function setTargetRowStatus(row, rowState, suggestion) {
