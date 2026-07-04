@@ -368,6 +368,10 @@ function splitTargetRowValue(row) {
 
 function hideTargetRowAutocomplete(row) {
   const ctx = targetRowContext(row);
+  if (ctx.acTimer) {
+    clearTimeout(ctx.acTimer);
+    ctx.acTimer = 0;
+  }
   const listEl = row.querySelector(".autocomplete-list");
   const input = row.querySelector("input");
   if (listEl) listEl.hidden = true;
@@ -778,7 +782,7 @@ function selectTargetRowItem(row, index) {
 }
 ```
 
-This mirrors the Species-mode picker (`setupSpeciesAutocomplete` and friends, `app.js:2365-2531`) with per-row context instead of a module-level singleton. The 220ms debounce matches `app.js:2389`. No AbortController: responses come through the shared cache (aborting would poison it), and staleness is handled by re-checking the input value.
+This mirrors the Species-mode picker (`setupSpeciesAutocomplete` and friends, `app.js:2365-2531`) with per-row context instead of a module-level singleton. The 220ms debounce matches `app.js:2389`. No AbortController: responses come through the shared cache (aborting would poison it), and staleness is handled by re-checking the input value. `hideTargetRowAutocomplete` (Task 2) clears any pending `ctx.acTimer` because a debounce firing after a suggestion is selected (or a did-you-mean fix is applied) would repaint the dropdown with "Searching…" and leave it stranded open.
 
 **Step 4: Verify with lint**
 

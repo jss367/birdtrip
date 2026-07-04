@@ -2655,16 +2655,49 @@ function commitTargetRow(row) {
 }
 
 function handleTargetRowInput(row) {
+  const ctx = targetRowContext(row);
   const input = row.querySelector("input");
   if (input.value.includes(",")) {
+    hideTargetRowAutocomplete(row);
     splitTargetRowValue(row);
     return;
   }
   syncTargetsFromRows();
   scheduleTargetRowValidation(row);
+  const value = cleanTargetName(input.value);
+  if (ctx.acTimer) clearTimeout(ctx.acTimer);
+  if (value.length < 2) {
+    hideTargetRowAutocomplete(row);
+    return;
+  }
+  ctx.acTimer = setTimeout(() => fetchTargetRowAutocomplete(row, value), 220);
 }
 
 function handleTargetRowKeydown(row, event) {
+  const ctx = targetRowContext(row);
+  const listEl = row.querySelector(".autocomplete-list");
+  if (!listEl.hidden && ctx.items.length) {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      moveTargetRowSelection(row, 1);
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      moveTargetRowSelection(row, -1);
+      return;
+    }
+    if (event.key === "Escape") {
+      hideTargetRowAutocomplete(row);
+      return;
+    }
+    if (event.key === "Enter" && ctx.activeIndex >= 0) {
+      event.preventDefault();
+      selectTargetRowItem(row, ctx.activeIndex);
+      commitTargetRow(row);
+      return;
+    }
+  }
   if (event.key === "Enter") {
     event.preventDefault();
     commitTargetRow(row);
@@ -2715,11 +2748,82 @@ function splitTargetRowValue(row) {
 
 function hideTargetRowAutocomplete(row) {
   const ctx = targetRowContext(row);
+  if (ctx.acTimer) {
+    clearTimeout(ctx.acTimer);
+    ctx.acTimer = 0;
+  }
   const listEl = row.querySelector(".autocomplete-list");
   const input = row.querySelector("input");
   if (listEl) listEl.hidden = true;
   if (input) input.setAttribute("aria-expanded", "false");
   ctx.activeIndex = -1;
+}
+
+async function fetchTargetRowAutocomplete(row, query) {
+  const ctx = targetRowContext(row);
+  const input = row.querySelector("input");
+  const listEl = row.querySelector(".autocomplete-list");
+  listEl.innerHTML = '<li class="is-loading">Searching…</li>';
+  listEl.hidden = false;
+  input.setAttribute("aria-expanded", "true");
+  const items = await targetTaxonomyLookup(query);
+  if (cleanTargetName(input.value) !== query || listEl.hidden) return;
+  if (!items || !items.length) {
+    ctx.items = [];
+    ctx.activeIndex = -1;
+    listEl.innerHTML = '<li class="is-empty">No matches.</li>';
+    return;
+  }
+  ctx.items = items;
+  ctx.activeIndex = -1;
+  listEl.innerHTML = "";
+  items.forEach((item, index) => {
+    const li = document.createElement("li");
+    li.setAttribute("role", "option");
+    li.setAttribute("aria-selected", "false");
+    li.dataset.index = String(index);
+    li.innerHTML = '<i data-lucide="bird"></i><span class="ac-name"></span>';
+    li.querySelector(".ac-name").textContent = item.sciName
+      ? `${item.comName} · ${item.sciName}`
+      : item.comName;
+    li.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      selectTargetRowItem(row, index);
+    });
+    li.addEventListener("mouseenter", () => setTargetRowActive(row, index));
+    listEl.appendChild(li);
+  });
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function moveTargetRowSelection(row, delta) {
+  const ctx = targetRowContext(row);
+  if (!ctx.items.length) return;
+  setTargetRowActive(row, (ctx.activeIndex + delta + ctx.items.length) % ctx.items.length);
+}
+
+function setTargetRowActive(row, index) {
+  const ctx = targetRowContext(row);
+  const listEl = row.querySelector(".autocomplete-list");
+  ctx.activeIndex = index;
+  Array.from(listEl.children).forEach((li, i) => {
+    const isActive = i === index;
+    li.classList.toggle("is-active", isActive);
+    li.setAttribute("aria-selected", String(isActive));
+    if (isActive) li.scrollIntoView({ block: "nearest" });
+  });
+}
+
+function selectTargetRowItem(row, index) {
+  const ctx = targetRowContext(row);
+  const item = ctx.items[index];
+  if (!item) return;
+  const input = row.querySelector("input");
+  input.value = item.comName;
+  ctx.valToken += 1;
+  hideTargetRowAutocomplete(row);
+  syncTargetsFromRows();
+  setTargetRowStatus(row, "valid", null);
 }
 
 function targetTaxonomyLookup(name) {
