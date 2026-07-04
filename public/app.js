@@ -668,6 +668,7 @@ function applyTripSettings(settings) {
   if (typeof settings.searchMode === "string") {
     setSearchMode(settings.searchMode, { persist: false });
   }
+  updateInputSummaries();
 }
 
 function serializeTripState() {
@@ -1686,6 +1687,7 @@ function shouldAttemptEbirdSearch() {
 }
 
 function updateInputSummaries() {
+  renderTargetRows();
   const targets = parseTargetsInput();
   els.targetCount.textContent = String(targets.length);
   els.maxAdded.textContent = state.mode === "species"
@@ -2529,6 +2531,186 @@ function hideSpeciesAutocomplete() {
     els.speciesQuery.removeAttribute("aria-activedescendant");
   }
   speciesAutocomplete.activeIndex = -1;
+}
+
+// --- Target species rows ---
+
+const targetRowsState = {
+  taxonomy: new Map(), // normalized name -> Promise<matches[]|null>
+  contexts: new WeakMap() // row element -> { acTimer, valToken, items, activeIndex }
+};
+
+function targetRowContext(row) {
+  let ctx = targetRowsState.contexts.get(row);
+  if (!ctx) {
+    ctx = { acTimer: 0, valToken: 0, items: [], activeIndex: -1 };
+    targetRowsState.contexts.set(row, ctx);
+  }
+  return ctx;
+}
+
+function cleanTargetName(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function targetRowInputs() {
+  return Array.from(els.targetRows.querySelectorAll(".target-row input"));
+}
+
+function serializeTargetRows() {
+  return targetRowInputs()
+    .map((input) => cleanTargetName(input.value))
+    .filter(Boolean)
+    .join("\n");
+}
+
+function syncTargetsFromRows() {
+  els.targets.value = serializeTargetRows();
+  updateInputSummaries();
+}
+
+function renderTargetRows() {
+  if (!els.targetRows || !els.targets) return;
+  const names = els.targets.value.split(/\n|,/).map(cleanTargetName).filter(Boolean);
+  if (els.targetRows.childElementCount && serializeTargetRows() === names.join("\n")) return;
+  els.targetRows.innerHTML = "";
+  for (const name of names) els.targetRows.appendChild(createTargetRow(name));
+  els.targetRows.appendChild(createTargetRow(""));
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function createTargetRow(name) {
+  const row = document.createElement("div");
+  row.className = "target-row";
+  row.dataset.state = "empty";
+
+  const wrap = document.createElement("div");
+  wrap.className = "autocomplete";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = name;
+  input.placeholder = "Add a species";
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  input.setAttribute("role", "combobox");
+  input.setAttribute("aria-autocomplete", "list");
+  input.setAttribute("aria-expanded", "false");
+  input.setAttribute("aria-label", "Target species");
+  const status = document.createElement("span");
+  status.className = "target-status";
+  status.setAttribute("aria-hidden", "true");
+  status.hidden = true;
+  const list = document.createElement("ul");
+  list.className = "autocomplete-list";
+  list.setAttribute("role", "listbox");
+  list.hidden = true;
+  wrap.append(input, status, list);
+
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "target-remove";
+  remove.setAttribute("aria-label", "Remove target species");
+  remove.innerHTML = '<i data-lucide="x"></i>';
+
+  const hint = document.createElement("small");
+  hint.className = "target-hint";
+  hint.hidden = true;
+
+  row.append(wrap, remove, hint);
+
+  input.addEventListener("input", () => handleTargetRowInput(row));
+  input.addEventListener("keydown", (event) => handleTargetRowKeydown(row, event));
+  input.addEventListener("blur", () => handleTargetRowBlur(row));
+  input.addEventListener("paste", (event) => handleTargetRowPaste(row, event));
+  remove.addEventListener("click", () => removeTargetRow(row));
+
+  if (name) scheduleTargetRowValidation(row);
+  return row;
+}
+
+function ensureTargetAddRow() {
+  const inputs = targetRowInputs();
+  const last = inputs[inputs.length - 1];
+  if (!last || cleanTargetName(last.value)) {
+    const row = createTargetRow("");
+    els.targetRows.appendChild(row);
+    if (window.lucide) window.lucide.createIcons();
+  }
+}
+
+function removeTargetRow(row) {
+  row.remove();
+  syncTargetsFromRows();
+  ensureTargetAddRow();
+}
+
+function commitTargetRow(row) {
+  const input = row.querySelector("input");
+  if (!cleanTargetName(input.value)) return;
+  hideTargetRowAutocomplete(row);
+  ensureTargetAddRow();
+  const inputs = targetRowInputs();
+  const next = inputs[inputs.indexOf(input) + 1];
+  if (next) next.focus();
+}
+
+function handleTargetRowInput(row) {
+  syncTargetsFromRows();
+  scheduleTargetRowValidation(row);
+}
+
+function handleTargetRowKeydown(row, event) {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    commitTargetRow(row);
+  }
+}
+
+function handleTargetRowBlur(row) {
+  setTimeout(() => {
+    hideTargetRowAutocomplete(row);
+    const input = row.querySelector("input");
+    if (!input || document.activeElement === input) return;
+    if (!cleanTargetName(input.value) && row !== els.targetRows.lastElementChild) {
+      removeTargetRow(row);
+    } else {
+      ensureTargetAddRow();
+    }
+  }, 120);
+}
+
+function handleTargetRowPaste(row, event) {
+  const text = event.clipboardData?.getData("text") || "";
+  if (!/[\n,]/.test(text)) return;
+  event.preventDefault();
+  const names = text.split(/\n|,/).map(cleanTargetName).filter(Boolean);
+  if (!names.length) return;
+  const input = row.querySelector("input");
+  input.value = names[0];
+  let anchor = row;
+  for (const name of names.slice(1)) {
+    const newRow = createTargetRow(name);
+    anchor.after(newRow);
+    anchor = newRow;
+  }
+  scheduleTargetRowValidation(row);
+  syncTargetsFromRows();
+  ensureTargetAddRow();
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function hideTargetRowAutocomplete(row) {
+  const ctx = targetRowContext(row);
+  const listEl = row.querySelector(".autocomplete-list");
+  const input = row.querySelector("input");
+  if (listEl) listEl.hidden = true;
+  if (input) input.setAttribute("aria-expanded", "false");
+  ctx.activeIndex = -1;
+}
+
+function scheduleTargetRowValidation(row) {
+  const input = row.querySelector("input");
+  row.dataset.state = cleanTargetName(input.value) ? "pending" : "empty";
 }
 
 function fieldLabel(field) {
