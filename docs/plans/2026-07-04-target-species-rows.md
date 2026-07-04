@@ -589,6 +589,8 @@ with:
       event.preventDefault();
       applyTargetSuggestion(row, suggestion);
     });
+    // Keyboard activation; can't double-fire after mousedown because applying detaches the button.
+    fixButton.addEventListener("click", () => applyTargetSuggestion(row, suggestion));
     hint.append(fixButton, "?");
     hint.hidden = false;
   } else if (rowState === "unknown") {
@@ -599,7 +601,7 @@ with:
   }
 ```
 
-(`mousedown` + `preventDefault` rather than `click`, matching the autocomplete list items at `app.js:2477-2480` — it fires before the input's blur can remove or re-render the row.)
+(`mousedown` + `preventDefault`, matching the autocomplete list items at `app.js:2477-2480` — it fires before the input's blur can remove or re-render the row. The extra `click` listener is for keyboard users: unlike the autocomplete `<li>`s, this is a focusable native button, and Tab+Enter fires `click`, never `mousedown`. Mouse use can't double-fire because the mousedown path detaches the button synchronously.)
 
 **Step 2: Add the fix action**
 

@@ -2801,6 +2801,8 @@ function setTargetRowStatus(row, rowState, suggestion) {
       event.preventDefault();
       applyTargetSuggestion(row, suggestion);
     });
+    // Keyboard activation; can't double-fire after mousedown because applying detaches the button.
+    fixButton.addEventListener("click", () => applyTargetSuggestion(row, suggestion));
     hint.append(fixButton, "?");
     hint.hidden = false;
   } else if (rowState === "unknown") {
