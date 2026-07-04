@@ -2722,9 +2722,72 @@ function hideTargetRowAutocomplete(row) {
   ctx.activeIndex = -1;
 }
 
+function targetTaxonomyLookup(name) {
+  const key = normalizeName(name);
+  if (!key) return Promise.resolve([]);
+  if (!targetRowsState.taxonomy.has(key)) {
+    const promise = apiJson(
+      `/api/ebird/taxonomy/search?q=${encodeURIComponent(name)}`,
+      { token: els.apiToken.value.trim() }
+    )
+      .then((matches) => (Array.isArray(matches) ? matches : []))
+      .catch(() => {
+        targetRowsState.taxonomy.delete(key);
+        return null;
+      });
+    targetRowsState.taxonomy.set(key, promise);
+  }
+  return targetRowsState.taxonomy.get(key);
+}
+
 function scheduleTargetRowValidation(row) {
+  const ctx = targetRowContext(row);
   const input = row.querySelector("input");
-  row.dataset.state = cleanTargetName(input.value) ? "pending" : "empty";
+  const name = cleanTargetName(input.value);
+  const token = ++ctx.valToken;
+  if (!name) {
+    setTargetRowStatus(row, "empty", null);
+    return;
+  }
+  setTargetRowStatus(row, "pending", null);
+  setTimeout(() => {
+    if (ctx.valToken !== token) return;
+    validateTargetRow(row, name, token);
+  }, 300);
+}
+
+async function validateTargetRow(row, name, token) {
+  const ctx = targetRowContext(row);
+  const input = row.querySelector("input");
+  const items = await targetTaxonomyLookup(name);
+  if (ctx.valToken !== token || cleanTargetName(input.value) !== name) return;
+  if (!items) {
+    setTargetRowStatus(row, "empty", null);
+    return;
+  }
+  const key = normalizeName(name);
+  const exact = items.find((item) => normalizeName(item.comName) === key);
+  setTargetRowStatus(row, exact ? "valid" : "unknown", exact ? null : items[0] || null);
+}
+
+// eslint-disable-next-line no-unused-vars -- `suggestion` is consumed by the did-you-mean hint (Task 4)
+function setTargetRowStatus(row, rowState, suggestion) {
+  row.dataset.state = rowState;
+  const status = row.querySelector(".target-status");
+  const hint = row.querySelector(".target-hint");
+  if (rowState === "valid") {
+    status.innerHTML = '<i data-lucide="check"></i>';
+    status.hidden = false;
+  } else if (rowState === "unknown") {
+    status.innerHTML = '<i data-lucide="triangle-alert"></i>';
+    status.hidden = false;
+  } else {
+    status.innerHTML = "";
+    status.hidden = true;
+  }
+  hint.hidden = true;
+  hint.textContent = "";
+  if (window.lucide) window.lucide.createIcons();
 }
 
 function fieldLabel(field) {
