@@ -342,7 +342,9 @@ function handleTargetRowPaste(row, event) {
   if (!/[\n,]/.test(text)) return;
   event.preventDefault();
   const input = row.querySelector("input");
-  input.value = text.replace(/\r\n?/g, "\n");
+  // Newlines are stripped when assigned to an input's value; commas survive
+  // and split identically.
+  input.value = text.replace(/\r\n?|\n/g, ",");
   splitTargetRowValue(row);
 }
 
@@ -634,10 +636,11 @@ function applyTargetSuggestion(row, item) {
   hideTargetRowAutocomplete(row);
   syncTargetsFromRows();
   setTargetRowStatus(row, "valid", null);
+  ensureTargetAddRow();
 }
 ```
 
-(Bumping `valToken` cancels any in-flight validation so it can't overwrite the immediate ✓.)
+(Bumping `valToken` cancels any in-flight validation so it can't overwrite the immediate ✓. `ensureTargetAddRow()` matters when the fix is applied on the trailing add row — without it no empty row appears until the next Enter/blur, and further typing would corrupt the corrected name.)
 
 **Step 3: Verify with lint**
 

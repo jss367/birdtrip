@@ -2722,7 +2722,9 @@ function handleTargetRowPaste(row, event) {
   if (!/[\n,]/.test(text)) return;
   event.preventDefault();
   const input = row.querySelector("input");
-  input.value = text.replace(/\r\n?/g, "\n");
+  // Newlines are stripped when assigned to an input's value; commas survive
+  // and split identically.
+  input.value = text.replace(/\r\n?|\n/g, ",");
   splitTargetRowValue(row);
 }
 
