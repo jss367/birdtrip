@@ -460,7 +460,13 @@ function targetTaxonomyLookup(name) {
       `/api/ebird/taxonomy/search?q=${encodeURIComponent(name)}`,
       { token: els.apiToken.value.trim() }
     )
-      .then((matches) => (Array.isArray(matches) ? matches : []))
+      .then((matches) => {
+        if (!Array.isArray(matches)) {
+          targetRowsState.taxonomy.delete(key);
+          return null;
+        }
+        return matches;
+      })
       .catch(() => {
         targetRowsState.taxonomy.delete(key);
         return null;
@@ -471,7 +477,7 @@ function targetTaxonomyLookup(name) {
 }
 ```
 
-Failed requests return `null` AND evict themselves from the cache so a later attempt can retry. The cache is shared with Task 5's autocomplete.
+Failed requests (and malformed non-array 200 responses) return `null` AND evict themselves from the cache so a later attempt can retry. The cache is shared with Task 5's autocomplete.
 
 **Step 2: Replace the placeholder validation**
 
@@ -500,7 +506,7 @@ async function validateTargetRow(row, name, token) {
   const items = await targetTaxonomyLookup(name);
   if (ctx.valToken !== token || cleanTargetName(input.value) !== name) return;
   if (!items) {
-    setTargetRowStatus(row, "empty", null);
+    setTargetRowStatus(row, "unchecked", null);
     return;
   }
   const key = normalizeName(name);
@@ -528,7 +534,7 @@ function setTargetRowStatus(row, rowState, suggestion) {
 }
 ```
 
-The `token` check makes stale async results harmless (user kept typing, picked a suggestion, or cleared the row). The `suggestion` parameter is unused until Task 4 — eslint 9 defaults allow unused function parameters only in some configs; if `npm run lint` flags it, name it `_suggestion` in this task and rename back in Task 4.
+The lookup-failure branch must use the distinct state `"unchecked"` — not `"empty"` — because the CSS hides the × remove button for `data-state="empty"` rows, and a populated row must keep its remove button even when validation can't run. The `token` check makes stale async results harmless (user kept typing, picked a suggestion, or cleared the row). The `suggestion` parameter is unused until Task 4 — eslint 9 defaults allow unused function parameters only in some configs; if `npm run lint` flags it, name it `_suggestion` in this task and rename back in Task 4.
 
 The validity rule (`normalizeName(item.comName) === normalizeName(rowText)`) is deliberately the same comparison used for matching sightings at `app.js:2724` (`candidate.species.get(target)` where both sides went through `normalizeName`), so a green check means "this will actually match sightings" by construction.
 
@@ -544,7 +550,7 @@ With `npm start` running and a token available:
 3. Fix it back → ✓ returns instantly on settle (cache hit for repeated names).
 4. Case-insensitivity: `gilded flicker` → ✓.
 5. Reload after a search → restored rows validate on load.
-6. Stop the server, type a new name → row shows no icon (state `empty`), no console spam beyond the failed fetch. Restart server, edit the row → validation recovers (cache self-evicted).
+6. Stop the server, type a new name → row shows no icon (state `unchecked`, × remove button still visible), no console spam beyond the failed fetch. Restart server, edit the row → validation recovers (cache self-evicted).
 
 **Step 5: Commit**
 
@@ -811,7 +817,7 @@ With `npm start` and a token:
 3. **Shared URL:** run a search with targets, use Share to get a URL with `targets=` param, open it in a private window → rows populate from the shared list and validate.
 4. **Trip save/load:** save a trip, clear, load it → rows restore (exercises `applyTripSettings`).
 5. **Mode switching:** flip Route/Area/Species modes → no console errors; target rows unaffected.
-6. **No-token behavior:** without any token, rows accept text with no icons and search still submits.
+6. **No-token behavior:** without any token, rows accept text with no icons, the × remove button stays visible, and search still submits.
 7. **Typo catch (the original feature ask):** type `Scarlet Tanger` → ⚠ + did-you-mean → click → ✓.
 
 **Step 3: Commit any fixes**

@@ -2730,7 +2730,13 @@ function targetTaxonomyLookup(name) {
       `/api/ebird/taxonomy/search?q=${encodeURIComponent(name)}`,
       { token: els.apiToken.value.trim() }
     )
-      .then((matches) => (Array.isArray(matches) ? matches : []))
+      .then((matches) => {
+        if (!Array.isArray(matches)) {
+          targetRowsState.taxonomy.delete(key);
+          return null;
+        }
+        return matches;
+      })
       .catch(() => {
         targetRowsState.taxonomy.delete(key);
         return null;
@@ -2762,7 +2768,7 @@ async function validateTargetRow(row, name, token) {
   const items = await targetTaxonomyLookup(name);
   if (ctx.valToken !== token || cleanTargetName(input.value) !== name) return;
   if (!items) {
-    setTargetRowStatus(row, "empty", null);
+    setTargetRowStatus(row, "unchecked", null);
     return;
   }
   const key = normalizeName(name);
