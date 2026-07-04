@@ -2655,6 +2655,11 @@ function commitTargetRow(row) {
 }
 
 function handleTargetRowInput(row) {
+  const input = row.querySelector("input");
+  if (input.value.includes(",")) {
+    splitTargetRowValue(row);
+    return;
+  }
   syncTargetsFromRows();
   scheduleTargetRowValidation(row);
 }
@@ -2683,10 +2688,15 @@ function handleTargetRowPaste(row, event) {
   const text = event.clipboardData?.getData("text") || "";
   if (!/[\n,]/.test(text)) return;
   event.preventDefault();
-  const names = text.split(/\n|,/).map(cleanTargetName).filter(Boolean);
-  if (!names.length) return;
   const input = row.querySelector("input");
-  input.value = names[0];
+  input.value = text.replace(/\r\n?/g, "\n");
+  splitTargetRowValue(row);
+}
+
+function splitTargetRowValue(row) {
+  const input = row.querySelector("input");
+  const names = input.value.split(/\n|,/).map(cleanTargetName).filter(Boolean);
+  input.value = names[0] || "";
   let anchor = row;
   for (const name of names.slice(1)) {
     const newRow = createTargetRow(name);
@@ -2695,8 +2705,12 @@ function handleTargetRowPaste(row, event) {
   }
   scheduleTargetRowValidation(row);
   syncTargetsFromRows();
-  ensureTargetAddRow();
   if (window.lucide) window.lucide.createIcons();
+  if (cleanTargetName(anchor.querySelector("input").value)) {
+    commitTargetRow(anchor);
+  } else {
+    ensureTargetAddRow();
+  }
 }
 
 function hideTargetRowAutocomplete(row) {

@@ -308,6 +308,11 @@ function commitTargetRow(row) {
 }
 
 function handleTargetRowInput(row) {
+  const input = row.querySelector("input");
+  if (input.value.includes(",")) {
+    splitTargetRowValue(row);
+    return;
+  }
   syncTargetsFromRows();
   scheduleTargetRowValidation(row);
 }
@@ -336,10 +341,15 @@ function handleTargetRowPaste(row, event) {
   const text = event.clipboardData?.getData("text") || "";
   if (!/[\n,]/.test(text)) return;
   event.preventDefault();
-  const names = text.split(/\n|,/).map(cleanTargetName).filter(Boolean);
-  if (!names.length) return;
   const input = row.querySelector("input");
-  input.value = names[0];
+  input.value = text.replace(/\r\n?/g, "\n");
+  splitTargetRowValue(row);
+}
+
+function splitTargetRowValue(row) {
+  const input = row.querySelector("input");
+  const names = input.value.split(/\n|,/).map(cleanTargetName).filter(Boolean);
+  input.value = names[0] || "";
   let anchor = row;
   for (const name of names.slice(1)) {
     const newRow = createTargetRow(name);
@@ -348,8 +358,12 @@ function handleTargetRowPaste(row, event) {
   }
   scheduleTargetRowValidation(row);
   syncTargetsFromRows();
-  ensureTargetAddRow();
   if (window.lucide) window.lucide.createIcons();
+  if (cleanTargetName(anchor.querySelector("input").value)) {
+    commitTargetRow(anchor);
+  } else {
+    ensureTargetAddRow();
+  }
 }
 
 function hideTargetRowAutocomplete(row) {
@@ -372,6 +386,7 @@ Notes for the implementer:
 - `Enter` MUST call `event.preventDefault()` — these are `<input>`s inside the search `<form>`, and Enter would otherwise submit the form (the textarea never had this problem).
 - Row edits do NOT call `savePreferences()` — the old textarea persisted only when a search ran, and we keep that behavior identical.
 - Paste splits on `/\n|,/` to match exactly what `parseTargetsInput()` (`app.js:1699-1704`) treats as separators.
+- Typed commas are split immediately too (`handleTargetRowInput` diverts to `splitTargetRowValue` before syncing). This is required for correctness, not just convenience: `renderTargetRows()`'s equality guard compares `serializeTargetRows()` (which does NOT split commas) against the textarea parsed with `/\n|,/` (which does). If a comma ever persisted in a row, the guard would fail on the next `updateInputSummaries()` and rebuild the row DOM mid-keystroke, destroying the focused input. Splitting commas on entry keeps the guard symmetric, so typing can never trigger a rebuild. A trailing comma acts like Enter (commits the row and moves focus).
 
 **Step 2: Hook rebuilds into `updateInputSummaries()`**
 
@@ -413,9 +428,10 @@ With `npm start` running:
 2. Type `Gilded Flicker`, press Enter → a second empty row appears and takes focus; the Targets tile count reads 1.
 3. Add two more names; click a row's × → it disappears, count drops.
 4. Paste `Rosy-faced Lovebird\nAbert's Towhee, Bendire's Thrasher` (mixed newline/comma) into the empty row → three rows plus an empty add row.
-5. Click the sample button (map-pinned icon) → rows repopulate with the sample targets.
-6. Run a search, reload the page → rows restore from saved preferences.
-7. Clear a middle row's text and click elsewhere → the row is removed.
+5. Type `Abert's Towhee,` (trailing comma) → row commits, focus moves to the next row, no flicker/focus loss.
+6. Click the sample button (map-pinned icon) → rows repopulate with the sample targets.
+7. Run a search, reload the page → rows restore from saved preferences.
+8. Clear a middle row's text and click elsewhere → the row is removed.
 
 **Step 6: Commit**
 
@@ -627,6 +643,11 @@ Replace `handleTargetRowInput` with:
 function handleTargetRowInput(row) {
   const ctx = targetRowContext(row);
   const input = row.querySelector("input");
+  if (input.value.includes(",")) {
+    hideTargetRowAutocomplete(row);
+    splitTargetRowValue(row);
+    return;
+  }
   syncTargetsFromRows();
   scheduleTargetRowValidation(row);
   const value = cleanTargetName(input.value);
