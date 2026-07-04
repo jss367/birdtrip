@@ -74,6 +74,7 @@ const els = {
   apiToken: document.querySelector("#apiToken"),
   rememberToken: document.querySelector("#rememberToken"),
   targets: document.querySelector("#targets"),
+  targetRows: document.querySelector("#targetRows"),
   lifeListInput: document.querySelector("#lifeListInput"),
   lifeListStatus: document.querySelector("#lifeListStatus"),
   clearLifeListButton: document.querySelector("#clearLifeListButton"),
@@ -204,7 +205,6 @@ function init() {
     state.userSelectedProvider = true;
     setMapProvider(providerFromInput());
   });
-  els.targets.addEventListener("input", updateInputSummaries);
   els.lifeListInput.addEventListener("change", handleLifeListFile);
   els.clearLifeListButton.addEventListener("click", clearLifeList);
   els.maxDetour.addEventListener("input", updateInputSummaries);
@@ -667,6 +667,7 @@ function applyTripSettings(settings) {
   if (typeof settings.searchMode === "string") {
     setSearchMode(settings.searchMode, { persist: false });
   }
+  updateInputSummaries();
 }
 
 function serializeTripState() {
@@ -1685,6 +1686,7 @@ function shouldAttemptEbirdSearch() {
 }
 
 function updateInputSummaries() {
+  renderTargetRows();
   const targets = parseTargetsInput();
   els.targetCount.textContent = String(targets.length);
   els.maxAdded.textContent = state.mode === "species"
@@ -2528,6 +2530,422 @@ function hideSpeciesAutocomplete() {
     els.speciesQuery.removeAttribute("aria-activedescendant");
   }
   speciesAutocomplete.activeIndex = -1;
+}
+
+// --- Target species rows ---
+
+const targetRowsState = {
+  // Unbounded by design: one small server-capped array per distinct query.
+  taxonomy: new Map(), // normalized name -> Promise<matches[]|null>
+  contexts: new WeakMap() // row element -> { acTimer, valToken, items, activeIndex }
+};
+
+function targetRowContext(row) {
+  let ctx = targetRowsState.contexts.get(row);
+  if (!ctx) {
+    ctx = { acTimer: 0, valToken: 0, items: [], activeIndex: -1 };
+    targetRowsState.contexts.set(row, ctx);
+  }
+  return ctx;
+}
+
+function cleanTargetName(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function targetRowInputs() {
+  return Array.from(els.targetRows.querySelectorAll(".target-row input"));
+}
+
+function serializeTargetRows() {
+  return targetRowInputs()
+    .map((input) => cleanTargetName(input.value))
+    .filter(Boolean)
+    .join("\n");
+}
+
+function syncTargetsFromRows() {
+  els.targets.value = serializeTargetRows();
+  updateInputSummaries();
+}
+
+function renderTargetRows() {
+  if (!els.targetRows || !els.targets) return;
+  const names = els.targets.value.split(/\n|,/).map(cleanTargetName).filter(Boolean);
+  if (els.targetRows.childElementCount && serializeTargetRows() === names.join("\n")) return;
+  els.targetRows.innerHTML = "";
+  for (const name of names) els.targetRows.appendChild(createTargetRow(name));
+  els.targetRows.appendChild(createTargetRow(""));
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function createTargetRow(name) {
+  const row = document.createElement("div");
+  row.className = "target-row";
+  row.dataset.state = "empty";
+
+  const wrap = document.createElement("div");
+  wrap.className = "autocomplete";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = name;
+  input.placeholder = "Add a species";
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  input.setAttribute("role", "combobox");
+  input.setAttribute("aria-autocomplete", "list");
+  input.setAttribute("aria-expanded", "false");
+  input.setAttribute("aria-label", "Target species");
+  const status = document.createElement("span");
+  status.className = "target-status";
+  status.setAttribute("aria-hidden", "true");
+  status.hidden = true;
+  const list = document.createElement("ul");
+  list.className = "autocomplete-list";
+  list.setAttribute("role", "listbox");
+  list.hidden = true;
+  wrap.append(input, status, list);
+
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "target-remove";
+  remove.setAttribute("aria-label", "Remove target species");
+  remove.innerHTML = '<i data-lucide="x"></i>';
+
+  const hint = document.createElement("small");
+  hint.className = "target-hint";
+  hint.hidden = true;
+
+  row.append(wrap, remove, hint);
+
+  input.addEventListener("input", () => handleTargetRowInput(row));
+  input.addEventListener("keydown", (event) => handleTargetRowKeydown(row, event));
+  input.addEventListener("blur", () => handleTargetRowBlur(row));
+  input.addEventListener("paste", (event) => handleTargetRowPaste(row, event));
+  remove.addEventListener("click", () => removeTargetRow(row));
+
+  if (name) scheduleTargetRowValidation(row);
+  return row;
+}
+
+function ensureTargetAddRow() {
+  const inputs = targetRowInputs();
+  const last = inputs[inputs.length - 1];
+  if (!last || cleanTargetName(last.value)) {
+    const row = createTargetRow("");
+    els.targetRows.appendChild(row);
+    if (window.lucide) window.lucide.createIcons();
+  }
+}
+
+function removeTargetRow(row) {
+  row.remove();
+  syncTargetsFromRows();
+  ensureTargetAddRow();
+}
+
+function commitTargetRow(row) {
+  const input = row.querySelector("input");
+  if (!cleanTargetName(input.value)) return;
+  hideTargetRowAutocomplete(row);
+  ensureTargetAddRow();
+  const inputs = targetRowInputs();
+  const next = inputs[inputs.indexOf(input) + 1];
+  if (next) next.focus();
+}
+
+function handleTargetRowInput(row) {
+  const ctx = targetRowContext(row);
+  const input = row.querySelector("input");
+  if (input.value.includes(",")) {
+    hideTargetRowAutocomplete(row);
+    splitTargetRowValue(row);
+    return;
+  }
+  syncTargetsFromRows();
+  scheduleTargetRowValidation(row);
+  const value = cleanTargetName(input.value);
+  if (ctx.acTimer) clearTimeout(ctx.acTimer);
+  if (value.length < 2) {
+    hideTargetRowAutocomplete(row);
+    return;
+  }
+  ctx.acTimer = setTimeout(() => fetchTargetRowAutocomplete(row, value), 220);
+}
+
+function handleTargetRowKeydown(row, event) {
+  const ctx = targetRowContext(row);
+  const listEl = row.querySelector(".autocomplete-list");
+  if (!listEl.hidden && ctx.items.length) {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      moveTargetRowSelection(row, 1);
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      moveTargetRowSelection(row, -1);
+      return;
+    }
+    if (event.key === "Escape") {
+      hideTargetRowAutocomplete(row);
+      return;
+    }
+    if (event.key === "Enter" && ctx.activeIndex >= 0) {
+      event.preventDefault();
+      selectTargetRowItem(row, ctx.activeIndex);
+      commitTargetRow(row);
+      return;
+    }
+  }
+  if (event.key === "Enter") {
+    event.preventDefault();
+    commitTargetRow(row);
+  }
+}
+
+function handleTargetRowBlur(row) {
+  setTimeout(() => {
+    hideTargetRowAutocomplete(row);
+    const input = row.querySelector("input");
+    if (!input || document.activeElement === input) return;
+    if (!cleanTargetName(input.value) && row !== els.targetRows.lastElementChild) {
+      removeTargetRow(row);
+    } else {
+      ensureTargetAddRow();
+    }
+  }, 120);
+}
+
+function handleTargetRowPaste(row, event) {
+  const text = event.clipboardData?.getData("text") || "";
+  if (!/[\n,]/.test(text)) return;
+  event.preventDefault();
+  const input = row.querySelector("input");
+  // Newlines are stripped when assigned to an input's value; commas survive
+  // and split identically.
+  input.value = text.replace(/\r\n?|\n/g, ",");
+  splitTargetRowValue(row);
+}
+
+function splitTargetRowValue(row) {
+  const input = row.querySelector("input");
+  const names = input.value.split(/\n|,/).map(cleanTargetName).filter(Boolean);
+  input.value = names[0] || "";
+  let anchor = row;
+  for (const name of names.slice(1)) {
+    const newRow = createTargetRow(name);
+    anchor.after(newRow);
+    anchor = newRow;
+  }
+  scheduleTargetRowValidation(row);
+  syncTargetsFromRows();
+  if (window.lucide) window.lucide.createIcons();
+  if (cleanTargetName(anchor.querySelector("input").value)) {
+    commitTargetRow(anchor);
+  } else {
+    ensureTargetAddRow();
+  }
+}
+
+function hideTargetRowAutocomplete(row) {
+  const ctx = targetRowContext(row);
+  if (ctx.acTimer) {
+    clearTimeout(ctx.acTimer);
+    ctx.acTimer = 0;
+  }
+  const listEl = row.querySelector(".autocomplete-list");
+  const input = row.querySelector("input");
+  if (listEl) listEl.hidden = true;
+  if (input) input.setAttribute("aria-expanded", "false");
+  ctx.activeIndex = -1;
+}
+
+async function fetchTargetRowAutocomplete(row, query) {
+  const ctx = targetRowContext(row);
+  const input = row.querySelector("input");
+  const listEl = row.querySelector(".autocomplete-list");
+  listEl.innerHTML = '<li class="is-loading">Searching…</li>';
+  listEl.hidden = false;
+  input.setAttribute("aria-expanded", "true");
+  const items = await targetTaxonomyLookup(query);
+  if (cleanTargetName(input.value) !== query || listEl.hidden) return;
+  if (!items || !items.length) {
+    ctx.items = [];
+    // Hide rather than show "No matches." — the dropdown would cover the
+    // did-you-mean hint rendered directly below the input.
+    hideTargetRowAutocomplete(row);
+    return;
+  }
+  ctx.items = items;
+  ctx.activeIndex = -1;
+  listEl.innerHTML = "";
+  items.forEach((item, index) => {
+    const li = document.createElement("li");
+    li.setAttribute("role", "option");
+    li.setAttribute("aria-selected", "false");
+    li.dataset.index = String(index);
+    li.innerHTML = '<i data-lucide="bird"></i><span class="ac-name"></span>';
+    li.querySelector(".ac-name").textContent = item.sciName
+      ? `${item.comName} · ${item.sciName}`
+      : item.comName;
+    li.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      selectTargetRowItem(row, index);
+    });
+    li.addEventListener("mouseenter", () => setTargetRowActive(row, index));
+    listEl.appendChild(li);
+  });
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function moveTargetRowSelection(row, delta) {
+  const ctx = targetRowContext(row);
+  if (!ctx.items.length) return;
+  setTargetRowActive(row, (ctx.activeIndex + delta + ctx.items.length) % ctx.items.length);
+}
+
+function setTargetRowActive(row, index) {
+  const ctx = targetRowContext(row);
+  const listEl = row.querySelector(".autocomplete-list");
+  ctx.activeIndex = index;
+  Array.from(listEl.children).forEach((li, i) => {
+    const isActive = i === index;
+    li.classList.toggle("is-active", isActive);
+    li.setAttribute("aria-selected", String(isActive));
+    if (isActive) li.scrollIntoView({ block: "nearest" });
+  });
+}
+
+function selectTargetRowItem(row, index) {
+  const ctx = targetRowContext(row);
+  const item = ctx.items[index];
+  if (!item) return;
+  const input = row.querySelector("input");
+  input.value = item.comName;
+  ctx.valToken += 1;
+  hideTargetRowAutocomplete(row);
+  syncTargetsFromRows();
+  setTargetRowStatus(row, "valid", null);
+}
+
+function targetTaxonomyLookup(name) {
+  const key = normalizeName(name);
+  if (!key) return Promise.resolve([]);
+  if (!targetRowsState.taxonomy.has(key)) {
+    const promise = apiJson(
+      `/api/ebird/taxonomy/search?q=${encodeURIComponent(name)}`,
+      { token: els.apiToken.value.trim() }
+    )
+      .then((matches) => {
+        if (!Array.isArray(matches)) {
+          targetRowsState.taxonomy.delete(key);
+          return null;
+        }
+        return matches;
+      })
+      .catch(() => {
+        targetRowsState.taxonomy.delete(key);
+        return null;
+      });
+    targetRowsState.taxonomy.set(key, promise);
+  }
+  return targetRowsState.taxonomy.get(key);
+}
+
+function scheduleTargetRowValidation(row) {
+  const ctx = targetRowContext(row);
+  const input = row.querySelector("input");
+  const name = cleanTargetName(input.value);
+  const token = ++ctx.valToken;
+  if (!name) {
+    setTargetRowStatus(row, "empty", null);
+    return;
+  }
+  setTargetRowStatus(row, "pending", null);
+  setTimeout(() => {
+    if (ctx.valToken !== token) return;
+    validateTargetRow(row, name, token);
+  }, 300);
+}
+
+async function validateTargetRow(row, name, token) {
+  const ctx = targetRowContext(row);
+  const input = row.querySelector("input");
+  const items = await targetTaxonomyLookup(name);
+  if (ctx.valToken !== token || cleanTargetName(input.value) !== name) return;
+  if (!items) {
+    setTargetRowStatus(row, "unchecked", null);
+    return;
+  }
+  const key = normalizeName(name);
+  const exact = items.find((item) => normalizeName(item.comName) === key);
+  let suggestion = exact ? null : items[0] || null;
+  if (!exact && !suggestion) {
+    suggestion = await findTargetSuggestion(name);
+    if (ctx.valToken !== token || cleanTargetName(input.value) !== name) return;
+  }
+  setTargetRowStatus(row, exact ? "valid" : "unknown", suggestion);
+}
+
+// The server search is prefix/substring-only, so a typo near the end of a name
+// ("Scarlet Tanger") returns nothing. Retry with shorter prefixes to find a
+// did-you-mean candidate.
+async function findTargetSuggestion(name) {
+  for (let cut = name.length - 1; cut >= 3 && cut >= name.length - 6; cut -= 1) {
+    const items = await targetTaxonomyLookup(name.slice(0, cut));
+    if (items && items.length) return items[0];
+  }
+  return null;
+}
+
+function setTargetRowStatus(row, rowState, suggestion) {
+  row.dataset.state = rowState;
+  const status = row.querySelector(".target-status");
+  const hint = row.querySelector(".target-hint");
+  if (rowState === "valid") {
+    status.innerHTML = '<i data-lucide="check"></i>';
+    status.hidden = false;
+  } else if (rowState === "unknown") {
+    status.innerHTML = '<i data-lucide="triangle-alert"></i>';
+    status.hidden = false;
+  } else {
+    status.innerHTML = "";
+    status.hidden = true;
+  }
+  hint.textContent = "";
+  if (rowState === "unknown" && suggestion?.comName) {
+    hint.append("Not in the eBird taxonomy. Did you mean ");
+    const fixButton = document.createElement("button");
+    fixButton.type = "button";
+    fixButton.className = "target-suggestion";
+    fixButton.textContent = suggestion.comName;
+    fixButton.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      applyTargetSuggestion(row, suggestion);
+    });
+    // Keyboard activation; can't double-fire after mousedown because applying detaches the button.
+    fixButton.addEventListener("click", () => applyTargetSuggestion(row, suggestion));
+    hint.append(fixButton, "?");
+    hint.hidden = false;
+  } else if (rowState === "unknown") {
+    hint.textContent = "Not found in the eBird taxonomy. It will still be searched as typed.";
+    hint.hidden = false;
+  } else {
+    hint.hidden = true;
+  }
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function applyTargetSuggestion(row, item) {
+  const ctx = targetRowContext(row);
+  const input = row.querySelector("input");
+  input.value = item.comName;
+  ctx.valToken += 1;
+  hideTargetRowAutocomplete(row);
+  syncTargetsFromRows();
+  setTargetRowStatus(row, "valid", null);
+  ensureTargetAddRow();
 }
 
 function fieldLabel(field) {

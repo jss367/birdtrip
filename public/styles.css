@@ -374,6 +374,103 @@ select {
   background: transparent;
 }
 
+.target-field {
+  display: grid;
+  gap: 6px;
+}
+
+.target-field > span {
+  color: var(--muted-strong);
+  font-size: 0.74rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.target-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.target-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.target-row .autocomplete input {
+  padding-right: 32px;
+}
+
+.target-status {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  transform: translateY(-50%);
+  display: inline-flex;
+  pointer-events: none;
+}
+
+.target-status svg {
+  width: 14px;
+  height: 14px;
+}
+
+.target-row[data-state="valid"] .target-status {
+  color: var(--accent-strong);
+}
+
+.target-row[data-state="unknown"] .target-status {
+  color: var(--amber);
+}
+
+.target-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.target-remove:hover {
+  color: var(--rose);
+  border-color: var(--rose);
+}
+
+.target-remove svg {
+  width: 12px;
+  height: 12px;
+}
+
+.target-row[data-state="empty"] .target-remove {
+  visibility: hidden;
+}
+
+.target-hint {
+  grid-column: 1 / -1;
+  color: var(--amber-strong);
+  font-size: 0.75rem;
+  line-height: 1.3;
+}
+
+.target-suggestion {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-strong);
+  font: inherit;
+  font-weight: 750;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .current-location-button {
   display: inline-flex;
   align-items: center;
