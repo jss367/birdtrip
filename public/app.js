@@ -2776,7 +2776,6 @@ async function validateTargetRow(row, name, token) {
   setTargetRowStatus(row, exact ? "valid" : "unknown", exact ? null : items[0] || null);
 }
 
-// eslint-disable-next-line no-unused-vars -- `suggestion` is consumed by the did-you-mean hint (Task 4)
 function setTargetRowStatus(row, rowState, suggestion) {
   row.dataset.state = rowState;
   const status = row.querySelector(".target-status");
@@ -2791,9 +2790,36 @@ function setTargetRowStatus(row, rowState, suggestion) {
     status.innerHTML = "";
     status.hidden = true;
   }
-  hint.hidden = true;
   hint.textContent = "";
+  if (rowState === "unknown" && suggestion?.comName) {
+    hint.append("Not in the eBird taxonomy. Did you mean ");
+    const fixButton = document.createElement("button");
+    fixButton.type = "button";
+    fixButton.className = "target-suggestion";
+    fixButton.textContent = suggestion.comName;
+    fixButton.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      applyTargetSuggestion(row, suggestion);
+    });
+    hint.append(fixButton, "?");
+    hint.hidden = false;
+  } else if (rowState === "unknown") {
+    hint.textContent = "Not found in the eBird taxonomy. It will still be searched as typed.";
+    hint.hidden = false;
+  } else {
+    hint.hidden = true;
+  }
   if (window.lucide) window.lucide.createIcons();
+}
+
+function applyTargetSuggestion(row, item) {
+  const ctx = targetRowContext(row);
+  const input = row.querySelector("input");
+  input.value = item.comName;
+  ctx.valToken += 1;
+  hideTargetRowAutocomplete(row);
+  syncTargetsFromRows();
+  setTargetRowStatus(row, "valid", null);
 }
 
 function fieldLabel(field) {
