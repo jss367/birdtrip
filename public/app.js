@@ -2943,6 +2943,7 @@ function applyTargetSuggestion(row, item) {
   hideTargetRowAutocomplete(row);
   syncTargetsFromRows();
   setTargetRowStatus(row, "valid", null);
+  ensureTargetAddRow();
 }
 
 function fieldLabel(field) {
