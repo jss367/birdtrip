@@ -205,7 +205,6 @@ function init() {
     state.userSelectedProvider = true;
     setMapProvider(providerFromInput());
   });
-  els.targets.addEventListener("input", updateInputSummaries);
   els.lifeListInput.addEventListener("change", handleLifeListFile);
   els.clearLifeListButton.addEventListener("click", clearLifeList);
   els.maxDetour.addEventListener("input", updateInputSummaries);
@@ -2536,6 +2535,7 @@ function hideSpeciesAutocomplete() {
 // --- Target species rows ---
 
 const targetRowsState = {
+  // Unbounded by design: one small server-capped array per distinct query.
   taxonomy: new Map(), // normalized name -> Promise<matches[]|null>
   contexts: new WeakMap() // row element -> { acTimer, valToken, items, activeIndex }
 };

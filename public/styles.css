@@ -425,10 +425,6 @@ select {
   color: var(--amber);
 }
 
-.target-row[data-state="pending"] .target-status {
-  color: var(--muted);
-}
-
 .target-remove {
   display: inline-flex;
   align-items: center;
