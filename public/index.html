@@ -184,10 +184,12 @@
             <span>Remember token in this browser</span>
           </label>
 
-          <label>
+          <div class="target-field">
             <span>Target species</span>
-            <textarea id="targets" name="targets" rows="4" placeholder="One common name per line"></textarea>
-          </label>
+            <textarea id="targets" name="targets" hidden></textarea>
+            <div id="targetRows" class="target-rows"></div>
+            <small class="field-hint">Press Enter to add another species, or paste a list.</small>
+          </div>
           <div class="life-list-import">
             <div>
               <span>Life list</span>

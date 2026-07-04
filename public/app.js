@@ -74,6 +74,7 @@ const els = {
   apiToken: document.querySelector("#apiToken"),
   rememberToken: document.querySelector("#rememberToken"),
   targets: document.querySelector("#targets"),
+  targetRows: document.querySelector("#targetRows"),
   lifeListInput: document.querySelector("#lifeListInput"),
   lifeListStatus: document.querySelector("#lifeListStatus"),
   clearLifeListButton: document.querySelector("#clearLifeListButton"),
