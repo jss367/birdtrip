@@ -741,8 +741,9 @@ async function fetchTargetRowAutocomplete(row, query) {
   if (cleanTargetName(input.value) !== query || listEl.hidden) return;
   if (!items || !items.length) {
     ctx.items = [];
-    ctx.activeIndex = -1;
-    listEl.innerHTML = '<li class="is-empty">No matches.</li>';
+    // Hide rather than show "No matches." — the dropdown would cover the
+    // did-you-mean hint rendered directly below the input.
+    hideTargetRowAutocomplete(row);
     return;
   }
   ctx.items = items;
