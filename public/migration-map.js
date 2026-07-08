@@ -162,9 +162,12 @@
     const groupKey = GROUPS[params.migrationGroup] ? params.migrationGroup : "all";
     const group = GROUPS[groupKey];
     const monthWeight = group.months[month.value] ?? month.base;
-    const corridors = group.corridors
+    const candidates = group.corridors
       .map((id) => buildCorridor(id, groupKey, group, month, monthWeight))
       .filter(Boolean)
+      .sort((a, b) => b.intensity - a.intensity);
+    const activeCorridors = candidates.filter((corridor) => corridor.intensity >= 20);
+    const corridors = (activeCorridors.length ? activeCorridors : candidates.slice(0, Math.min(2, candidates.length)))
       .sort((a, b) => b.intensity - a.intensity);
 
     return {
@@ -181,7 +184,7 @@
     if (!corridor) return null;
     const groupWeight = corridor.groups[groupKey] || corridor.groups.all || 0;
     if (!groupWeight) return null;
-    const intensity = Math.round(clamp(corridor.base * groupWeight * monthWeight, 0.08, 1) * 100);
+    const intensity = Math.round(clamp(corridor.base * groupWeight * monthWeight, 0, 1) * 100);
     const path = (corridor[month.path] || corridor.spring).map(([lat, lng]) => ({ lat, lng }));
     return {
       id,
@@ -191,10 +194,23 @@
       color: corridor.color,
       width: Math.round(corridor.width * (0.54 + intensity / 210)),
       intensity,
+      flowLabel: flowLabel(groupKey),
       direction: month.direction,
       summary: corridorSummary(id, groupKey, month, group),
       phase: month.phase
     };
+  }
+
+  function flowLabel(groupKey) {
+    const labels = {
+      all: "Birds",
+      warblers: "Warbler",
+      waterfowl: "Waterfowl",
+      shorebirds: "Shorebird",
+      raptors: "Raptor",
+      hummingbirds: "Hummingbird"
+    };
+    return labels[groupKey] || "Bird";
   }
 
   function corridorSummary(id, groupKey, month, group) {
@@ -343,6 +359,7 @@
         card.classList.toggle("is-selected", card.dataset.id === id);
       });
       this.renderMap();
+      this.renderIcons();
       const mapAdapter = this.getMapAdapter();
       if (mapAdapter) mapAdapter.flyTo(corridor.anchor, 6);
     }
@@ -432,14 +449,23 @@
       const fraction = (index + 1) / (count + 1);
       const point = pointAlongPath(corridor.path, fraction);
       if (!point) continue;
+      const distance = 18 + Math.min(18, Math.round(corridor.intensity / 6));
+      const radians = point.bearing * Math.PI / 180;
+      const dx = Math.cos(radians) * distance;
+      const dy = Math.sin(radians) * -distance;
       markers.push({
         id: `${corridor.id}-flow-${index}`,
         lat: point.lat,
         lng: point.lng,
         color: corridor.color,
-        size: 18 + Math.round(corridor.intensity / 18),
+        size: 21 + Math.round(corridor.intensity / 18),
         rotation: point.bearing,
+        startX: `${dx * -0.45}px`,
+        startY: `${dy * -0.45}px`,
+        endX: `${dx}px`,
+        endY: `${dy}px`,
         delay: `${(index * 0.22).toFixed(2)}s`,
+        text: corridor.flowLabel,
         label: corridor.direction
       });
     }
@@ -448,8 +474,12 @@
 
   function flowMarkerHtml(marker) {
     return `
-      <span class="migration-flow-marker" style="--migration-color: ${escapeHtml(marker.color)}; --migration-size: ${marker.size}px; --migration-rotation: ${marker.rotation}deg; --migration-delay: ${escapeHtml(marker.delay)}" aria-label="${escapeHtml(marker.label)}">
-        <span></span>
+      <span class="migration-flow-marker" style="--migration-color: ${escapeHtml(marker.color)}; --migration-size: ${marker.size}px; --migration-rotation: ${marker.rotation}deg; --migration-start-x: ${escapeHtml(marker.startX)}; --migration-start-y: ${escapeHtml(marker.startY)}; --migration-end-x: ${escapeHtml(marker.endX)}; --migration-end-y: ${escapeHtml(marker.endY)}; --migration-delay: ${escapeHtml(marker.delay)}" aria-label="${escapeHtml(marker.text)} ${escapeHtml(marker.label)}">
+        <span class="migration-flow-glyph">
+          <i data-lucide="bird" class="migration-flow-icon"></i>
+          <b>${escapeHtml(marker.text)}</b>
+          <span class="migration-flow-arrow"></span>
+        </span>
       </span>
     `;
   }

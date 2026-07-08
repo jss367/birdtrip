@@ -1036,39 +1036,74 @@ select {
 }
 
 .migration-flow-marker {
-  width: var(--migration-size);
-  height: var(--migration-size);
-  display: grid;
-  place-items: center;
+  min-width: var(--migration-size);
+  min-height: var(--migration-size);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--migration-color) 16%, white);
-  box-shadow: 0 7px 16px rgba(15, 23, 42, 0.22);
-  animation: migration-flow-pulse 1.25s ease-in-out infinite;
+  animation: migration-flow-travel 1.45s ease-in-out infinite;
   animation-delay: var(--migration-delay);
   pointer-events: none;
+  will-change: transform, opacity;
 }
 
-.migration-flow-marker span {
+.migration-flow-glyph {
+  min-height: var(--migration-size);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 7px 3px 5px;
+  border: 2px solid rgba(255, 255, 255, 0.94);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--migration-color) 18%, white);
+  box-shadow: 0 7px 16px rgba(15, 23, 42, 0.24);
+}
+
+.migration-flow-icon {
+  width: calc(var(--migration-size) * 0.62);
+  height: calc(var(--migration-size) * 0.62);
+  color: var(--migration-color);
+  stroke-width: 2.8;
+}
+
+.migration-flow-glyph b {
+  color: var(--text);
+  font-size: 0.72rem;
+  font-weight: 950;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.migration-flow-arrow {
   width: 0;
   height: 0;
-  border-top: calc(var(--migration-size) * 0.28) solid transparent;
-  border-bottom: calc(var(--migration-size) * 0.28) solid transparent;
-  border-left: calc(var(--migration-size) * 0.62) solid var(--migration-color);
+  border-top: calc(var(--migration-size) * 0.18) solid transparent;
+  border-bottom: calc(var(--migration-size) * 0.18) solid transparent;
+  border-left: calc(var(--migration-size) * 0.42) solid var(--migration-color);
   filter: drop-shadow(0 1px 1px rgba(15, 23, 42, 0.35));
-  transform: rotate(calc(var(--migration-rotation) - 0deg));
+  transform: rotate(var(--migration-rotation));
   transform-origin: center;
 }
 
-@keyframes migration-flow-pulse {
-  0%,
-  100% {
-    opacity: 0.72;
-    transform: scale(0.88);
+@keyframes migration-flow-travel {
+  0% {
+    opacity: 0.18;
+    transform: translate(var(--migration-start-x), var(--migration-start-y)) scale(0.92);
+  }
+
+  20% {
+    opacity: 1;
   }
 
   50% {
     opacity: 1;
-    transform: scale(1.18);
+    transform: translate(0, 0) scale(1.08);
+  }
+
+  100% {
+    opacity: 0.18;
+    transform: translate(var(--migration-end-x), var(--migration-end-y)) scale(0.92);
   }
 }
 
