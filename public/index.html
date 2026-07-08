@@ -89,13 +89,6 @@
             <span>Migration Map</span>
           </div>
           <label>
-            <span>Season</span>
-            <select id="migrationSeason" name="migrationSeason">
-              <option value="spring">Spring northbound</option>
-              <option value="fall">Fall southbound</option>
-            </select>
-          </label>
-          <label>
             <span>Bird group</span>
             <select id="migrationGroup" name="migrationGroup">
               <option value="all">All nocturnal migrants</option>
@@ -106,12 +99,7 @@
               <option value="hummingbirds">Hummingbirds</option>
             </select>
           </label>
-          <label>
-            <span>Season timing</span>
-            <input id="migrationWeek" name="migrationWeek" type="range" min="0" max="8" value="4">
-            <small class="field-hint" id="migrationWeekLabel">Peak movement</small>
-          </label>
-          <small class="field-hint">Macro corridors are modeled from broad seasonal flyway patterns, not live radar or species-level tracks.</small>
+          <small class="field-hint">Use the timeline at the bottom of the map to animate broad annual migration patterns from January through December.</small>
         </section>
 
         <section class="form-group" id="locationGroup">
@@ -351,6 +339,20 @@
           <span><b class="legend-dot sighting"></b> Species sighting</span>
           <span><b class="legend-line route"></b> <span id="mapAreaLegend">Route corridor</span></span>
         </div>
+        <div id="migrationTimelineBar" class="migration-timeline-bar" hidden>
+          <button type="button" id="migrationPlayButton" class="migration-play-button">
+            <i data-lucide="play"></i>
+            <span>Play</span>
+          </button>
+          <div class="migration-timeline-main">
+            <div class="migration-timeline-status">
+              <b id="migrationMonthLabel">April</b>
+              <span id="migrationPhaseLabel">Peak spring movement</span>
+            </div>
+            <input id="migrationMonth" name="migrationMonth" type="range" min="0" max="11" value="3" aria-label="Migration month">
+            <div id="migrationTimeline" class="migration-months" aria-label="Migration months"></div>
+          </div>
+        </div>
       </section>
 
       <section class="results-region">
@@ -542,6 +544,7 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+  <script src="./migration-map.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>
