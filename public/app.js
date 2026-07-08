@@ -567,7 +567,7 @@ function setSearchMode(mode, options = {}) {
   migrationController.syncControls();
   if (els.progressTitle.textContent === "Ready") {
     if (isMigration) {
-      els.progressMessage.textContent = "Choose a season and bird group, then show the migration map.";
+      els.progressMessage.textContent = "Choose a bird group, then use the month timeline to animate migration routes.";
     } else if (isSpecies) {
       els.progressMessage.textContent = "Pick a species and a location, then map every recent sighting.";
     } else if (isArea) {
@@ -1220,7 +1220,7 @@ function clearResults() {
   renderItineraryBuilder();
   els.detailsPanel.hidden = true;
   setStatus("Ready", state.mode === "migration"
-    ? "Choose a season and bird group, then show the migration map."
+    ? "Choose a bird group, then use the month timeline to animate migration routes."
     : state.mode === "species"
     ? "Pick a species and a location, then map every recent sighting."
     : state.mode === "area"
@@ -5385,6 +5385,18 @@ class LeafletMapAdapter {
       }).bindPopup(window.BirdtripMigrationMap.popup(corridor));
       dot.on("click", () => onSelect(corridor.id));
       layers.push(dot);
+      for (const flow of window.BirdtripMigrationMap.flowMarkers(corridor)) {
+        const flowMarker = L.marker([flow.lat, flow.lng], {
+          interactive: false,
+          icon: L.divIcon({
+            className: "",
+            html: window.BirdtripMigrationMap.flowMarkerHtml(flow),
+            iconSize: [flow.size + 10, flow.size + 10],
+            iconAnchor: [(flow.size + 10) / 2, (flow.size + 10) / 2]
+          })
+        });
+        layers.push(flowMarker);
+      }
     });
     this.migrationLayer = L.featureGroup(layers).addTo(this.map);
     this.map.fitBounds(this.migrationLayer.getBounds(), { padding: [36, 36] });
@@ -5587,6 +5599,16 @@ class GoogleMapAdapter {
         onSelect(corridor.id);
       });
       this.migrationLayers.push(line, marker);
+      const HtmlMarker = ensureGoogleHtmlMarkerClass();
+      for (const flow of window.BirdtripMigrationMap.flowMarkers(corridor)) {
+        const flowMarker = new HtmlMarker({
+          position: { lat: flow.lat, lng: flow.lng },
+          html: window.BirdtripMigrationMap.flowMarkerHtml(flow),
+          onClick: () => {}
+        });
+        flowMarker.setMap(this.map);
+        this.migrationLayers.push(flowMarker);
+      }
     });
     this.map.fitBounds(bounds, 36);
   }

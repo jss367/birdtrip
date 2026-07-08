@@ -425,6 +425,77 @@
     return `<strong>${escapeHtml(corridor.name)}</strong><br>${escapeHtml(corridor.direction)}; ${corridor.intensity}% relative intensity<br>${escapeHtml(corridor.summary)}`;
   }
 
+  function flowMarkers(corridor) {
+    const count = clamp(Math.round(corridor.intensity / 18), 1, 6);
+    const markers = [];
+    for (let index = 0; index < count; index += 1) {
+      const fraction = (index + 1) / (count + 1);
+      const point = pointAlongPath(corridor.path, fraction);
+      if (!point) continue;
+      markers.push({
+        id: `${corridor.id}-flow-${index}`,
+        lat: point.lat,
+        lng: point.lng,
+        color: corridor.color,
+        size: 18 + Math.round(corridor.intensity / 18),
+        rotation: point.bearing,
+        delay: `${(index * 0.22).toFixed(2)}s`,
+        label: corridor.direction
+      });
+    }
+    return markers;
+  }
+
+  function flowMarkerHtml(marker) {
+    return `
+      <span class="migration-flow-marker" style="--migration-color: ${escapeHtml(marker.color)}; --migration-size: ${marker.size}px; --migration-rotation: ${marker.rotation}deg; --migration-delay: ${escapeHtml(marker.delay)}" aria-label="${escapeHtml(marker.label)}">
+        <span></span>
+      </span>
+    `;
+  }
+
+  function pointAlongPath(path, fraction) {
+    if (!Array.isArray(path) || path.length < 2) return null;
+    const segments = [];
+    let total = 0;
+    for (let index = 0; index < path.length - 1; index += 1) {
+      const start = path[index];
+      const end = path[index + 1];
+      const length = Math.hypot(end.lat - start.lat, end.lng - start.lng);
+      if (!length) continue;
+      total += length;
+      segments.push({ start, end, length });
+    }
+    if (!segments.length) return null;
+    let target = total * clamp(fraction, 0, 1);
+    for (const segment of segments) {
+      if (target > segment.length) {
+        target -= segment.length;
+        continue;
+      }
+      const local = target / segment.length;
+      const lat = segment.start.lat + (segment.end.lat - segment.start.lat) * local;
+      const lng = segment.start.lng + (segment.end.lng - segment.start.lng) * local;
+      return {
+        lat,
+        lng,
+        bearing: bearingDegrees(segment.start, segment.end)
+      };
+    }
+    const last = segments.at(-1);
+    return {
+      lat: last.end.lat,
+      lng: last.end.lng,
+      bearing: bearingDegrees(last.start, last.end)
+    };
+  }
+
+  function bearingDegrees(start, end) {
+    const deltaLng = (end.lng - start.lng) * Math.cos((start.lat + end.lat) / 2 * Math.PI / 180);
+    const deltaLat = end.lat - start.lat;
+    return Math.atan2(deltaLat, deltaLng) * 180 / Math.PI;
+  }
+
   function reportMarkup(layer) {
     const migration = layer || buildLayer();
     const generated = new Date().toLocaleString();
@@ -496,6 +567,8 @@
     buildLayer,
     createController,
     popup,
+    flowMarkers,
+    flowMarkerHtml,
     reportMarkup,
     fileLabel,
     monthFor,

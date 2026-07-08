@@ -1035,6 +1035,43 @@ select {
   color: var(--accent-strong);
 }
 
+.migration-flow-marker {
+  width: var(--migration-size);
+  height: var(--migration-size);
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--migration-color) 16%, white);
+  box-shadow: 0 7px 16px rgba(15, 23, 42, 0.22);
+  animation: migration-flow-pulse 1.25s ease-in-out infinite;
+  animation-delay: var(--migration-delay);
+  pointer-events: none;
+}
+
+.migration-flow-marker span {
+  width: 0;
+  height: 0;
+  border-top: calc(var(--migration-size) * 0.28) solid transparent;
+  border-bottom: calc(var(--migration-size) * 0.28) solid transparent;
+  border-left: calc(var(--migration-size) * 0.62) solid var(--migration-color);
+  filter: drop-shadow(0 1px 1px rgba(15, 23, 42, 0.35));
+  transform: rotate(calc(var(--migration-rotation) - 0deg));
+  transform-origin: center;
+}
+
+@keyframes migration-flow-pulse {
+  0%,
+  100% {
+    opacity: 0.72;
+    transform: scale(0.88);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1.18);
+  }
+}
+
 .legend-dot,
 .legend-line {
   display: inline-block;
