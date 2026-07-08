@@ -20,6 +20,8 @@ const state = {
   sightings: [],
   sightingLocations: [],
   selectedSightingId: null,
+  migration: null,
+  selectedMigrationId: null,
   provider: "osm",
   userSelectedProvider: false,
   lifeList: {
@@ -53,6 +55,12 @@ const els = {
   modeButtons: document.querySelectorAll(".mode-switch button[data-mode]"),
   routeModeButton: document.querySelector("#routeModeButton"),
   areaModeButton: document.querySelector("#areaModeButton"),
+  migrationModeButton: document.querySelector("#migrationModeButton"),
+  migrationControls: document.querySelector("#migrationControls"),
+  migrationSeason: document.querySelector("#migrationSeason"),
+  migrationGroup: document.querySelector("#migrationGroup"),
+  migrationWeek: document.querySelector("#migrationWeek"),
+  migrationWeekLabel: document.querySelector("#migrationWeekLabel"),
   locationGroupTitle: document.querySelector("#locationGroupTitle"),
   originLabelText: document.querySelector("#originLabelText"),
   destinationField: document.querySelector("#destinationField"),
@@ -142,6 +150,9 @@ const els = {
   modalExploreButton: document.querySelector("#modalExploreButton"),
   submitLabel: document.querySelector("#submitLabel"),
   mapAreaLegend: document.querySelector("#mapAreaLegend"),
+  mapGlass: document.querySelector("#mapGlass"),
+  resultsTitle: document.querySelector("#resultsTitle"),
+  resultLegend: document.querySelector("#resultLegend"),
   originSuggestions: document.querySelector("#originSuggestions"),
   destinationSuggestions: document.querySelector("#destinationSuggestions"),
   useCurrentLocationButton: document.querySelector("#useCurrentLocationButton"),
@@ -155,10 +166,147 @@ const autocomplete = {
 
 const speciesAutocomplete = { timer: 0, controller: null, items: [], activeIndex: -1, lastQuery: "" };
 
-const PREF_FIELDS = ["origin", "destination", "mapProvider", "maxDetour", "recentDays", "radiusKm", "maxStops", "targets", "speciesQuery"];
+const PREF_FIELDS = [
+  "origin",
+  "destination",
+  "mapProvider",
+  "maxDetour",
+  "recentDays",
+  "radiusKm",
+  "maxStops",
+  "targets",
+  "speciesQuery",
+  "migrationSeason",
+  "migrationGroup",
+  "migrationWeek"
+];
+
+const MIGRATION_PHASES = [
+  { value: 0, label: "Early season", intensity: 0.35 },
+  { value: 1, label: "Building", intensity: 0.48 },
+  { value: 2, label: "Rising movement", intensity: 0.62 },
+  { value: 3, label: "Strong movement", intensity: 0.82 },
+  { value: 4, label: "Peak movement", intensity: 1 },
+  { value: 5, label: "Late peak", intensity: 0.88 },
+  { value: 6, label: "Tapering", intensity: 0.66 },
+  { value: 7, label: "Late season", intensity: 0.46 },
+  { value: 8, label: "Stragglers", intensity: 0.28 }
+];
+
+const MIGRATION_GROUPS = {
+  all: {
+    label: "All nocturnal migrants",
+    description: "Broad overnight movement across the major continental flyways.",
+    corridors: ["mississippi", "atlantic", "central", "pacific", "gulf", "greatLakes"],
+    focus: "Radar-visible nocturnal migration is strongest after sunset and often pulses with favorable winds."
+  },
+  warblers: {
+    label: "Warblers and songbirds",
+    description: "Neotropical songbirds moving through wooded river systems, Gulf arrivals, and eastern stopover belts.",
+    corridors: ["gulf", "mississippi", "atlantic", "greatLakes"],
+    focus: "Expect broad nighttime flights with heavy stopover use in riparian woods, coastal forests, and lake edges."
+  },
+  waterfowl: {
+    label: "Waterfowl",
+    description: "Ducks and geese tracking wetlands, prairie potholes, large river valleys, and coastal marshes.",
+    corridors: ["central", "mississippi", "pacific", "atlantic"],
+    focus: "Movements cluster around wetland complexes rather than a single narrow line."
+  },
+  shorebirds: {
+    label: "Shorebirds",
+    description: "Long-distance migrants using coasts, inland playas, prairie wetlands, and exposed mudflats.",
+    corridors: ["atlantic", "pacific", "central", "gulf"],
+    focus: "Timing and local water levels can shift stopovers dramatically."
+  },
+  raptors: {
+    label: "Raptors",
+    description: "Daytime migration concentrated along ridges, shorelines, and thermal corridors.",
+    corridors: ["appalachian", "atlantic", "pacific", "central"],
+    focus: "This layer is a daytime corridor approximation, unlike the nocturnal songbird layers."
+  },
+  hummingbirds: {
+    label: "Hummingbirds",
+    description: "Small-bodied migrants moving through the Gulf Coast, Southwest, and Pacific slope.",
+    corridors: ["gulf", "pacific", "central"],
+    focus: "Ruby-throated movement dominates the East; western species use mountain and coastal corridors."
+  }
+};
+
+const MIGRATION_CORRIDORS = {
+  atlantic: {
+    name: "Atlantic Flyway",
+    anchor: { lat: 37.6, lng: -76.4 },
+    spring: [[25.8, -80.1], [30.3, -81.5], [34.0, -78.7], [38.9, -76.6], [41.8, -72.6], [44.5, -69.0]],
+    fall: [[45.0, -69.2], [41.9, -72.8], [38.8, -76.7], [34.3, -78.6], [30.1, -81.4], [25.8, -80.1]],
+    width: 42,
+    color: "#0891b2",
+    base: 0.78,
+    groups: { all: 1, warblers: 0.95, waterfowl: 0.82, shorebirds: 1, raptors: 0.72 }
+  },
+  mississippi: {
+    name: "Mississippi River Corridor",
+    anchor: { lat: 36.2, lng: -90.2 },
+    spring: [[29.9, -90.1], [33.0, -91.0], [36.1, -90.2], [39.2, -90.3], [42.2, -91.2], [45.0, -93.1]],
+    fall: [[45.0, -93.1], [42.1, -91.2], [39.2, -90.3], [36.1, -90.2], [32.9, -91.0], [29.9, -90.1]],
+    width: 48,
+    color: "#10b981",
+    base: 0.98,
+    groups: { all: 1, warblers: 1, waterfowl: 1, shorebirds: 0.76 }
+  },
+  central: {
+    name: "Central Plains Flyway",
+    anchor: { lat: 38.5, lng: -99.2 },
+    spring: [[27.5, -97.4], [32.6, -99.0], [37.0, -99.6], [41.2, -100.2], [46.0, -101.0], [48.8, -103.0]],
+    fall: [[48.8, -103.0], [45.8, -101.0], [41.2, -100.2], [37.0, -99.6], [32.6, -99.0], [27.5, -97.4]],
+    width: 52,
+    color: "#f59e0b",
+    base: 0.84,
+    groups: { all: 1, waterfowl: 1, shorebirds: 0.9, raptors: 0.72, hummingbirds: 0.62 }
+  },
+  pacific: {
+    name: "Pacific Flyway",
+    anchor: { lat: 39.2, lng: -121.2 },
+    spring: [[32.6, -117.1], [35.0, -119.6], [38.6, -121.6], [42.4, -122.8], [45.6, -122.7], [48.8, -122.5]],
+    fall: [[48.8, -122.5], [45.6, -122.7], [42.4, -122.8], [38.6, -121.6], [35.0, -119.6], [32.6, -117.1]],
+    width: 46,
+    color: "#7c3aed",
+    base: 0.76,
+    groups: { all: 1, waterfowl: 0.9, shorebirds: 1, raptors: 0.86, hummingbirds: 0.86 }
+  },
+  gulf: {
+    name: "Gulf Coast Launch and Landfall Belt",
+    anchor: { lat: 29.4, lng: -91.4 },
+    spring: [[25.7, -97.2], [28.7, -95.2], [29.4, -91.4], [30.2, -88.2], [29.9, -84.0], [27.8, -82.5]],
+    fall: [[30.6, -84.4], [30.0, -88.6], [29.4, -91.4], [28.7, -95.2], [25.7, -97.2]],
+    width: 50,
+    color: "#ef4444",
+    base: 0.9,
+    groups: { all: 1, warblers: 1, shorebirds: 0.82, hummingbirds: 1 }
+  },
+  greatLakes: {
+    name: "Great Lakes Stopover Belt",
+    anchor: { lat: 42.7, lng: -84.7 },
+    spring: [[41.6, -87.4], [42.7, -84.7], [42.5, -81.2], [43.7, -78.8], [44.2, -76.4]],
+    fall: [[44.2, -76.4], [43.7, -78.8], [42.5, -81.2], [42.7, -84.7], [41.6, -87.4]],
+    width: 34,
+    color: "#2563eb",
+    base: 0.68,
+    groups: { all: 0.8, warblers: 0.94 }
+  },
+  appalachian: {
+    name: "Appalachian Ridge Corridor",
+    anchor: { lat: 40.3, lng: -76.0 },
+    spring: [[34.8, -83.7], [37.2, -80.4], [40.3, -76.0], [42.4, -74.0], [44.0, -72.3]],
+    fall: [[44.0, -72.3], [42.4, -74.0], [40.3, -76.0], [37.2, -80.4], [34.8, -83.7]],
+    width: 30,
+    color: "#334155",
+    base: 0.74,
+    groups: { raptors: 1 }
+  }
+};
 
 function normalizeMode(mode) {
-  return mode === "area" || mode === "species" ? mode : "route";
+  return mode === "area" || mode === "species" || mode === "migration" ? mode : "route";
 }
 const SAVED_TRIPS_KEY = "birdtripSavedTrips";
 const CONFIG_WAIT_TIMEOUT_MS = 6000;
@@ -208,6 +356,9 @@ function init() {
   els.lifeListInput.addEventListener("change", handleLifeListFile);
   els.clearLifeListButton.addEventListener("click", clearLifeList);
   els.maxDetour.addEventListener("input", updateInputSummaries);
+  els.migrationSeason.addEventListener("change", handleMigrationControlChange);
+  els.migrationGroup.addEventListener("change", handleMigrationControlChange);
+  els.migrationWeek.addEventListener("input", handleMigrationControlChange);
   els.quickStartButton.addEventListener("click", openQuickStart);
   els.shareTripButton.addEventListener("click", shareCurrentTrip);
   els.downloadReportButton.addEventListener("click", downloadHtmlReport);
@@ -315,6 +466,9 @@ function readSharedSearchFromUrl() {
     origin: cleanSharedText(search.get("origin"), 160),
     destination: cleanSharedText(search.get("destination"), 160),
     species: cleanSharedText(search.get("species"), 80),
+    migrationSeason: search.get("migrationSeason") === "fall" ? "fall" : "spring",
+    migrationGroup: MIGRATION_GROUPS[search.get("migrationGroup")] ? search.get("migrationGroup") : "all",
+    migrationWeek: cleanSharedNumber(search.get("migrationWeek"), 0, 8),
     mapProvider: search.get("mapProvider") === "google" ? "google" : "osm",
     maxDetour: cleanSharedNumber(search.get("maxDetour"), 0, 240),
     recentDays: cleanSharedNumber(search.get("recentDays"), 1, 30),
@@ -324,7 +478,7 @@ function readSharedSearchFromUrl() {
     pins: cleanSharedIdList(search.getAll("pin"), 5),
     autoRun: search.get("run") === "1"
   };
-  return shared.origin ? shared : null;
+  return shared.mode === "migration" || shared.origin ? shared : null;
 }
 
 function applySharedSearch(shared) {
@@ -338,6 +492,12 @@ function applySharedSearch(shared) {
   if (shared.mode === "species" && shared.species) {
     els.speciesQuery.value = shared.species;
     state.species = null;
+  }
+  if (shared.mode === "migration") {
+    els.migrationSeason.value = shared.migrationSeason;
+    els.migrationGroup.value = shared.migrationGroup;
+    if (shared.migrationWeek !== "") els.migrationWeek.value = shared.migrationWeek;
+    updateMigrationWeekLabel();
   }
   if (shared.mapProvider) els.mapProvider.value = shared.mapProvider;
   if (shared.maxDetour) els.maxDetour.value = shared.maxDetour;
@@ -442,6 +602,7 @@ function setSearchMode(mode, options = {}) {
   state.mode = normalizeMode(mode);
   const isArea = state.mode === "area";
   const isSpecies = state.mode === "species";
+  const isMigration = state.mode === "migration";
   const isAreaLike = isArea || isSpecies;
   els.form.dataset.mode = state.mode;
 
@@ -451,22 +612,33 @@ function setSearchMode(mode, options = {}) {
     button.setAttribute("aria-pressed", String(isActive));
   });
 
+  els.migrationControls.hidden = !isMigration;
+  document.querySelector("#locationGroup").hidden = isMigration;
   els.locationGroupTitle.textContent = isSpecies ? "Species" : isArea ? "Area" : "Route";
   els.originLabelText.textContent = isAreaLike ? "Location" : "Origin";
   els.origin.placeholder = isAreaLike ? "City, park, hotel, or address" : "";
+  els.origin.required = !isMigration;
   els.speciesField.hidden = !isSpecies;
   els.destinationField.hidden = isAreaLike;
-  els.destination.required = !isAreaLike;
+  els.destination.required = !isAreaLike && !isMigration;
   els.maxDetourLabel.textContent = isAreaLike ? "Area limit" : "Max added";
   els.maxDetourUnit.textContent = isAreaLike ? "off" : "min";
-  els.maxDetour.disabled = isAreaLike;
-  els.submitLabel.textContent = isSpecies ? "Map Sightings" : isArea ? "Search Area" : "Find Stops";
-  els.routeDistanceLabel.textContent = isSpecies ? "Search Radius" : isArea ? "Area Radius" : "Route Miles";
-  els.maxAddedLabel.textContent = isSpecies ? "Species Mode" : isArea ? "Area Mode" : "Added Time Budget";
-  els.mapAreaLegend.textContent = isAreaLike ? "Search area" : "Route corridor";
-  els.sampleButton.title = isSpecies ? "Use sample species search" : isArea ? "Use sample area" : "Use sample route";
+  els.maxDetour.disabled = isAreaLike || isMigration;
+  els.submitLabel.textContent = isMigration ? "Show Map" : isSpecies ? "Map Sightings" : isArea ? "Search Area" : "Find Stops";
+  els.routeDistanceLabel.textContent = isMigration ? "Corridors" : isSpecies ? "Search Radius" : isArea ? "Area Radius" : "Route Miles";
+  els.maxAddedLabel.textContent = isMigration ? "Season Phase" : isSpecies ? "Species Mode" : isArea ? "Area Mode" : "Added Time Budget";
+  els.mapAreaLegend.textContent = isMigration ? "Migration corridor" : isAreaLike ? "Search area" : "Route corridor";
+  els.sampleButton.title = isMigration ? "Reset migration map" : isSpecies ? "Use sample species search" : isArea ? "Use sample area" : "Use sample route";
+  els.resultsTitle.textContent = isMigration ? "Migration Map" : isSpecies ? "Recent Sightings" : "Ranked Stops";
+  els.resultLegend.hidden = isMigration;
+  els.itineraryBuilder.hidden = isMigration;
+  els.comparisonPanel.hidden = isMigration || state.comparisonIds.length === 0;
+  updateMapLegend();
+  updateMigrationWeekLabel();
   if (els.progressTitle.textContent === "Ready") {
-    if (isSpecies) {
+    if (isMigration) {
+      els.progressMessage.textContent = "Choose a season and bird group, then show the migration map.";
+    } else if (isSpecies) {
       els.progressMessage.textContent = "Pick a species and a location, then map every recent sighting.";
     } else if (isArea) {
       els.progressMessage.textContent = "Enter a city, park, or lodging location and run a search.";
@@ -474,7 +646,7 @@ function setSearchMode(mode, options = {}) {
   }
 
   clearFieldErrors();
-  if (persist && previousMode !== state.mode && (state.route || state.areaCenter || state.results.length || state.sightings.length)) {
+  if (persist && previousMode !== state.mode && (state.route || state.areaCenter || state.results.length || state.sightings.length || state.migration)) {
     clearResults();
   }
   updateInputSummaries();
@@ -684,7 +856,9 @@ function serializeTripState() {
     species: state.species,
     sightings: state.sightings,
     sightingLocations: state.sightingLocations,
-    selectedSightingId: state.selectedSightingId
+    selectedSightingId: state.selectedSightingId,
+    migration: state.migration,
+    selectedMigrationId: state.selectedMigrationId
   };
 }
 
@@ -730,6 +904,8 @@ function restoreTripState(trip) {
     ? savedState.sightingLocations.filter(isObjectRecord)
     : [];
   state.selectedSightingId = savedState.selectedSightingId || null;
+  state.migration = isObjectRecord(savedState.migration) ? savedState.migration : null;
+  state.selectedMigrationId = savedState.selectedMigrationId || null;
   state.comparisonIds = [];
   state.pinnedIds = [];
   state.pendingPinnedIds = [];
@@ -740,7 +916,9 @@ function restoreTripState(trip) {
   els.detailsPanel.hidden = true;
   els.report.innerHTML = "";
 
-  if (state.route?.geometry?.coordinates) {
+  if (state.migration && state.params?.mode === "migration") {
+    renderMigrationMap();
+  } else if (state.route?.geometry?.coordinates) {
     renderRoute(state.route.geometry.coordinates);
     updateRouteSummary(state.route);
   } else if (state.areaCenter) {
@@ -750,7 +928,9 @@ function restoreTripState(trip) {
     els.routeDistance.textContent = "-";
   }
 
-  if (state.params?.mode === "species") {
+  if (state.params?.mode === "migration" && state.migration) {
+    renderMigrationResults();
+  } else if (state.params?.mode === "species") {
     if (els.speciesQuery) els.speciesQuery.value = state.species?.comName || state.params.speciesQuery || els.speciesQuery.value;
     renderSightings(state.species, state.areaCenter, state.params);
   } else if (state.results.length) {
@@ -960,6 +1140,8 @@ async function initializeMap(provider, options = {}) {
   const results = preserveData ? state.results : [];
   const selectedId = preserveData ? state.selectedId : null;
   const sightingLocations = preserveData && Array.isArray(state.sightingLocations) ? state.sightingLocations : [];
+  const migration = preserveData ? state.migration : null;
+  const selectedMigrationId = preserveData ? state.selectedMigrationId : null;
 
   if (state.mapAdapter) {
     state.mapAdapter.destroy();
@@ -983,6 +1165,10 @@ async function initializeMap(provider, options = {}) {
   }
   if (sightingLocations.length) {
     renderSightingMarkers();
+  }
+  if (migration) {
+    state.selectedMigrationId = selectedMigrationId;
+    renderMigrationMap();
   }
 }
 
@@ -1010,6 +1196,14 @@ function loadGoogleMapsScript(key) {
 }
 
 function useSampleRoute() {
+  if (state.mode === "migration") {
+    els.migrationSeason.value = "spring";
+    els.migrationGroup.value = "all";
+    els.migrationWeek.value = "4";
+    updateInputSummaries();
+    if (state.migration) runMigrationMap(readParams());
+    return;
+  }
   if (state.mode === "species") {
     els.origin.value = "Papago Park, Phoenix, AZ";
     els.speciesQuery.value = "Rosy-faced Lovebird";
@@ -1065,6 +1259,8 @@ function clearResults() {
   state.sightings = [];
   state.sightingLocations = [];
   state.selectedSightingId = null;
+  state.migration = null;
+  state.selectedMigrationId = null;
   state.selectedId = null;
   state.comparisonIds = [];
   state.pinnedIds = [];
@@ -1079,7 +1275,9 @@ function clearResults() {
   els.report.innerHTML = "";
   els.resultsList.className = "results-list empty";
   els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="binoculars"></i><p>Results will appear here after the first search.</p></div>';
-  els.resultContext.textContent = state.mode === "species"
+  els.resultContext.textContent = state.mode === "migration"
+    ? "No migration map shown yet."
+    : state.mode === "species"
     ? "No species mapped yet."
     : state.mode === "area" ? "No area searched yet." : "No route searched yet.";
   els.routeDistance.textContent = "-";
@@ -1093,7 +1291,9 @@ function clearResults() {
   renderComparison();
   renderItineraryBuilder();
   els.detailsPanel.hidden = true;
-  setStatus("Ready", state.mode === "species"
+  setStatus("Ready", state.mode === "migration"
+    ? "Choose a season and bird group, then show the migration map."
+    : state.mode === "species"
     ? "Pick a species and a location, then map every recent sighting."
     : state.mode === "area"
       ? "Enter a city, park, or lodging location and run a search."
@@ -1112,7 +1312,9 @@ async function runSearch(options = {}) {
     const params = readParams();
     clearSearchArtifacts();
     state.params = params;
-    if (params.mode === "species") {
+    if (params.mode === "migration") {
+      runMigrationMap(params);
+    } else if (params.mode === "species") {
       await runSpeciesSearch(params);
     } else if (params.mode === "area") {
       await runAreaSearch(params);
@@ -1376,6 +1578,200 @@ async function runSpeciesSearch(params) {
   );
 }
 
+function runMigrationMap(params) {
+  const migration = buildMigrationLayer(params);
+  state.migration = migration;
+  state.selectedMigrationId = null;
+  state.routeName = `${migration.group.label} - ${migration.seasonLabel}`;
+  renderMigrationMap();
+  renderMigrationResults();
+  renderInsights();
+  renderWarnings();
+  setStatus(
+    "Migration map ready",
+    `${migration.corridors.length} macro ${pluralize("corridor", migration.corridors.length)} shown for ${migration.group.label.toLowerCase()}.`
+  );
+}
+
+function buildMigrationLayer(params) {
+  const season = params.migrationSeason === "fall" ? "fall" : "spring";
+  const week = clamp(Number(params.migrationWeek), 0, 8);
+  const phase = MIGRATION_PHASES.find((item) => item.value === week) || MIGRATION_PHASES[4];
+  const groupKey = MIGRATION_GROUPS[params.migrationGroup] ? params.migrationGroup : "all";
+  const group = MIGRATION_GROUPS[groupKey];
+  const corridors = group.corridors
+    .map((id) => {
+      const corridor = MIGRATION_CORRIDORS[id];
+      if (!corridor) return null;
+      const groupWeight = corridor.groups[groupKey] || corridor.groups.all || 0;
+      if (!groupWeight) return null;
+      const intensity = Math.round(clamp(corridor.base * groupWeight * phase.intensity, 0.12, 1) * 100);
+      const path = corridor[season].map(([lat, lng]) => ({ lat, lng }));
+      return {
+        id,
+        name: corridor.name,
+        path,
+        anchor: corridor.anchor,
+        color: corridor.color,
+        width: Math.round(corridor.width * (0.62 + intensity / 230)),
+        intensity,
+        direction: season === "spring" ? "Northbound" : "Southbound",
+        summary: corridorSummary(id, groupKey, season)
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.intensity - a.intensity);
+
+  return {
+    season,
+    seasonLabel: season === "spring" ? "Spring northbound" : "Fall southbound",
+    phase,
+    groupKey,
+    group,
+    corridors
+  };
+}
+
+function corridorSummary(id, groupKey, season) {
+  const seasonText = season === "spring" ? "northbound" : "southbound";
+  const notes = {
+    atlantic: "Coastal forests, marshes, barrier islands, and urban-light risks shape movement along the East Coast.",
+    mississippi: "River valleys, bottomland forests, wetlands, and agricultural stopovers make this one of the continent's strongest shared corridors.",
+    central: "Prairie wetlands, playas, and open-country winds produce broad Plains movement rather than a single narrow route.",
+    pacific: "Coastal wetlands, Central Valley habitat, and western mountain edges carry a mixed waterbird and landbird stream.",
+    gulf: "The Gulf belt is a critical launch, landfall, and refueling zone, especially for trans-Gulf songbirds and hummingbirds.",
+    greatLakes: "Lake edges concentrate stopovers and can bend flights around large water bodies during strong passage windows.",
+    appalachian: "Ridges and thermal lift concentrate visible daytime raptor movement."
+  };
+  const groupNote = groupKey === "raptors"
+    ? "Raptor timing is daytime and weather-dependent."
+    : groupKey === "waterfowl"
+      ? "Wetland availability can shift local intensity."
+      : groupKey === "shorebirds"
+        ? "Mudflat and water-level conditions strongly affect stopovers."
+        : "Nightly weather can move peak flights earlier or later.";
+  return `${notes[id] || "A broad seasonal movement corridor."} ${groupNote} Current view shows typical ${seasonText} emphasis.`;
+}
+
+function renderMigrationMap() {
+  if (!state.mapAdapter || !state.migration) return;
+  state.mapAdapter.setMigration(state.migration, state.selectedMigrationId, selectMigrationCorridor);
+}
+
+function renderMigrationResults() {
+  const migration = state.migration;
+  if (!migration) return;
+  els.resultsTitle.textContent = "Migration Map";
+  els.resultLegend.hidden = true;
+  els.itineraryBuilder.hidden = true;
+  els.comparisonPanel.hidden = true;
+  els.routeDistance.textContent = String(migration.corridors.length);
+  els.hotspotCount.textContent = `${migration.corridors[0]?.intensity || 0}%`;
+  els.notableCount.textContent = migration.season === "spring" ? "N" : "S";
+  els.candidateCount.textContent = String(migration.corridors.length);
+  els.liferCount.textContent = "-";
+  els.targetCount.textContent = migration.groupKey === "all" ? "6" : "1";
+  els.maxAdded.textContent = migration.phase.label;
+  els.resultContext.textContent = `${migration.group.label}; ${migration.seasonLabel.toLowerCase()}; ${migration.phase.label.toLowerCase()}.`;
+
+  els.resultsList.className = "results-list migration-results";
+  els.resultsList.innerHTML = `
+    <section class="migration-overview">
+      <div>
+        <span>${escapeHtml(migration.seasonLabel)}</span>
+        <h3>${escapeHtml(migration.group.label)}</h3>
+        <p>${escapeHtml(migration.group.description)}</p>
+      </div>
+      <b>${escapeHtml(migration.phase.label)}</b>
+    </section>
+    <section class="migration-note">
+      <i data-lucide="info"></i>
+      <p>${escapeHtml(migration.group.focus)} This first version shows modeled macro patterns for the United States; it is not live radar and does not identify individual birds.</p>
+    </section>
+  `;
+
+  migration.corridors.forEach((corridor) => {
+    const card = document.createElement("article");
+    card.className = "migration-card";
+    card.dataset.id = corridor.id;
+    card.tabIndex = 0;
+    card.setAttribute("role", "button");
+    if (corridor.id === state.selectedMigrationId) card.classList.add("is-selected");
+    card.innerHTML = `
+      <div class="migration-card-main">
+        <span class="migration-swatch" style="--migration-color: ${escapeHtml(corridor.color)}"></span>
+        <div>
+          <h3>${escapeHtml(corridor.name)}</h3>
+          <p>${escapeHtml(corridor.summary)}</p>
+        </div>
+      </div>
+      <div class="migration-meter" aria-label="Relative intensity ${corridor.intensity} percent">
+        <span style="width: ${corridor.intensity}%"></span>
+      </div>
+      <div class="migration-card-meta">
+        <span><i data-lucide="${migration.season === "spring" ? "arrow-up" : "arrow-down"}"></i>${escapeHtml(corridor.direction)}</span>
+        <span><i data-lucide="activity"></i>${corridor.intensity}% relative intensity</span>
+      </div>
+    `;
+    card.addEventListener("click", () => selectMigrationCorridor(corridor.id));
+    card.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        selectMigrationCorridor(corridor.id);
+      }
+    });
+    els.resultsList.appendChild(card);
+  });
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function selectMigrationCorridor(id) {
+  const corridor = state.migration?.corridors.find((item) => item.id === id);
+  if (!corridor) return;
+  state.selectedMigrationId = id;
+  els.resultsList.querySelectorAll(".migration-card").forEach((card) => {
+    card.classList.toggle("is-selected", card.dataset.id === id);
+  });
+  renderMigrationMap();
+  if (state.mapAdapter) state.mapAdapter.flyTo(corridor.anchor, 6);
+}
+
+function handleMigrationControlChange() {
+  updateMigrationWeekLabel();
+  updateInputSummaries();
+  savePreferences();
+  if (state.mode === "migration" && state.migration) {
+    runMigrationMap(readParams());
+  }
+}
+
+function updateMigrationWeekLabel() {
+  const phase = MIGRATION_PHASES.find((item) => item.value === Number(els.migrationWeek.value)) || MIGRATION_PHASES[4];
+  els.migrationWeekLabel.textContent = phase.label;
+}
+
+function updateMapLegend() {
+  if (!els.mapGlass) return;
+  if (state.mode === "migration") {
+    els.mapGlass.innerHTML = `
+      <span><b class="legend-line migration"></b> Migration corridor</span>
+      <span><b class="legend-dot migration-peak"></b> Strongest relative movement</span>
+      <span><b class="legend-dot migration-stop"></b> Stopover belt</span>
+    `;
+    return;
+  }
+  els.mapGlass.innerHTML = `
+    <span><b class="legend-dot target"></b> Target species</span>
+    <span><b class="legend-dot lifer"></b> Likely lifer</span>
+    <span><b class="legend-dot notable"></b> Notable birds</span>
+    <span><b class="legend-dot hotspot"></b> Ranked hotspot</span>
+    <span><b class="legend-dot pinned"></b> Pinned stop</span>
+    <span><b class="legend-dot sighting"></b> Species sighting</span>
+    <span><b class="legend-line route"></b> <span id="mapAreaLegend">${state.mode === "area" || state.mode === "species" ? "Search area" : "Route corridor"}</span></span>
+  `;
+  els.mapAreaLegend = document.querySelector("#mapAreaLegend");
+}
+
 function groupSightings(observations) {
   const byKey = new Map();
   observations.forEach((obs) => {
@@ -1524,6 +1920,9 @@ function readParams() {
     species: state.species && normalizeName(state.species.comName) === normalizeName(els.speciesQuery.value)
       ? state.species
       : null,
+    migrationSeason: els.migrationSeason.value === "fall" ? "fall" : "spring",
+    migrationGroup: MIGRATION_GROUPS[els.migrationGroup.value] ? els.migrationGroup.value : "all",
+    migrationWeek: clamp(Number(els.migrationWeek.value || 4), 0, 8),
     targets: els.targets.value
       .split(/\n|,/)
       .map((target) => normalizeName(target))
@@ -1606,10 +2005,15 @@ function buildShareUrl(options = {}) {
   url.hash = "";
   url.searchParams.set("bt", SHARE_URL_VERSION);
   url.searchParams.set("mode", state.mode);
-  url.searchParams.set("origin", els.origin.value.trim());
+  if (state.mode !== "migration") url.searchParams.set("origin", els.origin.value.trim());
   if (state.mode === "route") url.searchParams.set("destination", els.destination.value.trim());
   if (state.mode === "species" && els.speciesQuery.value.trim()) {
     url.searchParams.set("species", els.speciesQuery.value.trim());
+  }
+  if (state.mode === "migration") {
+    url.searchParams.set("migrationSeason", els.migrationSeason.value);
+    url.searchParams.set("migrationGroup", els.migrationGroup.value);
+    url.searchParams.set("migrationWeek", String(clamp(Number(els.migrationWeek.value || 4), 0, 8)));
   }
   url.searchParams.set("mapProvider", providerFromInput());
   url.searchParams.set("maxDetour", String(clamp(Number(els.maxDetour.value || 60), 0, 240)));
@@ -1623,6 +2027,7 @@ function buildShareUrl(options = {}) {
 }
 
 function hasRunnableSearchInputs() {
+  if (state.mode === "migration") return true;
   if (els.origin.value.trim().length < 2) return false;
   if (state.mode === "species") return els.speciesQuery.value.trim().length >= 2;
   if (state.mode === "area") return true;
@@ -1688,8 +2093,12 @@ function shouldAttemptEbirdSearch() {
 function updateInputSummaries() {
   renderTargetRows();
   const targets = parseTargetsInput();
-  els.targetCount.textContent = String(targets.length);
-  els.maxAdded.textContent = state.mode === "species"
+  els.targetCount.textContent = state.mode === "migration"
+    ? (els.migrationGroup.value === "all" ? "6" : "1")
+    : String(targets.length);
+  els.maxAdded.textContent = state.mode === "migration"
+    ? (MIGRATION_PHASES.find((item) => item.value === Number(els.migrationWeek.value)) || MIGRATION_PHASES[4]).label
+    : state.mode === "species"
     ? "Species"
     : state.mode === "area"
       ? "Area"
@@ -1959,7 +2368,7 @@ function clearSearchArtifacts() {
   els.detailsPanel.hidden = true;
   if (state.mapAdapter) state.mapAdapter.clear();
   els.resultsList.className = "results-list empty";
-  els.resultsList.innerHTML = `<div class="empty-state"><i data-lucide="loader"></i><p>${state.mode === "species" ? "Mapping sightings..." : state.mode === "area" ? "Searching area..." : "Searching route corridor..."}</p></div>`;
+  els.resultsList.innerHTML = `<div class="empty-state"><i data-lucide="loader"></i><p>${state.mode === "migration" ? "Drawing migration corridors..." : state.mode === "species" ? "Mapping sightings..." : state.mode === "area" ? "Searching area..." : "Searching route corridor..."}</p></div>`;
   els.notableCount.textContent = "-";
   els.hotspotCount.textContent = "-";
   els.candidateCount.textContent = "-";
@@ -3909,6 +4318,11 @@ function syncComparisonButtons() {
 }
 
 function renderComparison() {
+  if (state.mode === "migration" || state.params?.mode === "migration") {
+    els.comparisonPanel.hidden = true;
+    els.comparisonContent.innerHTML = "";
+    return;
+  }
   state.comparisonIds = state.comparisonIds.filter((id) => state.results.some((candidate) => candidate.id === id));
   if (!state.results.length) {
     els.comparisonPanel.hidden = true;
@@ -4182,6 +4596,13 @@ function renderInsights() {
   const liveTargets = parseTargetsInput();
   const canAttemptSearch = shouldAttemptEbirdSearch();
   const lifeListCount = state.lifeList.displayNames.length || state.lifeList.species.size;
+  if (state.mode === "migration") {
+    const migration = state.migration || buildMigrationLayer(readParams());
+    els.tripPlanSummary.textContent = `${migration.seasonLabel}: ${migration.corridors.length} macro corridors with ${migration.phase.label.toLowerCase()} timing.`;
+    els.targetSpeciesSummary.textContent = `${migration.group.label}: ${migration.group.description}`;
+    els.sightingSummary.textContent = migration.group.focus;
+    return;
+  }
   if (state.mode === "species") {
     const radius = state.params?.radiusKm || els.radiusKm.value || 25;
     const recent = state.params?.recentDays || els.recentDays.value || 14;
@@ -4574,6 +4995,7 @@ function renderReport() {
 
 function buildReportMarkup() {
   const p = state.params;
+  if (p.mode === "migration") return buildMigrationReportMarkup();
   if (p.mode === "species") return buildSpeciesReportMarkup();
   const route = state.route;
   const isArea = p.mode === "area";
@@ -4726,6 +5148,37 @@ function buildSpeciesReportMarkup() {
   `;
 }
 
+function buildMigrationReportMarkup() {
+  const p = state.params;
+  const generated = new Date().toLocaleString();
+  const migration = state.migration || buildMigrationLayer(p);
+  const param = (label, value) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd></div>`;
+  const corridorsBlock = migration.corridors.length
+    ? `<h2>Migration corridors</h2>${migration.corridors.map((corridor, index) => `
+        <div class="report-stop">
+          <h3>${index + 1}. ${escapeHtml(corridor.name)}</h3>
+          <p class="report-stop-meta">${escapeHtml(corridor.direction)} · ${corridor.intensity}% relative intensity</p>
+          <p class="report-stop-reason">${escapeHtml(corridor.summary)}</p>
+        </div>
+      `).join("")}`
+    : "<h2>Migration corridors</h2><p>No corridors are available for these settings.</p>";
+
+  return `
+    <h1>Birdtrip Migration Map Report</h1>
+    <p class="report-sub">${escapeHtml(migration.group.label)} · ${escapeHtml(migration.seasonLabel)} · Generated ${escapeHtml(generated)}</p>
+    <h2>Map parameters</h2>
+    <dl class="report-params">
+      ${param("Season", migration.seasonLabel)}
+      ${param("Bird group", migration.group.label)}
+      ${param("Season timing", migration.phase.label)}
+      ${param("Corridors shown", migration.corridors.length)}
+    </dl>
+    <h2>Interpretation</h2>
+    <p>${escapeHtml(migration.group.description)} ${escapeHtml(migration.group.focus)} This is a modeled macro visualization, not live radar or species-level tracking.</p>
+    ${corridorsBlock}
+  `;
+}
+
 function downloadHtmlReport() {
   if (!hasReportableSearch()) {
     setStatus("Nothing to export", `Run a ${reportModeNoun()} search before downloading a report.`);
@@ -4750,7 +5203,7 @@ function buildStandaloneReportDocument(reportMarkup) {
   const mode = state.params?.mode;
   const title = state.routeName
     ? `Birdtrip - ${state.routeName}`
-    : `Birdtrip ${mode === "area" ? "Area" : mode === "species" ? "Species" : "Trip"} Report`;
+    : `Birdtrip ${mode === "area" ? "Area" : mode === "species" ? "Species" : mode === "migration" ? "Migration Map" : "Trip"} Report`;
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -5020,9 +5473,11 @@ function reportFileName() {
     ? state.params.origin
     : mode === "species"
       ? `${state.species?.comName || state.params.speciesQuery || "species"} ${state.params.origin}`
+      : mode === "migration"
+        ? `${MIGRATION_GROUPS[state.params.migrationGroup]?.label || "migration"} ${state.params.migrationSeason || "season"}`
       : `${state.params.origin} to ${state.params.destination}`;
   const base = slugify(state.routeName || fallback)
-    || `${mode === "area" ? "area" : mode === "species" ? "species" : "trip"}-report`;
+    || `${mode === "area" ? "area" : mode === "species" ? "species" : mode === "migration" ? "migration-map" : "trip"}-report`;
   const date = new Date().toISOString().slice(0, 10);
   return `birdtrip-${base}-${date}.html`;
 }
@@ -5030,6 +5485,7 @@ function reportFileName() {
 function reportModeNoun() {
   if (state.mode === "area") return "area";
   if (state.mode === "species") return "species";
+  if (state.mode === "migration") return "migration map";
   return "route";
 }
 
@@ -5037,6 +5493,7 @@ function hasReportableSearch() {
   if (!state.params) return false;
   if (state.params.mode === "area") return Boolean(state.areaCenter);
   if (state.params.mode === "species") return Boolean(state.areaCenter);
+  if (state.params.mode === "migration") return Boolean(state.migration);
   return Boolean(state.route);
 }
 
@@ -5059,6 +5516,7 @@ class LeafletMapAdapter {
     this.itineraryLayer = null;
     this.areaLayer = null;
     this.markerLayer = null;
+    this.migrationLayer = null;
   }
 
   init() {
@@ -5148,6 +5606,39 @@ class LeafletMapAdapter {
     });
   }
 
+  setMigration(migration, selectedId, onSelect) {
+    this.clear();
+    if (this.migrationLayer) {
+      this.map.removeLayer(this.migrationLayer);
+      this.migrationLayer = null;
+    }
+    const layers = [];
+    migration.corridors.forEach((corridor) => {
+      const selected = corridor.id === selectedId;
+      const latLngs = corridor.path.map((point) => [point.lat, point.lng]);
+      const line = L.polyline(latLngs, {
+        color: corridor.color,
+        weight: selected ? corridor.width + 7 : corridor.width,
+        opacity: selected ? 0.88 : 0.56,
+        lineCap: "round",
+        lineJoin: "round"
+      }).bindPopup(migrationPopup(corridor));
+      line.on("click", () => onSelect(corridor.id));
+      layers.push(line);
+      const dot = L.circleMarker([corridor.anchor.lat, corridor.anchor.lng], {
+        radius: selected ? 10 : 7,
+        color: "#ffffff",
+        weight: 2,
+        fillColor: corridor.color,
+        fillOpacity: selected ? 0.96 : 0.82
+      }).bindPopup(migrationPopup(corridor));
+      dot.on("click", () => onSelect(corridor.id));
+      layers.push(dot);
+    });
+    this.migrationLayer = L.featureGroup(layers).addTo(this.map);
+    this.map.fitBounds(this.migrationLayer.getBounds(), { padding: [36, 36] });
+  }
+
   flyTo(candidate, minZoom) {
     this.map.flyTo([candidate.lat, candidate.lng], Math.max(this.map.getZoom(), minZoom), { duration: 0.6 });
   }
@@ -5163,6 +5654,10 @@ class LeafletMapAdapter {
       this.areaLayer = null;
     }
     if (this.markerLayer) this.markerLayer.clearLayers();
+    if (this.migrationLayer) {
+      this.map.removeLayer(this.migrationLayer);
+      this.migrationLayer = null;
+    }
   }
 
   destroy() {
@@ -5183,6 +5678,7 @@ class GoogleMapAdapter {
     this.itineraryLayer = null;
     this.areaCircle = null;
     this.areaMarker = null;
+    this.migrationLayers = [];
     this.markers = [];
     this.infoWindow = null;
   }
@@ -5300,6 +5796,50 @@ class GoogleMapAdapter {
     });
   }
 
+  setMigration(migration, selectedId, onSelect) {
+    this.clear();
+    const maps = window.google.maps;
+    this.migrationLayers = [];
+    const bounds = new maps.LatLngBounds();
+    migration.corridors.forEach((corridor) => {
+      const selected = corridor.id === selectedId;
+      const path = corridor.path.map((point) => ({ lat: point.lat, lng: point.lng }));
+      path.forEach((point) => bounds.extend(point));
+      const line = new maps.Polyline({
+        path,
+        geodesic: true,
+        strokeColor: corridor.color,
+        strokeOpacity: selected ? 0.88 : 0.56,
+        strokeWeight: selected ? Math.max(8, corridor.width / 4) : Math.max(5, corridor.width / 5),
+        map: this.map
+      });
+      line.addListener("click", () => {
+        this.infoWindow.setContent(migrationPopup(corridor));
+        this.infoWindow.setPosition(corridor.anchor);
+        this.infoWindow.open({ map: this.map });
+        onSelect(corridor.id);
+      });
+      const marker = new maps.Circle({
+        center: corridor.anchor,
+        radius: selected ? 65000 : 45000,
+        strokeColor: "#ffffff",
+        strokeOpacity: 0.95,
+        strokeWeight: 2,
+        fillColor: corridor.color,
+        fillOpacity: selected ? 0.92 : 0.76,
+        map: this.map
+      });
+      marker.addListener("click", () => {
+        this.infoWindow.setContent(migrationPopup(corridor));
+        this.infoWindow.setPosition(corridor.anchor);
+        this.infoWindow.open({ map: this.map });
+        onSelect(corridor.id);
+      });
+      this.migrationLayers.push(line, marker);
+    });
+    this.map.fitBounds(bounds, 36);
+  }
+
   flyTo(candidate, minZoom) {
     this.map.panTo({ lat: candidate.lat, lng: candidate.lng });
     if (this.map.getZoom() < minZoom) this.map.setZoom(minZoom);
@@ -5321,6 +5861,8 @@ class GoogleMapAdapter {
     }
     this.markers.forEach((marker) => marker.setMap(null));
     this.markers = [];
+    this.migrationLayers.forEach((layer) => layer.setMap(null));
+    this.migrationLayers = [];
     if (this.infoWindow) this.infoWindow.close();
   }
 
@@ -5394,6 +5936,10 @@ function markerPopup(candidate) {
     ? `${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi from center`
     : `+${Math.round(candidate.addedMinutes)} min`;
   return `<strong>${escapeHtml(candidate.name)}</strong><br>${candidate.score} score; ${impact}<br>${candidate.species.size} recent species${pinnedText}`;
+}
+
+function migrationPopup(corridor) {
+  return `<strong>${escapeHtml(corridor.name)}</strong><br>${escapeHtml(corridor.direction)}; ${corridor.intensity}% relative intensity<br>${escapeHtml(corridor.summary)}`;
 }
 
 function haversineKm(a, b) {

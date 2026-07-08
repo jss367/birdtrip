@@ -181,7 +181,7 @@ textarea:disabled {
 
 .mode-switch {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 4px;
   padding: 4px;
   border: 1px solid var(--line);
@@ -190,6 +190,7 @@ textarea:disabled {
 }
 
 .mode-switch button {
+  min-width: 0;
   min-height: 38px;
   border: 0;
   border-radius: 6px;
@@ -969,6 +970,21 @@ select {
   background: var(--blue);
 }
 
+.legend-line.migration {
+  width: 22px;
+  height: 5px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #10b981, #0891b2, #f59e0b);
+}
+
+.legend-dot.migration-peak {
+  background: #10b981;
+}
+
+.legend-dot.migration-stop {
+  background: #f59e0b;
+}
+
 .results-region {
   min-height: 0;
   background:
@@ -1595,6 +1611,148 @@ button.budget-unlock:focus-visible {
   width: 44px;
   height: 44px;
   color: var(--accent);
+}
+
+.migration-results {
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+}
+
+.migration-overview,
+.migration-note,
+.migration-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: var(--soft-shadow);
+}
+
+.migration-overview {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: start;
+  padding: 15px;
+  background:
+    linear-gradient(135deg, rgba(209, 250, 229, 0.9), rgba(219, 234, 254, 0.72)),
+    white;
+}
+
+.migration-overview span,
+.migration-card-meta span {
+  color: var(--accent-strong);
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.migration-overview h3,
+.migration-card h3 {
+  margin: 5px 0 0;
+  line-height: 1.2;
+}
+
+.migration-overview p,
+.migration-note p,
+.migration-card p {
+  margin: 7px 0 0;
+  color: var(--muted-strong);
+  font-size: 0.86rem;
+  line-height: 1.38;
+}
+
+.migration-overview b {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  padding: 7px 10px;
+  background: white;
+  color: var(--blue);
+  font-size: 0.8rem;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
+}
+
+.migration-note {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 9px;
+  padding: 12px;
+  background: #f8fafc;
+}
+
+.migration-note svg {
+  width: 20px;
+  height: 20px;
+  color: var(--blue);
+}
+
+.migration-note p {
+  margin: 0;
+}
+
+.migration-card {
+  padding: 13px;
+  cursor: pointer;
+  transition: border 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+}
+
+.migration-card:hover,
+.migration-card.is-selected {
+  border-color: rgba(16, 185, 129, 0.65);
+  box-shadow: 0 18px 42px rgba(31, 47, 34, 0.13);
+  transform: translateY(-1px);
+}
+
+.migration-card.is-selected {
+  outline: 3px solid rgba(16, 185, 129, 0.16);
+}
+
+.migration-card-main {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  gap: 11px;
+}
+
+.migration-swatch {
+  width: 12px;
+  min-height: 100%;
+  border-radius: 999px;
+  background: var(--migration-color);
+}
+
+.migration-meter {
+  height: 9px;
+  margin-top: 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--panel-soft);
+}
+
+.migration-meter span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), var(--blue));
+}
+
+.migration-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-top: 10px;
+}
+
+.migration-card-meta span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted-strong);
+}
+
+.migration-card-meta svg {
+  width: 14px;
+  height: 14px;
+  color: var(--accent-strong);
 }
 
 .stop-card {
@@ -2272,7 +2430,24 @@ button.budget-unlock:focus-visible {
 
   .header-actions {
     width: 100%;
-    justify-content: flex-start;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    justify-content: stretch;
+  }
+
+  .header-actions > * {
+    min-width: 0;
+  }
+
+  .header-actions .ghost-button,
+  .header-actions .setup-badge {
+    width: 100%;
+    min-width: 0;
+  }
+
+  #downloadReportButton,
+  #setupStatus {
+    grid-column: 1 / -1;
   }
 
   .sidebar {
@@ -2287,6 +2462,21 @@ button.budget-unlock:focus-visible {
   .control-grid,
   .detail-grid {
     grid-template-columns: 1fr;
+  }
+
+  .mode-switch {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .mode-switch button {
+    gap: 5px;
+    padding: 0 6px;
+    overflow: hidden;
+    font-size: 0.76rem;
+  }
+
+  .mode-switch button svg {
+    flex: 0 0 auto;
   }
 
   .summary-panel {
@@ -2309,6 +2499,10 @@ button.budget-unlock:focus-visible {
   .results-list {
     grid-template-columns: 1fr;
     padding: 14px;
+  }
+
+  .migration-overview {
+    display: grid;
   }
 
   .route-tradeoff-panel,

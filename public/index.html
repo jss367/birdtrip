@@ -77,7 +77,42 @@
             <i data-lucide="bird"></i>
             Species
           </button>
+          <button type="button" id="migrationModeButton" data-mode="migration" aria-pressed="false">
+            <i data-lucide="waves"></i>
+            Migration
+          </button>
         </div>
+
+        <section class="form-group migration-controls" id="migrationControls" hidden>
+          <div class="group-label">
+            <i data-lucide="waves"></i>
+            <span>Migration Map</span>
+          </div>
+          <label>
+            <span>Season</span>
+            <select id="migrationSeason" name="migrationSeason">
+              <option value="spring">Spring northbound</option>
+              <option value="fall">Fall southbound</option>
+            </select>
+          </label>
+          <label>
+            <span>Bird group</span>
+            <select id="migrationGroup" name="migrationGroup">
+              <option value="all">All nocturnal migrants</option>
+              <option value="warblers">Warblers and songbirds</option>
+              <option value="waterfowl">Waterfowl</option>
+              <option value="shorebirds">Shorebirds</option>
+              <option value="raptors">Raptors</option>
+              <option value="hummingbirds">Hummingbirds</option>
+            </select>
+          </label>
+          <label>
+            <span>Season timing</span>
+            <input id="migrationWeek" name="migrationWeek" type="range" min="0" max="8" value="4">
+            <small class="field-hint" id="migrationWeekLabel">Peak movement</small>
+          </label>
+          <small class="field-hint">Macro corridors are modeled from broad seasonal flyway patterns, not live radar or species-level tracks.</small>
+        </section>
 
         <section class="form-group" id="locationGroup">
           <div class="group-label">
@@ -307,7 +342,7 @@
     <main class="workspace">
       <section class="map-region">
         <div id="map"></div>
-        <div class="map-glass" aria-hidden="true">
+        <div class="map-glass" id="mapGlass" aria-hidden="true">
           <span><b class="legend-dot target"></b> Target species</span>
           <span><b class="legend-dot lifer"></b> Likely lifer</span>
           <span><b class="legend-dot notable"></b> Notable birds</span>
@@ -321,10 +356,10 @@
       <section class="results-region">
         <div class="results-header">
           <div>
-            <h2>Ranked Stops</h2>
+            <h2 id="resultsTitle">Ranked Stops</h2>
             <p id="resultContext">No route searched yet.</p>
           </div>
-          <div class="legend">
+          <div class="legend" id="resultLegend">
             <span><b class="tier high"></b>Top hotspot</span>
             <span><b class="tier mid"></b>Notable birds</span>
             <span><b class="tier lifer"></b>Likely lifer</span>
