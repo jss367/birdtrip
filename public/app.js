@@ -532,6 +532,7 @@ function setSearchMode(mode, options = {}) {
   const isSpecies = state.mode === "species";
   const isMigration = state.mode === "migration";
   const isAreaLike = isArea || isSpecies;
+  if (previousMode === "migration" && !isMigration) migrationController?.stopPlayback();
   els.form.dataset.mode = state.mode;
 
   els.modeButtons.forEach((button) => {
