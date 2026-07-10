@@ -5063,6 +5063,7 @@ class LeafletMapAdapter {
 
   init() {
     this.map = L.map(this.container, { zoomControl: true }).setView([33.45, -112.07], 7);
+    this.map.attributionControl.setPrefix(false);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 19,
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
