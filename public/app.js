@@ -3905,7 +3905,7 @@ function renderResults() {
     node.querySelector(".rank").textContent = String(index + 1);
     node.querySelector(".stop-name").textContent = candidate.name;
     node.querySelector(".stop-preview").textContent = speciesPreview(candidate);
-    node.querySelector(".stop-chips").innerHTML = candidateChips(candidate);
+    node.querySelector(".stop-chips").innerHTML = candidateChips(candidate, index);
     node.querySelector(".score-pill").textContent = candidate.score;
     node.querySelector(".stop-reason p").textContent = candidateReasonText(candidate, isArea);
     const detourWrap = node.querySelector(".metric-detour-wrap");
@@ -4297,13 +4297,50 @@ function pluralize(noun, count) {
   return count === 1 ? noun : `${noun}s`;
 }
 
-function candidateChips(candidate) {
+function candidateChips(candidate, index) {
   const chips = [];
   if (candidate.targetMatches.length) chips.push(`<span class="stop-chip chip-target">${candidate.targetMatches.length} target</span>`);
-  if (candidate.liferSpecies.length) chips.push(`<span class="stop-chip chip-lifer">${candidate.liferSpecies.length} lifer</span>`);
-  if (uniqueNotableCount(candidate)) chips.push(`<span class="stop-chip chip-notable">${uniqueNotableCount(candidate)} notable</span>`);
+  if (candidate.liferSpecies.length) {
+    chips.push(candidateSpeciesPreview({
+      count: candidate.liferSpecies.length,
+      index,
+      kind: "lifer",
+      label: pluralize("lifer", candidate.liferSpecies.length),
+      names: uniqueObservationNames(candidate.liferSpecies),
+      title: "Likely lifers"
+    }));
+  }
+  const notableNames = uniqueObservationNames(candidate.notable);
+  if (notableNames.length) {
+    chips.push(candidateSpeciesPreview({
+      count: notableNames.length,
+      index,
+      kind: "notable",
+      label: "notable",
+      names: notableNames,
+      title: "Notable species"
+    }));
+  }
   if (isHotspot(candidate)) chips.push('<span class="stop-chip chip-hotspot">top hotspot</span>');
   return chips.join("");
+}
+
+function candidateSpeciesPreview({ count, index, kind, label, names, title }) {
+  const previewId = `stop-${index}-${kind}-preview`;
+  return `
+    <div class="stop-chip-menu preview-${kind}">
+      <button
+        type="button"
+        class="stop-chip chip-${kind}"
+        aria-describedby="${previewId}"
+        aria-label="${count} ${escapeHtml(label)}. Show ${escapeHtml(title.toLowerCase())}."
+      >${count} ${escapeHtml(label)}</button>
+      <div id="${previewId}" class="stop-chip-dropdown" role="tooltip">
+        <strong>${escapeHtml(title)}</strong>
+        <small>${count} species</small>
+        <ul>${names.map((name) => `<li>${escapeHtml(name)}</li>`).join("")}</ul>
+      </div>
+    </div>`;
 }
 
 function isHotspot(candidate) {
