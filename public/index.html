@@ -161,11 +161,11 @@
             <span>Search Settings</span>
           </div>
           <div class="control-grid">
-            <label>
-              <span id="maxDetourLabel">Max added</span>
+            <label id="maxDetourField">
+              <span>Max added</span>
               <div class="number-field">
                 <input id="maxDetour" name="maxDetour" type="number" min="0" max="240" value="60">
-                <small id="maxDetourUnit">min</small>
+                <small>min</small>
               </div>
             </label>
             <label>
@@ -176,7 +176,7 @@
               </div>
             </label>
             <label>
-              <span>Radius</span>
+              <span id="radiusKmLabel">Corridor radius</span>
               <div class="number-field">
                 <input id="radiusKm" name="radiusKm" type="number" min="1" max="50" value="25">
                 <small>km</small>
@@ -490,7 +490,7 @@
         <span class="metric-detour-wrap" title="Added drive time"><i data-lucide="clock-3"></i><b class="metric-detour"></b></span>
         <span class="metric-offroute-wrap" title="Approx. distance off route"><i data-lucide="ruler"></i><b class="metric-offroute"></b></span>
         <span title="Recent species"><i data-lucide="feather"></i><b class="metric-species"></b></span>
-        <span title="Notable species"><i data-lucide="sparkles"></i><b class="metric-notable"></b></span>
+        <span title="Nearby notable species"><i data-lucide="sparkles"></i><b class="metric-notable"></b></span>
         <span title="Target matches"><i data-lucide="target"></i><b class="metric-targets"></b></span>
       </div>
       <div class="stop-links">

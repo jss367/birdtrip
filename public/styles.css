@@ -62,10 +62,6 @@ textarea:disabled {
   opacity: 0.72;
 }
 
-.search-form[data-mode="area"] #maxDetour:disabled {
-  cursor: not-allowed;
-}
-
 [hidden] {
   display: none !important;
 }
@@ -2036,7 +2032,7 @@ button.stop-chip {
 }
 
 .stop-chip-menu {
-  position: static;
+  position: relative;
   display: inline-flex;
 }
 
@@ -2045,7 +2041,8 @@ button.stop-chip {
   z-index: 20;
   top: calc(100% + 7px);
   left: 0;
-  width: min(280px, 100%);
+  width: 280px;
+  max-width: calc(100vw - 48px);
   max-height: 250px;
   padding: 12px;
   overflow-y: auto;
@@ -2114,6 +2111,11 @@ button.stop-chip {
 .chip-lifer {
   background: var(--amber-soft);
   color: #b45309;
+}
+
+.chip-unseen-nearby {
+  background: linear-gradient(90deg, var(--amber-soft), var(--purple-soft));
+  color: #92400e;
 }
 
 .chip-notable {
@@ -2397,6 +2399,28 @@ button.stop-chip {
 
 .species-list small {
   color: var(--muted);
+}
+
+.species-list-note {
+  margin: -3px 0 8px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.unseen-nearby-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  margin-left: 7px;
+  border-radius: 999px;
+  padding: 3px 7px;
+  background: linear-gradient(90deg, var(--amber-soft), var(--purple-soft));
+  color: #92400e;
+  font-size: 0.65rem;
+  font-weight: 900;
+  line-height: 1;
+  text-transform: uppercase;
 }
 
 .detail-actions {
