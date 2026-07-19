@@ -2056,13 +2056,20 @@ button.stop-chip {
   transition: opacity 120ms ease, transform 120ms ease, visibility 120ms ease;
 }
 
-.stop-chip-dropdown::before {
+.stop-chip-menu::after {
   content: "";
   position: absolute;
+  z-index: 19;
+  top: 100%;
   right: 0;
-  bottom: 100%;
   left: 0;
   height: 8px;
+  display: none;
+}
+
+.stop-chip-menu:hover::after,
+.stop-chip-menu:focus-within::after {
+  display: block;
 }
 
 .stop-chip-menu:hover .stop-chip-dropdown,
