@@ -4181,7 +4181,8 @@ function compareDetourCell(candidate) {
 }
 
 function compareNotablesCell(candidate) {
-  const notableNames = uniqueObservationNames(candidate.notable).slice(0, 4);
+  const prioritizedNotables = prioritizedNotableReports(candidate, candidate.notable.length);
+  const notableNames = uniqueObservationNames(prioritizedNotables).slice(0, 4);
   const unseenCount = unseenNotableSpecies(candidate).length;
   return `
     <b>${uniqueNotableCount(candidate)} nearby notable</b>
