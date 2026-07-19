@@ -4381,9 +4381,19 @@ function candidateSpeciesPreview({ count, index, kind, label, names, title }) {
 function setupCandidateSpeciesPreviews(card) {
   card.querySelectorAll(".stop-chip-menu").forEach((menu) => {
     const trigger = menu.querySelector("button.stop-chip");
-    const updatePosition = () => positionCandidateSpeciesPreview(menu);
-    menu.addEventListener("pointerenter", updatePosition);
-    trigger?.addEventListener("focus", updatePosition);
+    const activate = () => {
+      card.classList.add("has-active-species-preview");
+      positionCandidateSpeciesPreview(menu);
+    };
+    const deactivate = () => {
+      if (!card.querySelector(".stop-chip-menu:hover, .stop-chip-menu:focus-within")) {
+        card.classList.remove("has-active-species-preview");
+      }
+    };
+    menu.addEventListener("pointerenter", activate);
+    menu.addEventListener("pointerleave", deactivate);
+    trigger?.addEventListener("focus", activate);
+    trigger?.addEventListener("blur", () => requestAnimationFrame(deactivate));
   });
 }
 

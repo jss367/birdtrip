@@ -1951,6 +1951,10 @@ button.budget-unlock:focus-visible {
   outline: 3px solid rgba(16, 185, 129, 0.16);
 }
 
+.stop-card.has-active-species-preview {
+  z-index: 3;
+}
+
 .stop-card.is-pinned {
   border-color: var(--amber-border);
 }
