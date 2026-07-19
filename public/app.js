@@ -3950,6 +3950,7 @@ function renderResults() {
     const mainButton = node.querySelector(".stop-main");
     mainButton.setAttribute("aria-label", `View ${candidate.name}`);
     mainButton.addEventListener("click", () => selectCandidate(candidate.id));
+    setupCandidateSpeciesPreviews(card);
     els.resultsList.appendChild(node);
   });
 
@@ -4375,6 +4376,32 @@ function candidateSpeciesPreview({ count, index, kind, label, names, title }) {
         <ul>${names.map((name) => `<li>${escapeHtml(name)}</li>`).join("")}</ul>
       </div>
     </div>`;
+}
+
+function setupCandidateSpeciesPreviews(card) {
+  card.querySelectorAll(".stop-chip-menu").forEach((menu) => {
+    const trigger = menu.querySelector("button.stop-chip");
+    const updatePosition = () => positionCandidateSpeciesPreview(menu);
+    menu.addEventListener("pointerenter", updatePosition);
+    trigger?.addEventListener("focus", updatePosition);
+  });
+}
+
+function positionCandidateSpeciesPreview(menu) {
+  const dropdown = menu.querySelector(".stop-chip-dropdown");
+  if (!dropdown || !els.resultsList) return;
+  menu.classList.remove("opens-up");
+  const triggerRect = menu.getBoundingClientRect();
+  const resultsRect = els.resultsList.getBoundingClientRect();
+  const gap = 7;
+  const edgePadding = 8;
+  const desiredHeight = Math.min(dropdown.scrollHeight, 250);
+  const spaceBelow = Math.max(0, resultsRect.bottom - triggerRect.bottom - gap - edgePadding);
+  const spaceAbove = Math.max(0, triggerRect.top - resultsRect.top - gap - edgePadding);
+  const opensUp = spaceBelow < desiredHeight && spaceAbove > spaceBelow;
+  const availableHeight = Math.max(80, opensUp ? spaceAbove : spaceBelow);
+  menu.classList.toggle("opens-up", opensUp);
+  menu.style.setProperty("--stop-chip-dropdown-max-height", `${Math.min(250, availableHeight)}px`);
 }
 
 function isHotspot(candidate) {

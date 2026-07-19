@@ -2043,7 +2043,7 @@ button.stop-chip {
   left: 0;
   width: 280px;
   max-width: calc(100vw - 48px);
-  max-height: 250px;
+  max-height: var(--stop-chip-dropdown-max-height, 250px);
   padding: 12px;
   overflow-y: auto;
   visibility: hidden;
@@ -2070,6 +2070,16 @@ button.stop-chip {
 .stop-chip-menu:hover::after,
 .stop-chip-menu:focus-within::after {
   display: block;
+}
+
+.stop-chip-menu.opens-up::after {
+  top: auto;
+  bottom: 100%;
+}
+
+.stop-chip-menu.opens-up .stop-chip-dropdown {
+  top: auto;
+  bottom: calc(100% + 7px);
 }
 
 .stop-chip-menu:hover .stop-chip-dropdown,
