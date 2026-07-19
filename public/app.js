@@ -4405,10 +4405,19 @@ function positionCandidateSpeciesPreview(menu) {
   const spaceAbove = Math.max(0, triggerRect.top - resultsRect.top - gap - edgePadding);
   const opensUp = spaceBelow < desiredHeight && spaceAbove > spaceBelow;
   const availableHeight = Math.max(80, opensUp ? spaceAbove : spaceBelow);
+  const dropdownOffset = dropdownLeft - triggerRect.left;
+  const bridgeLeft = Math.min(0, dropdownOffset);
+  const bridgeRight = Math.max(triggerRect.width, dropdownOffset + dropdownWidth);
   menu.classList.toggle("opens-up", opensUp);
-  menu.style.setProperty("--stop-chip-dropdown-left", `${dropdownLeft - triggerRect.left}px`);
+  menu.style.setProperty("--stop-chip-dropdown-left", `${dropdownOffset}px`);
   menu.style.setProperty("--stop-chip-dropdown-width", `${dropdownWidth}px`);
   menu.style.setProperty("--stop-chip-dropdown-max-height", `${Math.min(250, availableHeight)}px`);
+  menu.style.setProperty("--stop-chip-bridge-left", `${bridgeLeft}px`);
+  menu.style.setProperty("--stop-chip-bridge-width", `${bridgeRight - bridgeLeft}px`);
+  menu.style.setProperty("--stop-chip-bridge-trigger-left", `${-bridgeLeft}px`);
+  menu.style.setProperty("--stop-chip-bridge-trigger-right", `${triggerRect.width - bridgeLeft}px`);
+  menu.style.setProperty("--stop-chip-bridge-dropdown-left", `${dropdownOffset - bridgeLeft}px`);
+  menu.style.setProperty("--stop-chip-bridge-dropdown-right", `${dropdownOffset + dropdownWidth - bridgeLeft}px`);
 }
 
 function isHotspot(candidate) {
