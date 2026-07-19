@@ -76,11 +76,11 @@ const els = {
   speciesError: document.querySelector("#speciesError"),
   mapProvider: document.querySelector("#mapProvider"),
   mapProviderHint: document.querySelector("#mapProviderHint"),
+  maxDetourField: document.querySelector("#maxDetourField"),
   maxDetour: document.querySelector("#maxDetour"),
-  maxDetourLabel: document.querySelector("#maxDetourLabel"),
-  maxDetourUnit: document.querySelector("#maxDetourUnit"),
   recentDays: document.querySelector("#recentDays"),
   radiusKm: document.querySelector("#radiusKm"),
+  radiusKmLabel: document.querySelector("#radiusKmLabel"),
   maxStops: document.querySelector("#maxStops"),
   apiToken: document.querySelector("#apiToken"),
   rememberToken: document.querySelector("#rememberToken"),
@@ -550,9 +550,9 @@ function setSearchMode(mode, options = {}) {
   els.speciesField.hidden = !isSpecies;
   els.destinationField.hidden = isAreaLike;
   els.destination.required = !isAreaLike && !isMigration;
-  els.maxDetourLabel.textContent = isAreaLike ? "Area limit" : "Max added";
-  els.maxDetourUnit.textContent = isAreaLike ? "off" : "min";
+  els.maxDetourField.hidden = state.mode !== "route";
   els.maxDetour.disabled = isAreaLike || isMigration;
+  els.radiusKmLabel.textContent = isSpecies ? "Search radius" : isArea ? "Area radius" : isMigration ? "Radius" : "Corridor radius";
   els.submitLabel.textContent = isMigration ? "Show Map" : isSpecies ? "Map Sightings" : isArea ? "Search Area" : "Find Stops";
   els.routeDistanceLabel.textContent = isMigration ? "Corridors" : isSpecies ? "Search Radius" : isArea ? "Area Radius" : "Route Miles";
   els.maxAddedLabel.textContent = isMigration ? "Timeline Month" : isSpecies ? "Species Mode" : isArea ? "Area Mode" : "Added Time Budget";

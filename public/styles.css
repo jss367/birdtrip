@@ -62,10 +62,6 @@ textarea:disabled {
   opacity: 0.72;
 }
 
-.search-form[data-mode="area"] #maxDetour:disabled {
-  cursor: not-allowed;
-}
-
 [hidden] {
   display: none !important;
 }
