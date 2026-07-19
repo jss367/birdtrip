@@ -4395,12 +4395,19 @@ function positionCandidateSpeciesPreview(menu) {
   const resultsRect = els.resultsList.getBoundingClientRect();
   const gap = 7;
   const edgePadding = 8;
+  const dropdownWidth = Math.max(0, Math.min(280, resultsRect.width - edgePadding * 2));
+  const dropdownLeft = Math.min(
+    Math.max(triggerRect.left, resultsRect.left + edgePadding),
+    resultsRect.right - edgePadding - dropdownWidth
+  );
   const desiredHeight = Math.min(dropdown.scrollHeight, 250);
   const spaceBelow = Math.max(0, resultsRect.bottom - triggerRect.bottom - gap - edgePadding);
   const spaceAbove = Math.max(0, triggerRect.top - resultsRect.top - gap - edgePadding);
   const opensUp = spaceBelow < desiredHeight && spaceAbove > spaceBelow;
   const availableHeight = Math.max(80, opensUp ? spaceAbove : spaceBelow);
   menu.classList.toggle("opens-up", opensUp);
+  menu.style.setProperty("--stop-chip-dropdown-left", `${dropdownLeft - triggerRect.left}px`);
+  menu.style.setProperty("--stop-chip-dropdown-width", `${dropdownWidth}px`);
   menu.style.setProperty("--stop-chip-dropdown-max-height", `${Math.min(250, availableHeight)}px`);
 }
 

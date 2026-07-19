@@ -2040,8 +2040,8 @@ button.stop-chip {
   position: absolute;
   z-index: 20;
   top: calc(100% + 7px);
-  left: 0;
-  width: 280px;
+  left: var(--stop-chip-dropdown-left, 0);
+  width: var(--stop-chip-dropdown-width, 280px);
   max-width: calc(100vw - 48px);
   max-height: var(--stop-chip-dropdown-max-height, 250px);
   padding: 12px;
