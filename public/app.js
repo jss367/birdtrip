@@ -3978,6 +3978,8 @@ function renderDetails(candidate) {
   const species = groupSpecies(candidate).slice(0, 80);
   const notable = candidate.notable.slice(0, 20);
   const lifers = candidate.liferSpecies.slice(0, 30);
+  const unseenNearbyNotables = unseenNotableSpecies(candidate);
+  const nearbyRadiusKm = notableSearchRadiusKm();
   const links = candidateLinks(candidate);
   const offRouteMi = formatMiles(kmToMiles(candidate.routeDistanceKm));
   const pinned = isPinned(candidate.id);
@@ -3995,7 +3997,8 @@ function renderDetails(candidate) {
       <div><b>${candidate.observations.length}</b><small>records</small></div>
       <div><b>${uniqueNotableCount(candidate)}</b><small>notable species</small></div>
       <div><b>${candidate.targetMatches.length}</b><small>target matches</small></div>
-      <div><b>${candidate.liferSpecies.length}</b><small>likely lifers</small></div>
+      <div><b>${candidate.liferSpecies.length}</b><small>likely lifers at stop</small></div>
+      ${state.lifeList.species.size ? `<div><b>${unseenNearbyNotables.length}</b><small>unseen nearby</small></div>` : ""}
     </div>
     <section class="score-line">
       <h4>${isArea ? "Area position" : "Route impact"}</h4>
@@ -4023,7 +4026,7 @@ function renderDetails(candidate) {
     </section>
     ${lifers.length ? `
       <section class="species-list">
-        <h4>Likely Lifers</h4>
+        <h4>Likely Lifers at This Stop</h4>
         <ul>${lifers.map((obs) => `<li>${escapeHtml(obs.comName || obs.sciName || "")} <small>${escapeHtml(obs.obsDt || "")}</small></li>`).join("")}</ul>
       </section>
     ` : ""}
@@ -4035,8 +4038,9 @@ function renderDetails(candidate) {
     ` : ""}
     ${notable.length ? `
       <section class="species-list">
-        <h4>Notable Reports</h4>
-        <ul>${notable.map((obs) => `<li>${escapeHtml(obs.comName)} <small>${escapeHtml(obs.obsDt || "")}</small></li>`).join("")}</ul>
+        <h4>Nearby Notable Reports</h4>
+        <p class="species-list-note">Reported within ${nearbyRadiusKm} km of this stop; reports may be from other nearby locations.</p>
+        <ul>${notable.map((obs) => `<li>${escapeHtml(obs.comName || obs.sciName || "")} <small>${escapeHtml(obs.obsDt || "")}</small>${notableUnseenBadge(obs)}</li>`).join("")}</ul>
       </section>
     ` : ""}
     <section class="species-list">
@@ -4142,7 +4146,7 @@ function renderComparison() {
       `).join("")}
       ${comparisonRow("Detour", compared.map(compareDetourCell))}
       ${comparisonRow("Species Count", compared.map((candidate) => `${candidate.species.size} species<br><small>${candidate.observations.length} records</small>`))}
-      ${comparisonRow("Notables", compared.map(compareNotablesCell))}
+      ${comparisonRow("Nearby Notables", compared.map(compareNotablesCell))}
       ${comparisonRow("Targets", compared.map(compareTargetsCell))}
       ${comparisonRow("Observation Freshness", compared.map(compareFreshnessCell))}
       ${comparisonRow("Score Breakdown", compared.map(compareScoreCell))}
@@ -4178,8 +4182,10 @@ function compareDetourCell(candidate) {
 
 function compareNotablesCell(candidate) {
   const notableNames = uniqueObservationNames(candidate.notable).slice(0, 4);
+  const unseenCount = unseenNotableSpecies(candidate).length;
   return `
-    <b>${uniqueNotableCount(candidate)} notable</b>
+    <b>${uniqueNotableCount(candidate)} nearby notable</b>
+    ${state.lifeList.species.size ? `<small>${unseenCount} unseen in your life list</small>` : ""}
     <small>${notableNames.length ? notableNames.map(escapeHtml).join(", ") : "No notable reports loaded"}</small>
   `;
 }
@@ -4268,13 +4274,15 @@ function candidateReasonText(candidate, isArea = state.params?.mode === "area") 
   const targetCount = candidate.targetMatches.length;
   const liferCount = candidate.liferSpecies.length;
   const notableCount = uniqueNotableCount(candidate);
+  const unseenNearbyCount = unseenNotableSpecies(candidate).length;
 
   if (targetCount) reasons.push(`${targetCount} ${pluralize("target", targetCount)}`);
-  if (liferCount) reasons.push(`${liferCount} likely ${pluralize("lifer", liferCount)}`);
+  if (liferCount) reasons.push(`${liferCount} likely ${pluralize("lifer", liferCount)} at the stop`);
+  if (unseenNearbyCount) reasons.push(`${unseenNearbyCount} unseen ${pluralize("notable", unseenNearbyCount)} nearby`);
   if (notableCount === 1) {
-    reasons.push("recent rarity");
+    reasons.push("nearby recent rarity");
   } else if (notableCount > 1) {
-    reasons.push(`${notableCount} recent rarities`);
+    reasons.push(`${notableCount} nearby recent rarities`);
   }
 
   if (!reasons.length) {
@@ -4300,8 +4308,10 @@ function pluralize(noun, count) {
 function candidateChips(candidate) {
   const chips = [];
   if (candidate.targetMatches.length) chips.push(`<span class="stop-chip chip-target">${candidate.targetMatches.length} target</span>`);
-  if (candidate.liferSpecies.length) chips.push(`<span class="stop-chip chip-lifer">${candidate.liferSpecies.length} lifer</span>`);
-  if (uniqueNotableCount(candidate)) chips.push(`<span class="stop-chip chip-notable">${uniqueNotableCount(candidate)} notable</span>`);
+  if (candidate.liferSpecies.length) chips.push(`<span class="stop-chip chip-lifer">${candidate.liferSpecies.length} lifer at stop</span>`);
+  const unseenNearbyCount = unseenNotableSpecies(candidate).length;
+  if (unseenNearbyCount) chips.push(`<span class="stop-chip chip-unseen-nearby">${unseenNearbyCount} unseen nearby</span>`);
+  if (uniqueNotableCount(candidate)) chips.push(`<span class="stop-chip chip-notable">${uniqueNotableCount(candidate)} notable nearby</span>`);
   if (isHotspot(candidate)) chips.push('<span class="stop-chip chip-hotspot">top hotspot</span>');
   return chips.join("");
 }
@@ -4312,6 +4322,27 @@ function isHotspot(candidate) {
 
 function uniqueNotableCount(candidate) {
   return new Set(candidate.notable.map((obs) => normalizeName(obs.comName || obs.sciName))).size;
+}
+
+function unseenNotableSpecies(candidate, lifeList = state.lifeList.species) {
+  if (!lifeList?.size) return [];
+  const unseen = new Map();
+  for (const obs of candidate.notable || []) {
+    if (isSeenObservation(obs, lifeList)) continue;
+    const key = normalizeName(obs.comName || obs.sciName || obs.speciesCode);
+    if (key && !unseen.has(key)) unseen.set(key, obs);
+  }
+  return Array.from(unseen.values());
+}
+
+function notableUnseenBadge(obs) {
+  if (!state.lifeList.species.size || isSeenObservation(obs, state.lifeList.species)) return "";
+  return '<span class="unseen-nearby-badge">Unseen nearby</span>';
+}
+
+function notableSearchRadiusKm(params = state.params) {
+  const radius = Number(params?.radiusKm);
+  return Math.min(Number.isFinite(radius) && radius > 0 ? radius : 10, 10);
 }
 
 function uniqueObservationNames(observations) {
@@ -4433,7 +4464,11 @@ function renderInsights() {
     const speciesCount = state.results.reduce((sum, candidate) => sum + candidate.species.size, 0);
     const notableCount = state.results.reduce((sum, candidate) => sum + uniqueNotableCount(candidate), 0);
     const liferCount = uniqueLiferCount(state.results);
-    els.sightingSummary.textContent = `${speciesCount} recent species across ${state.results.length} ranked stops, including ${notableCount} notable species${state.lifeList.species.size ? ` and ${liferCount} likely lifers` : ""}.`;
+    const unseenNearbyCount = uniqueUnseenNotableCount(state.results);
+    const unseenNearbyText = state.lifeList.species.size && unseenNearbyCount
+      ? ` and ${unseenNearbyCount} unseen species in nearby notable reports`
+      : "";
+    els.sightingSummary.textContent = `${speciesCount} recent species across ${state.results.length} ranked stops, including ${notableCount} nearby notable species${state.lifeList.species.size ? ` and ${liferCount} likely lifers at the stops` : ""}${unseenNearbyText}.`;
   } else {
     const searchedWithoutToken = state.mode === "area" ? state.areaCenter && !canAttemptSearch : state.route && !canAttemptSearch;
     els.sightingSummary.textContent = searchedWithoutToken
@@ -4531,6 +4566,17 @@ function uniqueLiferCount(candidates) {
     }
   }
   return seen.size;
+}
+
+function uniqueUnseenNotableCount(candidates) {
+  const unseen = new Set();
+  for (const candidate of candidates) {
+    for (const obs of unseenNotableSpecies(candidate)) {
+      const key = normalizeName(obs.comName || obs.sciName || obs.speciesCode);
+      if (key) unseen.add(key);
+    }
+  }
+  return unseen.size;
 }
 
 function reportOrderedStops(isArea) {
@@ -4823,6 +4869,7 @@ function buildReportMarkup() {
     ? `<h2>Ranked stops</h2>${state.results.map((candidate, index) => {
         const species = groupSpecies(candidate).slice(0, 40);
         const notable = candidate.notable.slice(0, 12);
+        const unseenNearbyCount = unseenNotableSpecies(candidate).length;
         const links = candidateLinks(candidate);
         return `
           <div class="report-stop">
@@ -4833,9 +4880,9 @@ function buildReportMarkup() {
                 ? `~${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi from center ·`
                 : `+${Math.round(candidate.addedMinutes)} min · +${candidate.addedMiles.toFixed(1)} mi detour · ~${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi off route ·`}
               ${candidate.species.size} species ·
-              ${uniqueNotableCount(candidate)} notable ·
+              ${uniqueNotableCount(candidate)} nearby notable ·
               ${candidate.targetMatches.length} targets ·
-              ${candidate.liferSpecies.length} likely lifers
+              ${candidate.liferSpecies.length} likely lifers at stop${state.lifeList.species.size ? ` · ${unseenNearbyCount} unseen nearby` : ""}
             </p>
             <p class="report-stop-reason">${escapeHtml(candidateReasonText(candidate, isArea))}</p>
             <dl class="report-stop-route">
@@ -4844,8 +4891,8 @@ function buildReportMarkup() {
               ${param("eBird", `<a href="${escapeHtml(links.ebirdUrl)}">${escapeHtml(links.ebirdUrl)}</a>`, { raw: true })}
             </dl>
             ${candidate.targetMatches.length ? `<h4>Species targets</h4><ul>${candidate.targetMatches.map((obs) => `<li>${escapeHtml(obs.comName || obs.sciName || "")}${obs.obsDt ? ` <small>${escapeHtml(obs.obsDt)}</small>` : ""}</li>`).join("")}</ul>` : ""}
-            ${candidate.liferSpecies.length ? `<h4>Likely lifers</h4><ul>${candidate.liferSpecies.slice(0, 20).map((obs) => `<li>${escapeHtml(obs.comName || obs.sciName || "")}</li>`).join("")}</ul>` : ""}
-            ${notable.length ? `<h4>Notable</h4><ul>${notable.map((obs) => `<li>${escapeHtml(obs.comName || obs.sciName || "")} <small>${escapeHtml(obs.obsDt || "")}</small></li>`).join("")}</ul>` : ""}
+            ${candidate.liferSpecies.length ? `<h4>Likely lifers at this stop</h4><ul>${candidate.liferSpecies.slice(0, 20).map((obs) => `<li>${escapeHtml(obs.comName || obs.sciName || "")}</li>`).join("")}</ul>` : ""}
+            ${notable.length ? `<h4>Nearby notable reports (within ${notableSearchRadiusKm(p)} km)</h4><ul>${notable.map((obs) => `<li>${escapeHtml(obs.comName || obs.sciName || "")} <small>${escapeHtml(obs.obsDt || "")}</small>${state.lifeList.species.size && !isSeenObservation(obs, state.lifeList.species) ? " — unseen nearby" : ""}</li>`).join("")}</ul>` : ""}
             <h4>Recent species</h4>
             <ul>${species.map((sp) => `<li>${escapeHtml(sp.name)} <small>×${sp.count}</small></li>`).join("")}</ul>
           </div>`;
