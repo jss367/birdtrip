@@ -4275,15 +4275,19 @@ function candidateReasonText(candidate, isArea = state.params?.mode === "area") 
   const liferCount = candidate.liferSpecies.length;
   const notableCount = uniqueNotableCount(candidate);
   const unseenNearbyCount = unseenNotableSpecies(candidate).length;
+  const otherNearbyNotableCount = Math.max(0, notableCount - unseenNearbyCount);
 
   if (targetCount) reasons.push(`${targetCount} ${pluralize("target", targetCount)}`);
   if (liferCount) reasons.push(`${liferCount} likely ${pluralize("lifer", liferCount)} at the stop`);
   if (unseenNearbyCount) reasons.push(`${unseenNearbyCount} unseen ${pluralize("notable", unseenNearbyCount)} nearby`);
-  if (notableCount > unseenNearbyCount) {
-    if (notableCount === 1) {
+  if (otherNearbyNotableCount) {
+    if (unseenNearbyCount) {
+      const rarityLabel = otherNearbyNotableCount === 1 ? "rarity" : "rarities";
+      reasons.push(`${otherNearbyNotableCount} other nearby recent ${rarityLabel}`);
+    } else if (otherNearbyNotableCount === 1) {
       reasons.push("nearby recent rarity");
     } else {
-      reasons.push(`${notableCount} nearby recent rarities`);
+      reasons.push(`${otherNearbyNotableCount} nearby recent rarities`);
     }
   }
 
@@ -4312,8 +4316,12 @@ function candidateChips(candidate) {
   if (candidate.targetMatches.length) chips.push(`<span class="stop-chip chip-target">${candidate.targetMatches.length} target</span>`);
   if (candidate.liferSpecies.length) chips.push(`<span class="stop-chip chip-lifer">${candidate.liferSpecies.length} lifer at stop</span>`);
   const unseenNearbyCount = unseenNotableSpecies(candidate).length;
+  const otherNearbyNotableCount = Math.max(0, uniqueNotableCount(candidate) - unseenNearbyCount);
   if (unseenNearbyCount) chips.push(`<span class="stop-chip chip-unseen-nearby">${unseenNearbyCount} unseen nearby</span>`);
-  if (uniqueNotableCount(candidate) > unseenNearbyCount) chips.push(`<span class="stop-chip chip-notable">${uniqueNotableCount(candidate)} notable nearby</span>`);
+  if (otherNearbyNotableCount) {
+    const label = unseenNearbyCount ? "other notable nearby" : "notable nearby";
+    chips.push(`<span class="stop-chip chip-notable">${otherNearbyNotableCount} ${label}</span>`);
+  }
   if (isHotspot(candidate)) chips.push('<span class="stop-chip chip-hotspot">top hotspot</span>');
   return chips.join("");
 }
