@@ -3976,7 +3976,7 @@ function selectCandidate(id) {
 function renderDetails(candidate) {
   const isArea = state.params?.mode === "area";
   const species = groupSpecies(candidate).slice(0, 80);
-  const notable = candidate.notable.slice(0, 20);
+  const notable = prioritizedNotableReports(candidate, 20);
   const lifers = candidate.liferSpecies.slice(0, 30);
   const unseenNearbyNotables = unseenNotableSpecies(candidate);
   const nearbyRadiusKm = notableSearchRadiusKm();
@@ -4343,6 +4343,28 @@ function unseenNotableSpecies(candidate, lifeList = state.lifeList.species) {
     if (key && !unseen.has(key)) unseen.set(key, obs);
   }
   return Array.from(unseen.values());
+}
+
+function prioritizedNotableReports(candidate, limit) {
+  const observations = candidate.notable || [];
+  if (!state.lifeList.species.size) return observations.slice(0, limit);
+
+  const prioritizedIndexes = new Set();
+  const unseenSpecies = new Set();
+  const prioritized = [];
+  observations.forEach((obs, index) => {
+    if (isSeenObservation(obs, state.lifeList.species)) return;
+    const key = normalizeName(obs.comName || obs.sciName || obs.speciesCode);
+    if (!key || unseenSpecies.has(key)) return;
+    unseenSpecies.add(key);
+    prioritizedIndexes.add(index);
+    prioritized.push(obs);
+  });
+
+  observations.forEach((obs, index) => {
+    if (!prioritizedIndexes.has(index)) prioritized.push(obs);
+  });
+  return prioritized.slice(0, limit);
 }
 
 function notableUnseenBadge(obs) {
@@ -4878,7 +4900,7 @@ function buildReportMarkup() {
   const stopsBlock = state.results.length
     ? `<h2>Ranked stops</h2>${state.results.map((candidate, index) => {
         const species = groupSpecies(candidate).slice(0, 40);
-        const notable = candidate.notable.slice(0, 12);
+        const notable = prioritizedNotableReports(candidate, 12);
         const unseenNearbyCount = unseenNotableSpecies(candidate).length;
         const links = candidateLinks(candidate);
         return `
