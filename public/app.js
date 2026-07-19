@@ -4279,10 +4279,12 @@ function candidateReasonText(candidate, isArea = state.params?.mode === "area") 
   if (targetCount) reasons.push(`${targetCount} ${pluralize("target", targetCount)}`);
   if (liferCount) reasons.push(`${liferCount} likely ${pluralize("lifer", liferCount)} at the stop`);
   if (unseenNearbyCount) reasons.push(`${unseenNearbyCount} unseen ${pluralize("notable", unseenNearbyCount)} nearby`);
-  if (notableCount === 1) {
-    reasons.push("nearby recent rarity");
-  } else if (notableCount > 1) {
-    reasons.push(`${notableCount} nearby recent rarities`);
+  if (notableCount > unseenNearbyCount) {
+    if (notableCount === 1) {
+      reasons.push("nearby recent rarity");
+    } else {
+      reasons.push(`${notableCount} nearby recent rarities`);
+    }
   }
 
   if (!reasons.length) {
@@ -4311,7 +4313,7 @@ function candidateChips(candidate) {
   if (candidate.liferSpecies.length) chips.push(`<span class="stop-chip chip-lifer">${candidate.liferSpecies.length} lifer at stop</span>`);
   const unseenNearbyCount = unseenNotableSpecies(candidate).length;
   if (unseenNearbyCount) chips.push(`<span class="stop-chip chip-unseen-nearby">${unseenNearbyCount} unseen nearby</span>`);
-  if (uniqueNotableCount(candidate)) chips.push(`<span class="stop-chip chip-notable">${uniqueNotableCount(candidate)} notable nearby</span>`);
+  if (uniqueNotableCount(candidate) > unseenNearbyCount) chips.push(`<span class="stop-chip chip-notable">${uniqueNotableCount(candidate)} notable nearby</span>`);
   if (isHotspot(candidate)) chips.push('<span class="stop-chip chip-hotspot">top hotspot</span>');
   return chips.join("");
 }
