@@ -3905,7 +3905,7 @@ function renderResults() {
     node.querySelector(".rank").textContent = String(index + 1);
     node.querySelector(".stop-name").textContent = candidate.name;
     node.querySelector(".stop-preview").textContent = speciesPreview(candidate);
-    node.querySelector(".stop-chips").innerHTML = candidateChips(candidate);
+    node.querySelector(".stop-chips").innerHTML = candidateChips(candidate, index);
     node.querySelector(".score-pill").textContent = candidate.score;
     node.querySelector(".stop-reason p").textContent = candidateReasonText(candidate, isArea);
     const detourWrap = node.querySelector(".metric-detour-wrap");
@@ -3950,6 +3950,7 @@ function renderResults() {
     const mainButton = node.querySelector(".stop-main");
     mainButton.setAttribute("aria-label", `View ${candidate.name}`);
     mainButton.addEventListener("click", () => selectCandidate(candidate.id));
+    setupCandidateSpeciesPreviews(card);
     els.resultsList.appendChild(node);
   });
 
@@ -4312,19 +4313,121 @@ function pluralize(noun, count) {
   return count === 1 ? noun : `${noun}s`;
 }
 
-function candidateChips(candidate) {
+function candidateChips(candidate, index) {
   const chips = [];
   if (candidate.targetMatches.length) chips.push(`<span class="stop-chip chip-target">${candidate.targetMatches.length} target</span>`);
-  if (candidate.liferSpecies.length) chips.push(`<span class="stop-chip chip-lifer">${candidate.liferSpecies.length} lifer at stop</span>`);
-  const unseenNearbyCount = unseenNotableSpecies(candidate).length;
-  const otherNearbyNotableCount = Math.max(0, uniqueNotableCount(candidate) - unseenNearbyCount);
-  if (unseenNearbyCount) chips.push(`<span class="stop-chip chip-unseen-nearby">${unseenNearbyCount} unseen nearby</span>`);
-  if (otherNearbyNotableCount) {
-    const label = unseenNearbyCount ? "other notable nearby" : "notable nearby";
-    chips.push(`<span class="stop-chip chip-notable">${otherNearbyNotableCount} ${label}</span>`);
+  const liferNames = uniqueObservationNames(candidate.liferSpecies);
+  if (liferNames.length) {
+    chips.push(candidateSpeciesPreview({
+      count: liferNames.length,
+      index,
+      kind: "lifer",
+      label: `${pluralize("lifer", liferNames.length)} at stop`,
+      names: liferNames,
+      title: "Likely lifers at this stop"
+    }));
+  }
+
+  const unseenNearby = unseenNotableSpecies(candidate);
+  const unseenNearbyNames = uniqueObservationNames(unseenNearby);
+  const unseenNearbyKeys = new Set(unseenNearbyNames.map(normalizeName));
+  const otherNearbyNames = uniqueObservationNames(candidate.notable.filter((obs) => {
+    const key = normalizeName(obs.comName || obs.sciName || obs.speciesCode);
+    return key && !unseenNearbyKeys.has(key);
+  }));
+
+  if (unseenNearbyNames.length) {
+    chips.push(candidateSpeciesPreview({
+      count: unseenNearbyNames.length,
+      index,
+      kind: "unseen-nearby",
+      label: "unseen nearby",
+      names: unseenNearbyNames,
+      title: "Unseen nearby notables"
+    }));
+  }
+  if (otherNearbyNames.length) {
+    chips.push(candidateSpeciesPreview({
+      count: otherNearbyNames.length,
+      index,
+      kind: "notable",
+      label: unseenNearbyNames.length ? "other notable nearby" : "notable nearby",
+      names: otherNearbyNames,
+      title: unseenNearbyNames.length ? "Other nearby notables" : "Nearby notables"
+    }));
   }
   if (isHotspot(candidate)) chips.push('<span class="stop-chip chip-hotspot">top hotspot</span>');
   return chips.join("");
+}
+
+function candidateSpeciesPreview({ count, index, kind, label, names, title }) {
+  const previewId = `stop-${index}-${kind}-preview`;
+  return `
+    <div class="stop-chip-menu preview-${kind}">
+      <button
+        type="button"
+        class="stop-chip chip-${kind}"
+        aria-describedby="${previewId}"
+        aria-label="${count} ${escapeHtml(label)}. Show ${escapeHtml(title.toLowerCase())}."
+      >${count} ${escapeHtml(label)}</button>
+      <div id="${previewId}" class="stop-chip-dropdown" role="tooltip">
+        <strong>${escapeHtml(title)}</strong>
+        <small>${count} species</small>
+        <ul>${names.map((name) => `<li>${escapeHtml(name)}</li>`).join("")}</ul>
+      </div>
+    </div>`;
+}
+
+function setupCandidateSpeciesPreviews(card) {
+  card.querySelectorAll(".stop-chip-menu").forEach((menu) => {
+    const trigger = menu.querySelector("button.stop-chip");
+    const activate = () => {
+      card.classList.add("has-active-species-preview");
+      positionCandidateSpeciesPreview(menu);
+    };
+    const deactivate = () => {
+      if (!card.querySelector(".stop-chip-menu:hover, .stop-chip-menu:focus-within")) {
+        card.classList.remove("has-active-species-preview");
+      }
+    };
+    menu.addEventListener("pointerenter", activate);
+    menu.addEventListener("pointerleave", deactivate);
+    trigger?.addEventListener("focus", activate);
+    trigger?.addEventListener("blur", () => requestAnimationFrame(deactivate));
+  });
+}
+
+function positionCandidateSpeciesPreview(menu) {
+  const dropdown = menu.querySelector(".stop-chip-dropdown");
+  if (!dropdown || !els.resultsList) return;
+  menu.classList.remove("opens-up");
+  const triggerRect = menu.getBoundingClientRect();
+  const resultsRect = els.resultsList.getBoundingClientRect();
+  const gap = 7;
+  const edgePadding = 8;
+  const dropdownWidth = Math.max(0, Math.min(280, resultsRect.width - edgePadding * 2));
+  const dropdownLeft = Math.min(
+    Math.max(triggerRect.left, resultsRect.left + edgePadding),
+    resultsRect.right - edgePadding - dropdownWidth
+  );
+  const desiredHeight = Math.min(dropdown.scrollHeight, 250);
+  const spaceBelow = Math.max(0, resultsRect.bottom - triggerRect.bottom - gap - edgePadding);
+  const spaceAbove = Math.max(0, triggerRect.top - resultsRect.top - gap - edgePadding);
+  const opensUp = spaceBelow < desiredHeight && spaceAbove > spaceBelow;
+  const availableHeight = Math.max(80, opensUp ? spaceAbove : spaceBelow);
+  const dropdownOffset = dropdownLeft - triggerRect.left;
+  const bridgeLeft = Math.min(0, dropdownOffset);
+  const bridgeRight = Math.max(triggerRect.width, dropdownOffset + dropdownWidth);
+  menu.classList.toggle("opens-up", opensUp);
+  menu.style.setProperty("--stop-chip-dropdown-left", `${dropdownOffset}px`);
+  menu.style.setProperty("--stop-chip-dropdown-width", `${dropdownWidth}px`);
+  menu.style.setProperty("--stop-chip-dropdown-max-height", `${Math.min(250, availableHeight)}px`);
+  menu.style.setProperty("--stop-chip-bridge-left", `${bridgeLeft}px`);
+  menu.style.setProperty("--stop-chip-bridge-width", `${bridgeRight - bridgeLeft}px`);
+  menu.style.setProperty("--stop-chip-bridge-trigger-left", `${-bridgeLeft}px`);
+  menu.style.setProperty("--stop-chip-bridge-trigger-right", `${triggerRect.width - bridgeLeft}px`);
+  menu.style.setProperty("--stop-chip-bridge-dropdown-left", `${dropdownOffset - bridgeLeft}px`);
+  menu.style.setProperty("--stop-chip-bridge-dropdown-right", `${dropdownOffset + dropdownWidth - bridgeLeft}px`);
 }
 
 function isHotspot(candidate) {
