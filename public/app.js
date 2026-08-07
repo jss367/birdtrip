@@ -1398,7 +1398,8 @@ async function runAreaSearch(params) {
   );
   const rankedHotspots = rankAreaHotspots(hotspots, center, params);
   const targetHotspots = await rescueTargetHotspots(hotspots, rankedHotspots, center, params);
-  const observationsBySample = await fetchRecentForHotspots(rankedHotspots.concat(targetHotspots), samples[0], params);
+  const liferHotspots = await rescueLiferHotspots(hotspots, rankedHotspots.concat(targetHotspots), center, params);
+  const observationsBySample = await fetchRecentForHotspots(rankedHotspots.concat(targetHotspots, liferHotspots), samples[0], params);
   const candidates = buildCandidates(observationsBySample, samples, params);
 
   if (!candidates.length) {
@@ -3338,6 +3339,44 @@ async function rescueTargetHotspots(hotspots, ranked, center, params) {
   const limit = 40;
   if (rescued.size > limit) {
     addWarning(`Target species were reported at ${rescued.size} additional hotspots; only the ${limit} closest were checked.`);
+  }
+  return Array.from(rescued.values())
+    .sort((a, b) => haversineKm(center, a) - haversineKm(center, b))
+    .slice(0, limit);
+}
+
+async function rescueLiferHotspots(hotspots, alreadyChosen, center, params) {
+  if (!params.lifeList?.size || !Array.isArray(hotspots)) return [];
+  const chosenIds = new Set(alreadyChosen.map((hotspot) => hotspot.locId));
+  const droppedByLocId = new Map();
+  for (const hotspot of hotspots) {
+    if (!hotspot.locId || !Number.isFinite(hotspot.lat) || !Number.isFinite(hotspot.lng)) continue;
+    if (chosenIds.has(hotspot.locId) || droppedByLocId.has(hotspot.locId)) continue;
+    droppedByLocId.set(hotspot.locId, hotspot);
+  }
+  if (!droppedByLocId.size) return [];
+
+  setStatus("Scanning area", "Checking for unseen species at additional hotspots.");
+  let feed;
+  try {
+    feed = await apiJson(
+      `/api/ebird/recent?lat=${center.lat}&lng=${center.lng}&dist=${params.radiusKm}&back=${params.recentDays}&maxResults=500`,
+      { token: params.token }
+    );
+  } catch {
+    addWarning("Could not check the remaining hotspots for unseen species; lifer coverage may be incomplete.");
+    return [];
+  }
+
+  const rescued = new Map();
+  for (const obs of Array.isArray(feed) ? feed : []) {
+    const hotspot = obs.locId ? droppedByLocId.get(obs.locId) : null;
+    if (!hotspot || rescued.has(obs.locId)) continue;
+    if (!isSeenObservation(obs, params.lifeList)) rescued.set(obs.locId, hotspot);
+  }
+  const limit = 20;
+  if (rescued.size > limit) {
+    addWarning(`Unseen species were reported at ${rescued.size} additional hotspots; only the ${limit} closest were checked.`);
   }
   return Array.from(rescued.values())
     .sort((a, b) => haversineKm(center, a) - haversineKm(center, b))
