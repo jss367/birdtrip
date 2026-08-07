@@ -85,7 +85,8 @@ function throwClientInputError(message) {
 }
 
 function boundedNumber(value, fallback, min, max) {
-  const parsed = Number(value ?? fallback);
+  const raw = typeof value === "string" && value.trim() === "" ? fallback : value ?? fallback;
+  const parsed = Number(raw);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.max(min, Math.min(max, parsed));
 }
