@@ -3896,6 +3896,7 @@ function renderResults() {
     return;
   }
 
+  const scale = scoreScale(state.results);
   state.results.forEach((candidate, index) => {
     const node = els.resultTemplate.content.cloneNode(true);
     const card = node.querySelector(".stop-card");
@@ -3910,7 +3911,7 @@ function renderResults() {
     node.querySelector(".stop-chips").innerHTML = candidateChips(candidate, index);
     const scorePill = node.querySelector(".score-pill");
     scorePill.querySelector("b").textContent = candidate.score;
-    scorePill.title = scoreTooltip(candidate, isArea);
+    scorePill.title = scoreTooltip(candidate, isArea, scale);
     node.querySelector(".stop-reason p").textContent = candidateReasonText(candidate, isArea);
     const detourWrap = node.querySelector(".metric-detour-wrap");
     const offrouteWrap = node.querySelector(".metric-offroute-wrap");
@@ -3952,7 +3953,7 @@ function renderResults() {
     dir.setAttribute("aria-label", `Directions to ${candidate.name}`);
     ebird.setAttribute("aria-label", `${candidate.name} on eBird`);
     const mainButton = node.querySelector(".stop-main");
-    mainButton.setAttribute("aria-label", `View ${candidate.name}, rank ${index + 1} of ${state.results.length}, score ${candidate.score} of ${maxScoreTotal()}`);
+    mainButton.setAttribute("aria-label", `View ${candidate.name}, rank ${index + 1} of ${state.results.length}, score ${candidate.score} of ${scale.max}`);
     mainButton.addEventListener("click", () => selectCandidate(candidate.id));
     setupCandidateSpeciesPreviews(card);
     els.resultsList.appendChild(node);
@@ -4256,21 +4257,24 @@ function scoreComponents(candidate, isArea) {
   }));
 }
 
-function maxScoreTotal() {
-  const scoresLifers = Boolean(state.lifeList.species.size);
-  return SCORE_COMPONENTS.reduce(
-    (sum, part) => sum + (part.key === "lifers" && !scoresLifers ? 0 : part.max),
+// Derived from the scores themselves, not the current life list: saved trips keep the
+// scores they were built with, so a life list imported or cleared since then would
+// otherwise put the pill on a scale its own numbers can exceed.
+function scoreScale(candidates) {
+  const includesLifers = candidates.some((candidate) => Number(candidate.scoreParts?.lifers) > 0);
+  const max = SCORE_COMPONENTS.reduce(
+    (sum, part) => sum + (part.key === "lifers" && !includesLifers ? 0 : part.max),
     0
   );
+  return { includesLifers, max };
 }
 
-function scoreTooltip(candidate, isArea) {
-  const scoresLifers = Boolean(state.lifeList.species.size);
+function scoreTooltip(candidate, isArea, scale) {
   const breakdown = scoreComponents(candidate, isArea)
-    .filter((part) => scoresLifers || part.key !== "lifers")
+    .filter((part) => scale.includesLifers || part.key !== "lifers")
     .map((part) => `${part.label} ${part.value.toFixed(1)}/${part.max}`)
     .join(", ");
-  return `Score ${candidate.score} of ${maxScoreTotal()} — ${breakdown}`;
+  return `Score ${candidate.score} of ${scale.max} — ${breakdown}`;
 }
 
 function scoreRow(label, value, max) {
