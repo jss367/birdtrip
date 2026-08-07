@@ -193,6 +193,7 @@ function redirectLegacyMigrationLink() {
 }
 
 function legacyMigrationMonth(search) {
+  // Intentional copy of cleanSharedNumber: the redirect must stay self-contained.
   const num = (value, min, max) => {
     if (value === null) return "";
     const number = clamp(Number(value), min, max);
@@ -498,7 +499,6 @@ function setSearchMode(mode, options = {}) {
   els.locationGroupTitle.textContent = isSpecies ? "Species" : isArea ? "Area" : "Route";
   els.originLabelText.textContent = isAreaLike ? "Location" : "Origin";
   els.origin.placeholder = isAreaLike ? "City, park, hotel, or address" : "";
-  els.origin.required = true;
   els.speciesField.hidden = !isSpecies;
   els.destinationField.hidden = isAreaLike;
   els.destination.required = !isAreaLike;
@@ -511,8 +511,6 @@ function setSearchMode(mode, options = {}) {
   els.mapAreaLegend.textContent = isAreaLike ? "Search area" : "Route corridor";
   els.sampleButton.title = isSpecies ? "Use sample species search" : isArea ? "Use sample area" : "Use sample route";
   els.resultsTitle.textContent = isSpecies ? "Recent Sightings" : "Ranked Stops";
-  els.resultLegend.hidden = false;
-  els.itineraryBuilder.hidden = false;
   els.comparisonPanel.hidden = state.comparisonIds.length === 0;
   updateMapLegend();
   if (els.progressTitle.textContent === "Ready") {

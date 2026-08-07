@@ -747,6 +747,8 @@ In `public/styles.css` delete: both `.map-region.is-migration .map-glass` rules 
 Run: `grep -cin "migration" public/app.js public/index.html`
 Expected: `public/app.js:0` and `public/index.html:1` (the single `migrationMapLink` anchor; `grep -in migration public/index.html` should show only that line — if the id was named without "migration" adjust accordingly).
 
+(Amended during execution: the redirect helper introduced in Step 1 itself contains migration-named identifiers; the correct outcome is that all remaining matches are inside `redirectLegacyMigrationLink`/`legacyMigrationMonth`/`MIGRATION_PAGE_GROUPS`, and index.html's matches are the single anchor.)
+
 Run: `node --check public/app.js && npm run lint`
 Expected: pass.
 
