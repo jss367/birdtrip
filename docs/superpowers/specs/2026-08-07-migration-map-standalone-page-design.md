@@ -57,9 +57,11 @@ Minimal standalone shell:
 Nothing else: no trip-planner sidebar, no stat tiles, no eBird setup UI.
 
 Loads `styles.css` (migration styles already live there; a few new layout rules are
-added for the standalone shell), Leaflet and Lucide icons from the same CDN pins as
+added for the standalone shell), Leaflet and Lucide icons from the same CDN URLs as
 `index.html` (the corridor cards, flow markers, and Play/Pause button all use
-`data-lucide` icons), `migration-map.js`, and the new `migration-app.js`.
+`data-lucide` icons; note `index.html` uses unpinned `lucide@latest` — the new
+page matches it rather than diverging), `migration-map.js`, and the new
+`migration-app.js`.
 
 ### 2. New bootstrap: `public/migration-app.js`
 
@@ -72,8 +74,8 @@ A small page controller that:
   (`flowMarkers` / `flowMarkerHtml`), popups, fit-to-bounds, and fly-to on
   corridor selection.
 - Instantiates `window.BirdtripMigrationMap.createController` with the page's
-  elements and renders immediately on `DOMContentLoaded` — precedence:
-  defaults (April + "all"), then localStorage, then URL params.
+  elements and renders immediately on `DOMContentLoaded`. Setting precedence
+  (highest first): URL params, then localStorage, then defaults (April + "all").
 - Live updates: group change, month slider/buttons, and Play all re-render
   directly (the controller's existing `onControlsChanged` path, without the
   `state.migration` guard that made controls dead before first submit).
@@ -156,9 +158,11 @@ its default.
   falling through the precedence chain: URL param → localStorage → defaults
   (April, all migrants). Corrupt localStorage JSON is treated the same as
   absent.
-- Clipboard write failure on Share falls back to showing the URL in a prompt
-  (same behavior as the main app's share fallback, if present; otherwise a
-  minimal inline fallback).
+- Share uses the same clipboard approach as the main app's `copyTextToClipboard`
+  (app.js:1816): `navigator.clipboard` when available, hidden-textarea
+  `execCommand("copy")` fallback otherwise; if both fail, the status line shows
+  the URL for manual copying. The helper is duplicated into `migration-app.js`
+  (it is ~15 lines; not worth a shared module for one function).
 - **Leaflet CDN failure:** map initialization is guarded (`window.L` check). If
   Leaflet is absent, the bootstrap skips map creation and passes a null map
   adapter — the controller already no-ops its map rendering when the adapter is
