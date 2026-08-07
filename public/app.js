@@ -3430,10 +3430,19 @@ function buildCandidates(observationsBySample, samples, params) {
       : [];
   }
 
-  return candidates
+  const ranked = candidates
     .filter((candidate) => candidate.species.size > 0)
-    .sort((a, b) => preliminaryScore(b) - preliminaryScore(a))
-    .slice(0, Math.max(params.maxStops * 3, params.maxStops));
+    .sort((a, b) => preliminaryScore(b) - preliminaryScore(a));
+  const limit = Math.max(params.maxStops * 3, params.maxStops);
+  const kept = ranked.slice(0, limit);
+  if (params.targets.length) {
+    const targetExtras = ranked.slice(limit).filter((candidate) => candidate.targetMatches.length > 0);
+    kept.push(...targetExtras.slice(0, params.maxStops));
+    if (targetExtras.length > params.maxStops) {
+      addWarning(`${targetExtras.length - params.maxStops} lower-ranked locations reporting target species were left out of the candidate list.`);
+    }
+  }
+  return kept;
 }
 
 function preliminaryScore(candidate) {
