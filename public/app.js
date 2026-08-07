@@ -22,6 +22,7 @@ const state = {
   selectedSightingId: null,
   migration: null,
   selectedMigrationId: null,
+  ebirdAccessIssue: null,
   provider: "osm",
   userSelectedProvider: false,
   lifeList: {
@@ -82,6 +83,8 @@ const els = {
   radiusKm: document.querySelector("#radiusKm"),
   radiusKmLabel: document.querySelector("#radiusKmLabel"),
   maxStops: document.querySelector("#maxStops"),
+  ebirdAccessStatus: document.querySelector("#ebirdAccessStatus"),
+  ebirdTokenDetails: document.querySelector("#ebirdTokenDetails"),
   apiToken: document.querySelector("#apiToken"),
   rememberToken: document.querySelector("#rememberToken"),
   targets: document.querySelector("#targets"),
@@ -269,9 +272,13 @@ function init() {
   els.rememberToken.addEventListener("change", savePreferences);
   els.apiToken.addEventListener("change", () => {
     if (els.rememberToken.checked) savePreferences();
+    if (els.apiToken.value.trim()) state.ebirdAccessIssue = null;
     updateSetupStatus();
   });
-  els.apiToken.addEventListener("input", updateSetupStatus);
+  els.apiToken.addEventListener("input", () => {
+    if (els.apiToken.value.trim()) state.ebirdAccessIssue = null;
+    updateSetupStatus();
+  });
   els.mapProvider.addEventListener("change", () => {
     state.userSelectedProvider = true;
     setMapProvider(providerFromInput());
@@ -300,7 +307,7 @@ function init() {
     setStatus(
       needsToken ? "Explore without setup" : "Ready",
       needsToken
-        ? "Enter a route to preview distance and drive time. Add an eBird token when you want live bird rankings."
+        ? "Enter a route to preview distance and drive time. Add a personal eBird token under Birding Data for live rankings."
         : "Enter a route to load recent sightings and notable reports."
     );
     closeQuickStart();
@@ -960,6 +967,7 @@ async function loadAppConfig() {
   try {
     const config = await apiJson("/api/config");
     const ebirdServerConfigured = Boolean(config.ebirdConfigured || config.ebird?.serverConfigured);
+    state.ebirdAccessIssue = null;
     state.config = {
       ...state.config,
       ...config,
@@ -1238,6 +1246,10 @@ async function runSearch(options = {}) {
 
   try {
     await waitForAppConfig();
+    if (state.ebirdAccessIssue && hasEbirdAccess()) {
+      state.ebirdAccessIssue = null;
+      updateSetupStatus();
+    }
     const params = readParams();
     clearSearchArtifacts();
     state.params = params;
@@ -1325,10 +1337,10 @@ async function runRouteSearch(params) {
   updateRouteSummary(route);
 
   if (!shouldAttemptEbirdSearch()) {
-    setStatus("Token needed", "Route loaded. Add an eBird token or configure EBIRD_API_KEY to rank live birding stops.");
+    setStatus("eBird access needed", "Route loaded. Add a personal eBird token under Birding Data to rank live birding stops.");
     els.resultContext.textContent = "Route loaded, but live bird data needs eBird access.";
     els.resultsList.className = "results-list empty";
-    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add an eBird token or configure EBIRD_API_KEY to rank live birding stops.</p></div>';
+    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add a personal eBird token under Birding Data to rank live birding stops.</p></div>';
     if (window.lucide) window.lucide.createIcons();
     return;
   }
@@ -1382,10 +1394,10 @@ async function runAreaSearch(params) {
   updateAreaSummary(params.radiusKm);
 
   if (!shouldAttemptEbirdSearch()) {
-    setStatus("Token needed", "Area loaded. Add an eBird token or configure EBIRD_API_KEY to rank live birding stops.");
+    setStatus("eBird access needed", "Area loaded. Add a personal eBird token under Birding Data to rank live birding stops.");
     els.resultContext.textContent = "Area loaded, but live bird data needs eBird access.";
     els.resultsList.className = "results-list empty";
-    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add an eBird token or configure EBIRD_API_KEY to rank live birding stops.</p></div>';
+    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add a personal eBird token under Birding Data to rank live birding stops.</p></div>';
     if (window.lucide) window.lucide.createIcons();
     return;
   }
@@ -1445,10 +1457,10 @@ async function runSpeciesSearch(params) {
   updateAreaSummary(params.radiusKm);
 
   if (!shouldAttemptEbirdSearch()) {
-    setStatus("Token needed", "Location loaded. Add an eBird token or configure EBIRD_API_KEY to map species sightings.");
+    setStatus("eBird access needed", "Location loaded. Add a personal eBird token under Birding Data to map species sightings.");
     els.resultContext.textContent = "Location loaded, but live bird data needs eBird access.";
     els.resultsList.className = "results-list empty";
-    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add an eBird token or configure EBIRD_API_KEY to map species sightings.</p></div>';
+    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add a personal eBird token under Birding Data to map species sightings.</p></div>';
     if (window.lucide) window.lucide.createIcons();
     return;
   }
@@ -1844,17 +1856,93 @@ function closeQuickStart() {
 
 function updateSetupStatus() {
   const hasAccess = hasEbirdAccess();
+  const hasPersonalToken = Boolean(els.apiToken.value.trim());
+  const hasServerAccess = Boolean(
+    state.config.ebirdConfigured === true || state.config.ebird?.serverConfigured === true
+  );
   const isChecking = state.config.ebirdConfigured === null && !els.apiToken.value.trim();
+  const hasWorkingAccess = hasAccess && !state.ebirdAccessIssue;
   els.setupStatus.classList.toggle("setup-checking", isChecking);
-  els.setupStatus.classList.toggle("setup-ready", hasAccess);
-  els.setupStatus.classList.toggle("setup-needed", !isChecking && !hasAccess);
+  els.setupStatus.classList.toggle("setup-ready", hasWorkingAccess);
+  els.setupStatus.classList.toggle("setup-needed", !isChecking && !hasWorkingAccess);
   els.setupStatus.innerHTML = isChecking
     ? '<i data-lucide="loader-circle"></i>Checking Setup'
-    : hasAccess
+    : hasWorkingAccess
       ? '<i data-lucide="check-circle-2"></i>Ready to Search'
       : '<i data-lucide="circle-alert"></i>Setup Required';
+  if (els.ebirdAccessStatus) {
+    const accessState = isChecking
+      ? {
+          className: "is-checking",
+          icon: "loader-circle",
+          title: "Checking eBird access",
+          detail: "Confirming live bird data availability."
+        }
+      : state.ebirdAccessIssue
+        ? ebirdAccessIssueStatus(state.ebirdAccessIssue, hasPersonalToken)
+        : hasPersonalToken
+          ? {
+              className: "is-personal",
+              icon: "key-round",
+              title: "Using your personal eBird token",
+              detail: hasServerAccess
+                ? "Your token overrides Birdtrip's shared access."
+                : "Your token enables live sightings in this browser."
+            }
+          : hasServerAccess
+            ? {
+                className: "is-ready",
+                icon: "check-circle-2",
+                title: "Live eBird data included",
+                detail: "Birdtrip's shared access is ready—no token needed."
+              }
+            : {
+                className: "is-needed",
+                icon: "circle-alert",
+                title: "Personal eBird token needed",
+                detail: "Add a token below to load live sightings."
+              };
+    els.ebirdAccessStatus.className = `ebird-access-status ${accessState.className}`;
+    els.ebirdAccessStatus.innerHTML = `
+      <i data-lucide="${accessState.icon}"></i>
+      <div>
+        <strong>${accessState.title}</strong>
+        <small>${accessState.detail}</small>
+      </div>
+    `;
+  }
+  if (els.ebirdTokenDetails && !isChecking && (!hasAccess || state.ebirdAccessIssue)) {
+    els.ebirdTokenDetails.open = true;
+  }
   renderInsights();
   if (window.lucide) window.lucide.createIcons();
+}
+
+function ebirdAccessIssueStatus(status, hasPersonalToken) {
+  if (status === 429) {
+    return {
+      className: "is-needed",
+      icon: "clock-3",
+      title: "eBird access is temporarily limited",
+      detail: hasPersonalToken
+        ? "Retry later or check the token you supplied."
+        : "Retry later or use a personal token."
+    };
+  }
+  return {
+    className: "is-needed",
+    icon: "circle-alert",
+    title: hasPersonalToken ? "Personal eBird token not accepted" : "Shared eBird access is unavailable",
+    detail: hasPersonalToken
+      ? "Check your token below and try again."
+      : "Add a personal token below and try again."
+  };
+}
+
+function revealEbirdTokenForError(status) {
+  state.ebirdAccessIssue = status;
+  if (els.ebirdTokenDetails) els.ebirdTokenDetails.open = true;
+  updateSetupStatus();
 }
 
 function hasEbirdAccess() {
@@ -2202,6 +2290,9 @@ async function apiJson(url, options = {}) {
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
+    if (String(url).startsWith("/api/ebird/") && [401, 403, 429].includes(response.status)) {
+      revealEbirdTokenForError(response.status);
+    }
     const base = payload.error || response.statusText || "Request failed";
     const detail = detailText(payload.details);
     const error = new Error(detail ? `${base} — ${detail}` : base);
@@ -4566,7 +4657,7 @@ function renderInsights() {
     } else {
       els.sightingSummary.textContent = canAttemptSearch
         ? "Recent sightings appear after you map a species."
-        : "Add an eBird token to map recent species sightings.";
+        : "Add a personal eBird token under Birding Data to map recent species sightings.";
     }
     return;
   }
@@ -4608,7 +4699,7 @@ function renderInsights() {
   } else {
     const searchedWithoutToken = state.mode === "area" ? state.areaCenter && !canAttemptSearch : state.route && !canAttemptSearch;
     els.sightingSummary.textContent = searchedWithoutToken
-      ? `${state.mode === "area" ? "Area" : "Route"} is ready. Add an eBird token to load recent sightings and notable reports.`
+      ? `${state.mode === "area" ? "Area" : "Route"} is ready. Add a personal eBird token under Birding Data to load recent sightings and notable reports.`
       : "Recent eBird activity and notable reports appear after search.";
   }
 }
