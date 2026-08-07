@@ -936,10 +936,6 @@ select {
   font-weight: 850;
 }
 
-.map-region.is-migration .map-glass {
-  bottom: 118px;
-}
-
 .migration-timeline-bar {
   position: absolute;
   left: 18px;
@@ -1151,21 +1147,6 @@ select {
   height: 4px;
   border-radius: 999px;
   background: var(--blue);
-}
-
-.legend-line.migration {
-  width: 22px;
-  height: 5px;
-  border-radius: 999px;
-  background: linear-gradient(90deg, #10b981, #0891b2, #f59e0b);
-}
-
-.legend-dot.migration-peak {
-  background: #10b981;
-}
-
-.legend-dot.migration-stop {
-  background: #f59e0b;
 }
 
 .results-region {
@@ -2882,10 +2863,6 @@ button.stop-chip {
     left: 12px;
     right: 12px;
     bottom: 12px;
-  }
-
-  .map-region.is-migration .map-glass {
-    bottom: 154px;
   }
 
   .migration-timeline-bar {
