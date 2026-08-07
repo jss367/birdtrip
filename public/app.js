@@ -3480,6 +3480,7 @@ function buildCandidates(observationsBySample, samples, params) {
     const extras = overflow.filter((candidate) => !keptIds.has(candidate.id) && matches(candidate));
     for (const candidate of extras.slice(0, params.maxStops)) {
       keptIds.add(candidate.id);
+      candidate.preserved = true;
       kept.push(candidate);
     }
     return extras.length;
@@ -3528,7 +3529,15 @@ async function evaluateDetours(candidates, origin, destination, baseDurationSeco
 }
 
 async function addNotableObservations(candidates, params) {
+  if (params.mode === "area" && state.areaCenter) {
+    await addAreaNotableObservations(candidates, params);
+    return;
+  }
   const top = candidates.slice(0, Math.max(params.maxStops, 6));
+  const topIds = new Set(top.map((candidate) => candidate.id));
+  for (const candidate of candidates) {
+    if (candidate.preserved && !topIds.has(candidate.id)) top.push(candidate);
+  }
   let failed = 0;
   for (let i = 0; i < top.length; i += 1) {
     const candidate = top[i];
@@ -3545,6 +3554,25 @@ async function addNotableObservations(candidates, params) {
   }
   if (failed) {
     addWarning(`${failed} of ${top.length} notable-report lookups failed; notable counts may be understated.`);
+  }
+}
+
+async function addAreaNotableObservations(candidates, params) {
+  const center = state.areaCenter;
+  setStatus("Adding notable birds", "Checking recent notable reports across the area.");
+  let feed = [];
+  try {
+    feed = await apiJson(
+      `/api/ebird/notable?lat=${center.lat}&lng=${center.lng}&dist=${Math.min(params.radiusKm + 10, 50)}&back=${params.recentDays}&maxResults=500`,
+      { token: params.token }
+    );
+  } catch {
+    addWarning("The notable-report lookup failed; notable counts may be understated.");
+  }
+  const valid = (Array.isArray(feed) ? feed : []).filter((obs) => Number.isFinite(obs.lat) && Number.isFinite(obs.lng));
+  const notableRadiusKm = Math.min(params.radiusKm, 10);
+  for (const candidate of candidates) {
+    candidate.notable = valid.filter((obs) => haversineKm(candidate, obs) <= notableRadiusKm);
   }
 }
 
