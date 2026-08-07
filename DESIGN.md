@@ -51,7 +51,9 @@ The public endpoints are appropriate for local/personal use and demos. A product
 ### Bird Data
 
 - eBird API endpoints accessed through the local server:
-  - Nearby recent observations: `/v2/data/obs/geo/recent`
+  - Nearby recent observations: `/v2/data/obs/geo/recent` (route mode; returns only the most recent observation per species across the whole circle)
+  - Nearby recently visited hotspots: `/v2/ref/hotspot/geo` (area mode)
+  - Recent observations at a hotspot: `/v2/data/obs/{locId}/recent` (area mode; per-location species lists, so per-hotspot species counts are accurate)
   - Nearby recent notable observations: `/v2/data/obs/geo/recent/notable`
   - Recent observations of a single species: `/v2/data/obs/geo/recent/{speciesCode}`
   - eBird taxonomy (`/v2/ref/taxonomy/ebird`), loaded once and cached in memory for species name → code lookup and autocomplete.

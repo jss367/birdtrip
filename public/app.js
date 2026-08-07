@@ -1390,9 +1390,14 @@ async function runAreaSearch(params) {
     return;
   }
 
-  setStatus("Scanning area", "Requesting recent eBird observations near the selected location.");
+  setStatus("Scanning area", "Finding recently visited eBird hotspots near the selected location.");
   const samples = [{ lat: center.lat, lng: center.lng, index: 0 }];
-  const observationsBySample = await fetchRecentForSamples(samples, params);
+  const hotspots = await apiJson(
+    `/api/ebird/hotspots?lat=${center.lat}&lng=${center.lng}&dist=${params.radiusKm}&back=${params.recentDays}`,
+    { token: params.token }
+  );
+  const rankedHotspots = rankAreaHotspots(hotspots, center, params);
+  const observationsBySample = await fetchRecentForHotspots(rankedHotspots, samples[0], params);
   const candidates = buildCandidates(observationsBySample, samples, params);
 
   if (!candidates.length) {
@@ -3278,6 +3283,55 @@ async function fetchRecentForSamples(samples, params) {
     addWarning(`${failed} of ${all.length} recent-observation requests failed; ranking uses the data that loaded.`);
   }
   return all;
+}
+
+function rankAreaHotspots(hotspots, center, params) {
+  if (!Array.isArray(hotspots)) return [];
+  const limit = clamp(params.maxStops * 3, 30, 40);
+  return hotspots
+    .filter((hotspot) => hotspot.locId && Number.isFinite(hotspot.lat) && Number.isFinite(hotspot.lng))
+    .map((hotspot) => ({ ...hotspot, distanceKm: haversineKm(center, hotspot) }))
+    .sort((a, b) => hotspotFetchPriority(b, params) - hotspotFetchPriority(a, params))
+    .slice(0, limit);
+}
+
+function hotspotFetchPriority(hotspot, params) {
+  const richness = Number.isFinite(hotspot.numSpeciesAllTime)
+    ? Math.min(hotspot.numSpeciesAllTime, 400) / 400
+    : 0;
+  const proximity = Math.max(0, 1 - hotspot.distanceKm / Math.max(params.radiusKm, 1));
+  return richness * 0.7 + proximity * 0.3;
+}
+
+async function fetchRecentForHotspots(hotspots, sample, params) {
+  const chunks = [];
+  for (let i = 0; i < hotspots.length; i += 4) chunks.push(hotspots.slice(i, i + 4));
+
+  const observations = [];
+  let failed = 0;
+  for (let i = 0; i < chunks.length; i += 1) {
+    setStatus("Scanning area", `Checking hotspots ${i * 4 + 1}-${Math.min((i + 1) * 4, hotspots.length)} of ${hotspots.length}.`);
+    const batch = await Promise.all(chunks[i].map((hotspot) => {
+      const url = `/api/ebird/hotspot-recent?locId=${encodeURIComponent(hotspot.locId)}&back=${params.recentDays}`;
+      return apiJson(url, { token: params.token })
+        .then((results) => (Array.isArray(results) ? results : []).map((obs) => ({
+          ...obs,
+          locId: obs.locId || hotspot.locId,
+          locName: obs.locName || hotspot.locName,
+          lat: Number.isFinite(obs.lat) ? obs.lat : hotspot.lat,
+          lng: Number.isFinite(obs.lng) ? obs.lng : hotspot.lng
+        })))
+        .catch(() => {
+          failed += 1;
+          return [];
+        });
+    }));
+    for (const entry of batch) observations.push(...entry);
+  }
+  if (failed) {
+    addWarning(`${failed} of ${hotspots.length} hotspot lookups failed; ranking uses the data that loaded.`);
+  }
+  return [{ sample, observations }];
 }
 
 function buildCandidates(observationsBySample, samples, params) {
