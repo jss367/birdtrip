@@ -56,8 +56,9 @@ Minimal standalone shell:
 Nothing else: no trip-planner sidebar, no stat tiles, no eBird setup UI.
 
 Loads `styles.css` (migration styles already live there; a few new layout rules are
-added for the standalone shell), Leaflet from the same CDN pin as `index.html`,
-`migration-map.js`, and the new `migration-app.js`.
+added for the standalone shell), Leaflet and Lucide icons from the same CDN pins as
+`index.html` (the corridor cards, flow markers, and Play/Pause button all use
+`data-lucide` icons), `migration-map.js`, and the new `migration-app.js`.
 
 ### 2. New bootstrap: `public/migration-app.js`
 
@@ -70,8 +71,8 @@ A small page controller that:
   (`flowMarkers` / `flowMarkerHtml`), popups, fit-to-bounds, and fly-to on
   corridor selection.
 - Instantiates `window.BirdtripMigrationMap.createController` with the page's
-  elements and renders immediately on `DOMContentLoaded` — defaults April +
-  "all", overridden by URL params, then by localStorage.
+  elements and renders immediately on `DOMContentLoaded` — precedence:
+  defaults (April + "all"), then localStorage, then URL params.
 - Live updates: group change, month slider/buttons, and Play all re-render
   directly (the controller's existing `onControlsChanged` path, without the
   `state.migration` guard that made controls dead before first submit).
@@ -90,7 +91,9 @@ Kept as the shared data/controller module, with `renderResults` simplified to
 only what the new page has: it no longer writes to trip-planner elements
 (`routeDistance`, `hotspotCount`, `notableCount`, `candidateCount`, `liferCount`,
 `targetCount`, `maxAdded`, `resultLegend`, `itineraryBuilder`, `comparisonPanel`,
-`resultsTitle`). The overview/note/corridor-card rendering, month buttons,
+`resultsTitle`). The `resultContext` context line ("group; month; phase") is kept —
+the new page's results pane includes an equivalent subtitle element. The
+overview/note/corridor-card rendering, month buttons,
 playback, and `buildLayer` logic are unchanged.
 
 ### 4. Main app cleanup: `index.html` + `app.js`
@@ -114,8 +117,9 @@ playback, and `buildLayer` logic are unchanged.
 to migration mode, the main page redirects
 (`location.replace`) to `migration.html?group=<group>&month=<month>`, mapping
 legacy season/week to a month exactly as `cleanSharedMigrationMonth` does today.
-The month-mapping helper moves out of the migration-mode code path so it survives
-the cleanup.
+If the shared URL carries no resolvable month, the `month` param is omitted and
+the new page uses its default. The month-mapping helper moves out of the
+migration-mode code path so it survives the cleanup.
 
 ### 6. Housekeeping
 
