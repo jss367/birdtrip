@@ -3357,15 +3357,19 @@ async function rescueLiferHotspots(hotspots, alreadyChosen, center, params) {
   if (!droppedByLocId.size) return [];
 
   setStatus("Scanning area", "Checking for unseen species at additional hotspots.");
+  const feedMaxResults = 10000;
   let feed;
   try {
     feed = await apiJson(
-      `/api/ebird/recent?lat=${center.lat}&lng=${center.lng}&dist=${params.radiusKm}&back=${params.recentDays}&maxResults=500`,
+      `/api/ebird/recent?lat=${center.lat}&lng=${center.lng}&dist=${params.radiusKm}&back=${params.recentDays}&maxResults=${feedMaxResults}`,
       { token: params.token }
     );
   } catch {
     addWarning("Could not check the remaining hotspots for unseen species; lifer coverage may be incomplete.");
     return [];
+  }
+  if (Array.isArray(feed) && feed.length >= feedMaxResults) {
+    addWarning("The area has more recently reported species than eBird returns in one request; lifer coverage may be incomplete.");
   }
 
   const rescued = new Map();
