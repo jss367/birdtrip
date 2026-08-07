@@ -3317,15 +3317,20 @@ async function rescueTargetHotspots(hotspots, ranked, center, params) {
   if (!droppedByLocId.size) return [];
 
   const rescued = new Map();
+  const feedMaxResults = 10000;
   let failed = 0;
   for (const target of params.targets) {
     setStatus("Scanning area", `Checking locations reporting target species: ${target}.`);
     try {
       const payload = await apiJson(
-        `/api/ebird/species?lat=${center.lat}&lng=${center.lng}&dist=${params.radiusKm}&back=${params.recentDays}&maxResults=1000&name=${encodeURIComponent(target)}`,
+        `/api/ebird/species?lat=${center.lat}&lng=${center.lng}&dist=${params.radiusKm}&back=${params.recentDays}&maxResults=${feedMaxResults}&name=${encodeURIComponent(target)}`,
         { token: params.token }
       );
-      for (const obs of payload.observations || []) {
+      const observations = Array.isArray(payload.observations) ? payload.observations : [];
+      if (observations.length >= feedMaxResults) {
+        addWarning(`"${target}" has more reports than eBird returns in one request; some of its locations may be missing from the ranking.`);
+      }
+      for (const obs of observations) {
         const hotspot = obs.locId ? droppedByLocId.get(obs.locId) : null;
         if (hotspot) rescued.set(hotspot.locId, hotspot);
       }
