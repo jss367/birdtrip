@@ -51,6 +51,7 @@ const els = {
   shareTripButton: document.querySelector("#shareTripButton"),
   downloadReportButton: document.querySelector("#downloadReportButton"),
   settingsButton: document.querySelector("#settingsButton"),
+  searchSettingsGroup: document.querySelector("#searchSettingsGroup"),
   setupStatus: document.querySelector("#setupStatus"),
   form: document.querySelector("#searchForm"),
   modeButtons: document.querySelectorAll(".mode-switch button[data-mode]"),
@@ -284,10 +285,7 @@ function init() {
   els.maxDetour.addEventListener("input", updateInputSummaries);
   els.shareTripButton.addEventListener("click", shareCurrentTrip);
   els.downloadReportButton.addEventListener("click", downloadHtmlReport);
-  els.settingsButton.addEventListener("click", () => {
-    els.maxDetour.scrollIntoView({ block: "center", behavior: "smooth" });
-    els.maxDetour.focus();
-  });
+  els.settingsButton.addEventListener("click", revealSearchSettings);
   els.printButton.addEventListener("click", () => {
     renderReport();
     window.print();
@@ -323,6 +321,25 @@ function init() {
   renderItineraryBuilder();
   renderComparison();
   if (window.lucide) window.lucide.createIcons();
+}
+
+// The header gear points at the whole Search Settings group rather than one field:
+// "Max added" is hidden outside route mode, so aiming at it made the gear a no-op
+// in area, species, and migration mode.
+function revealSearchSettings() {
+  const group = els.searchSettingsGroup;
+  group.scrollIntoView({ block: "start", behavior: "smooth" });
+
+  // Restart the highlight on every click, not just the first one.
+  group.classList.remove("is-flashed");
+  void group.offsetWidth;
+  group.classList.add("is-flashed");
+  group.addEventListener("animationend", () => group.classList.remove("is-flashed"), { once: true });
+
+  const firstField = [...group.querySelectorAll("input, select, textarea")].find(
+    (field) => !field.disabled && field.offsetParent !== null
+  );
+  (firstField || group).focus({ preventScroll: true });
 }
 
 async function initializeStartupMap(preferredProvider, sharedSearch) {
