@@ -272,11 +272,11 @@ function init() {
   els.rememberToken.addEventListener("change", savePreferences);
   els.apiToken.addEventListener("change", () => {
     if (els.rememberToken.checked) savePreferences();
-    if (els.apiToken.value.trim()) state.ebirdAccessIssue = null;
+    clearPersonalEbirdAccessIssue();
     updateSetupStatus();
   });
   els.apiToken.addEventListener("input", () => {
-    if (els.apiToken.value.trim()) state.ebirdAccessIssue = null;
+    clearPersonalEbirdAccessIssue();
     updateSetupStatus();
   });
   els.mapProvider.addEventListener("change", () => {
@@ -1861,7 +1861,12 @@ function updateSetupStatus() {
     state.config.ebirdConfigured === true || state.config.ebird?.serverConfigured === true
   );
   const isChecking = state.config.ebirdConfigured === null && !els.apiToken.value.trim();
-  const hasWorkingAccess = hasAccess && !state.ebirdAccessIssue;
+  const activeAccessIssue = state.ebirdAccessIssue && (
+    state.ebirdAccessIssue.source === "personal" || !hasPersonalToken
+  )
+    ? state.ebirdAccessIssue
+    : null;
+  const hasWorkingAccess = hasAccess && !activeAccessIssue;
   els.setupStatus.classList.toggle("setup-checking", isChecking);
   els.setupStatus.classList.toggle("setup-ready", hasWorkingAccess);
   els.setupStatus.classList.toggle("setup-needed", !isChecking && !hasWorkingAccess);
@@ -1878,8 +1883,8 @@ function updateSetupStatus() {
           title: "Checking eBird access",
           detail: "Confirming live bird data availability."
         }
-      : state.ebirdAccessIssue
-        ? ebirdAccessIssueStatus(state.ebirdAccessIssue, hasPersonalToken)
+      : activeAccessIssue
+        ? ebirdAccessIssueStatus(activeAccessIssue.status, hasPersonalToken)
         : hasPersonalToken
           ? {
               className: "is-personal",
@@ -1911,7 +1916,7 @@ function updateSetupStatus() {
       </div>
     `;
   }
-  if (els.ebirdTokenDetails && !isChecking && (!hasAccess || state.ebirdAccessIssue)) {
+  if (els.ebirdTokenDetails && !isChecking && (!hasAccess || activeAccessIssue)) {
     els.ebirdTokenDetails.open = true;
   }
   renderInsights();
@@ -1939,8 +1944,14 @@ function ebirdAccessIssueStatus(status, hasPersonalToken) {
   };
 }
 
-function revealEbirdTokenForError(status) {
-  state.ebirdAccessIssue = status;
+function clearPersonalEbirdAccessIssue() {
+  if (state.ebirdAccessIssue?.source === "personal") {
+    state.ebirdAccessIssue = null;
+  }
+}
+
+function revealEbirdTokenForError(status, source) {
+  state.ebirdAccessIssue = { status, source };
   if (els.ebirdTokenDetails) els.ebirdTokenDetails.open = true;
   updateSetupStatus();
 }
@@ -2291,7 +2302,7 @@ async function apiJson(url, options = {}) {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     if (String(url).startsWith("/api/ebird/") && [401, 403, 429].includes(response.status)) {
-      revealEbirdTokenForError(response.status);
+      revealEbirdTokenForError(response.status, options.token ? "personal" : "shared");
     }
     const base = payload.error || response.statusText || "Request failed";
     const detail = detailText(payload.details);
