@@ -238,8 +238,13 @@ textarea:disabled {
   outline: none;
 }
 
+/* The highlight is a plain class so it still shows with the animation switched
+   off; the animation just fades it out for everyone else. */
 #searchSettingsGroup.is-flashed {
-  animation: settings-flash 1.2s ease-out;
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.22);
+  animation: settings-flash 1.2s ease-out forwards;
 }
 
 @keyframes settings-flash {
@@ -258,9 +263,7 @@ textarea:disabled {
 
 @media (prefers-reduced-motion: reduce) {
   #searchSettingsGroup.is-flashed {
-    animation-duration: 1ms;
-    border-color: var(--accent);
-    background: var(--accent-soft);
+    animation: none;
   }
 }
 

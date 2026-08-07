@@ -25,6 +25,7 @@ const state = {
   ebirdAccessIssue: null,
   provider: "osm",
   userSelectedProvider: false,
+  settingsFlashTimer: null,
   lifeList: {
     source: "",
     fileName: "",
@@ -192,6 +193,8 @@ function normalizeMode(mode) {
 const SAVED_TRIPS_KEY = "birdtripSavedTrips";
 const CONFIG_WAIT_TIMEOUT_MS = 6000;
 const SHARE_URL_VERSION = "1";
+// Matches the settings-flash animation duration in styles.css.
+const SETTINGS_FLASH_MS = 1200;
 
 function setupMigrationController() {
   migrationController = window.BirdtripMigrationMap.createController({
@@ -328,13 +331,18 @@ function init() {
 // in area, species, and migration mode.
 function revealSearchSettings() {
   const group = els.searchSettingsGroup;
-  group.scrollIntoView({ block: "start", behavior: "smooth" });
+  // Chromium honors an explicit "smooth" request even under prefers-reduced-motion,
+  // so the jump has to be opted out of here rather than left to the media query.
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  group.scrollIntoView({ block: "start", behavior: reduceMotion ? "auto" : "smooth" });
 
-  // Restart the highlight on every click, not just the first one.
+  // Hold the highlight on a timer instead of animationend: reduced motion has no
+  // animation to end, and a timer restarts cleanly on repeat clicks.
+  window.clearTimeout(state.settingsFlashTimer);
   group.classList.remove("is-flashed");
   void group.offsetWidth;
   group.classList.add("is-flashed");
-  group.addEventListener("animationend", () => group.classList.remove("is-flashed"), { once: true });
+  state.settingsFlashTimer = window.setTimeout(() => group.classList.remove("is-flashed"), SETTINGS_FLASH_MS);
 
   const firstField = [...group.querySelectorAll("input, select, textarea")].find(
     (field) => !field.disabled && field.offsetParent !== null
