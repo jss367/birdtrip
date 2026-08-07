@@ -3902,11 +3902,15 @@ function renderResults() {
     card.dataset.id = candidate.id;
     if (candidate.id === state.selectedId) card.classList.add("is-selected");
     if (isPinned(candidate.id)) card.classList.add("is-pinned");
-    node.querySelector(".rank").textContent = String(index + 1);
+    const rank = node.querySelector(".rank");
+    rank.textContent = String(index + 1);
+    rank.title = `Rank ${index + 1} of ${state.results.length} by score`;
     node.querySelector(".stop-name").textContent = candidate.name;
     node.querySelector(".stop-preview").textContent = speciesPreview(candidate);
     node.querySelector(".stop-chips").innerHTML = candidateChips(candidate, index);
-    node.querySelector(".score-pill").textContent = candidate.score;
+    const scorePill = node.querySelector(".score-pill");
+    scorePill.querySelector("b").textContent = candidate.score;
+    scorePill.title = scoreTooltip(candidate, isArea);
     node.querySelector(".stop-reason p").textContent = candidateReasonText(candidate, isArea);
     const detourWrap = node.querySelector(".metric-detour-wrap");
     const offrouteWrap = node.querySelector(".metric-offroute-wrap");
@@ -3948,7 +3952,7 @@ function renderResults() {
     dir.setAttribute("aria-label", `Directions to ${candidate.name}`);
     ebird.setAttribute("aria-label", `${candidate.name} on eBird`);
     const mainButton = node.querySelector(".stop-main");
-    mainButton.setAttribute("aria-label", `View ${candidate.name}`);
+    mainButton.setAttribute("aria-label", `View ${candidate.name}, rank ${index + 1} of ${state.results.length}, score ${candidate.score} of ${maxScoreTotal()}`);
     mainButton.addEventListener("click", () => selectCandidate(candidate.id));
     setupCandidateSpeciesPreviews(card);
     els.resultsList.appendChild(node);
@@ -4017,12 +4021,7 @@ function renderDetails(candidate) {
     <section class="score-line">
       <h4>Score</h4>
       <div class="score-bars">
-        ${scoreRow("Species", candidate.scoreParts.species, 45)}
-        ${scoreRow("Activity", candidate.scoreParts.activity, 15)}
-        ${scoreRow("Notable", candidate.scoreParts.notable, 20)}
-        ${scoreRow("Targets", candidate.scoreParts.targets, 15)}
-        ${scoreRow("Lifers", candidate.scoreParts.lifers, 18)}
-        ${scoreRow(isArea ? "Proximity" : "Route", candidate.scoreParts.practicality, 20)}
+        ${scoreComponents(candidate, isArea).map((part) => scoreRow(part.label, part.value, part.max)).join("")}
       </div>
     </section>
     ${lifers.length ? `
@@ -4212,16 +4211,11 @@ function compareFreshnessCell(candidate) {
 }
 
 function compareScoreCell(candidate) {
-  const routeLabel = state.params?.mode === "area" ? "Proximity" : "Route";
+  const isArea = state.params?.mode === "area";
   return `
     <b>${candidate.score} total</b>
     <div class="comparison-score">
-      ${compactScorePart("Species", candidate.scoreParts.species, 45)}
-      ${compactScorePart("Activity", candidate.scoreParts.activity, 15)}
-      ${compactScorePart("Notable", candidate.scoreParts.notable, 20)}
-      ${compactScorePart("Targets", candidate.scoreParts.targets, 15)}
-      ${compactScorePart("Lifers", candidate.scoreParts.lifers, 18)}
-      ${compactScorePart(routeLabel, candidate.scoreParts.practicality, 20)}
+      ${scoreComponents(candidate, isArea).map((part) => compactScorePart(part.label, part.value, part.max)).join("")}
     </div>
   `;
 }
@@ -4241,6 +4235,42 @@ function updateVisibleDetails() {
   if (els.detailsPanel.hidden || !state.selectedId) return;
   const candidate = state.results.find((item) => item.id === state.selectedId);
   if (candidate) renderDetails(candidate);
+}
+
+const SCORE_COMPONENTS = [
+  { key: "species", label: "Species", max: 45 },
+  { key: "activity", label: "Activity", max: 15 },
+  { key: "notable", label: "Notable", max: 20 },
+  { key: "targets", label: "Targets", max: 15 },
+  { key: "lifers", label: "Lifers", max: 18 },
+  { key: "practicality", label: "Route", areaLabel: "Proximity", max: 20 }
+];
+
+function scoreComponents(candidate, isArea) {
+  const parts = candidate.scoreParts || {};
+  return SCORE_COMPONENTS.map((part) => ({
+    key: part.key,
+    label: isArea && part.areaLabel ? part.areaLabel : part.label,
+    max: part.max,
+    value: Number.isFinite(parts[part.key]) ? parts[part.key] : 0
+  }));
+}
+
+function maxScoreTotal() {
+  const scoresLifers = Boolean(state.lifeList.species.size);
+  return SCORE_COMPONENTS.reduce(
+    (sum, part) => sum + (part.key === "lifers" && !scoresLifers ? 0 : part.max),
+    0
+  );
+}
+
+function scoreTooltip(candidate, isArea) {
+  const scoresLifers = Boolean(state.lifeList.species.size);
+  const breakdown = scoreComponents(candidate, isArea)
+    .filter((part) => scoresLifers || part.key !== "lifers")
+    .map((part) => `${part.label} ${part.value.toFixed(1)}/${part.max}`)
+    .join(", ");
+  return `Score ${candidate.score} of ${maxScoreTotal()} — ${breakdown}`;
 }
 
 function scoreRow(label, value, max) {
