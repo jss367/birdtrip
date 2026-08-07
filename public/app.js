@@ -3474,12 +3474,24 @@ function buildCandidates(observationsBySample, samples, params) {
     .sort((a, b) => preliminaryScore(b) - preliminaryScore(a));
   const limit = Math.max(params.maxStops * 3, params.maxStops);
   const kept = ranked.slice(0, limit);
-  if (params.targets.length) {
-    const targetExtras = ranked.slice(limit).filter((candidate) => candidate.targetMatches.length > 0);
-    kept.push(...targetExtras.slice(0, params.maxStops));
-    if (targetExtras.length > params.maxStops) {
-      addWarning(`${targetExtras.length - params.maxStops} lower-ranked locations reporting target species were left out of the candidate list.`);
+  const overflow = ranked.slice(limit);
+  const keptIds = new Set(kept.map((candidate) => candidate.id));
+  const keepExtras = (matches) => {
+    const extras = overflow.filter((candidate) => !keptIds.has(candidate.id) && matches(candidate));
+    for (const candidate of extras.slice(0, params.maxStops)) {
+      keptIds.add(candidate.id);
+      kept.push(candidate);
     }
+    return extras.length;
+  };
+  if (params.targets.length) {
+    const total = keepExtras((candidate) => candidate.targetMatches.length > 0);
+    if (total > params.maxStops) {
+      addWarning(`${total - params.maxStops} lower-ranked locations reporting target species were left out of the candidate list.`);
+    }
+  }
+  if (params.lifeList?.size) {
+    keepExtras((candidate) => candidate.liferSpecies.length > 0);
   }
   return kept;
 }
