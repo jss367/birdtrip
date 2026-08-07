@@ -185,15 +185,13 @@
             <i data-lucide="feather"></i>
             <span>Birding Data</span>
           </div>
-          <label>
-            <span>eBird API token</span>
-            <input id="apiToken" name="apiToken" type="password" placeholder="Paste token or use EBIRD_API_KEY">
-            <small class="field-hint">Powered by eBird recent observations.</small>
-          </label>
-          <label class="check-line">
-            <input id="rememberToken" name="rememberToken" type="checkbox">
-            <span>Remember token in this browser</span>
-          </label>
+          <div id="ebirdAccessStatus" class="ebird-access-status is-checking" role="status" aria-live="polite" aria-atomic="true">
+            <i data-lucide="loader-circle"></i>
+            <div>
+              <strong>Checking eBird access</strong>
+              <small>Confirming live bird data availability.</small>
+            </div>
+          </div>
 
           <div class="target-field">
             <span>Target species</span>
@@ -217,6 +215,25 @@
               </button>
             </div>
           </div>
+
+          <details id="ebirdTokenDetails" class="advanced-settings">
+            <summary>
+              <span>Personal eBird API token</span>
+              <small>Optional</small>
+              <i data-lucide="chevron-down"></i>
+            </summary>
+            <div class="advanced-settings-content">
+              <label>
+                <span>Personal eBird API token</span>
+                <input id="apiToken" name="apiToken" type="password" autocomplete="off" placeholder="Paste your eBird API token">
+                <small class="field-hint">Overrides Birdtrip's shared eBird access for searches from this browser.</small>
+              </label>
+              <label class="check-line">
+                <input id="rememberToken" name="rememberToken" type="checkbox">
+                <span>Remember token in this browser</span>
+              </label>
+            </div>
+          </details>
         </section>
 
         <div class="actions">

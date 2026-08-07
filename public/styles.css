@@ -517,6 +517,118 @@ select {
   line-height: 1.3;
 }
 
+.ebird-access-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 11px;
+  background: var(--panel-soft);
+}
+
+.ebird-access-status > svg {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.ebird-access-status > div {
+  display: grid;
+  gap: 2px;
+}
+
+.ebird-access-status strong {
+  color: var(--text);
+  font-size: 0.82rem;
+}
+
+.ebird-access-status small {
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.3;
+}
+
+.ebird-access-status.is-ready,
+.ebird-access-status.is-personal {
+  border-color: rgba(16, 185, 129, 0.28);
+  background: rgba(236, 253, 245, 0.72);
+}
+
+.ebird-access-status.is-ready > svg,
+.ebird-access-status.is-personal > svg {
+  color: var(--accent-strong);
+}
+
+.ebird-access-status.is-needed {
+  border-color: rgba(225, 29, 72, 0.25);
+  background: rgba(255, 241, 242, 0.7);
+}
+
+.ebird-access-status.is-needed > svg {
+  color: var(--rose);
+}
+
+.ebird-access-status.is-checking > svg {
+  color: var(--muted);
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.advanced-settings {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.advanced-settings summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted-strong);
+  cursor: pointer;
+  list-style: none;
+  font-size: 0.78rem;
+  font-weight: 750;
+}
+
+.advanced-settings summary::-webkit-details-marker {
+  display: none;
+}
+
+.advanced-settings summary small {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 6px;
+  color: var(--muted);
+  font-size: 0.65rem;
+  font-weight: 750;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.advanced-settings summary svg {
+  width: 15px;
+  height: 15px;
+  margin-left: auto;
+  transition: transform 140ms ease;
+}
+
+.advanced-settings[open] summary svg {
+  transform: rotate(180deg);
+}
+
+.advanced-settings-content {
+  display: grid;
+  gap: 9px;
+  padding-top: 11px;
+}
+
 .check-line {
   display: flex;
   flex-direction: row;
