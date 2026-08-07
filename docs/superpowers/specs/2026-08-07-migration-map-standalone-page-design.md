@@ -81,7 +81,7 @@ A small page controller that:
   `state.migration` guard that made controls dead before first submit).
 - **URL params:** reads and writes `?group=<key>&month=<0-11>` via
   `history.replaceState` so the current view is always shareable. Invalid values
-  fall back to defaults.
+  are ignored and resolution continues through the precedence chain.
 - **Persistence:** saves group + month to `localStorage` under a new
   `birdtrip.migration` key; URL params take precedence over stored values.
 - **Share button:** copies the current URL to the clipboard.
@@ -189,4 +189,8 @@ There is no automated test suite (lint only). Verification:
 6. Precedence and bad input: a URL param overrides a differing localStorage
    value; corrupt localStorage and invalid params (`month=bad`, `month=99`,
    unknown group) fall through to defaults rather than clamping to January.
-7. Layout check at desktop and a narrow/mobile viewport for the new page.
+7. Leaflet-failure guard: load `migration.html` with `window.L` unavailable
+   (e.g. block the Leaflet script) — the group picker, timeline, Play, and
+   corridor cards still render and respond; no uncaught errors; only the map
+   region is empty.
+8. Layout check at desktop and a narrow/mobile viewport for the new page.
