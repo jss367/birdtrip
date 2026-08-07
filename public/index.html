@@ -36,7 +36,7 @@
           <i data-lucide="loader-circle"></i>
           Checking Setup
         </span>
-        <button type="button" id="settingsButton" class="icon-button" title="Search settings">
+        <button type="button" id="settingsButton" class="icon-button" title="Settings">
           <i data-lucide="settings"></i>
         </button>
       </div>
@@ -143,7 +143,19 @@
           </label>
         </section>
 
-        <section class="form-group" id="searchSettingsGroup" tabindex="-1">
+        <section class="form-group">
+          <div class="group-label">
+            <i data-lucide="feather"></i>
+            <span>Target Species</span>
+          </div>
+          <div class="target-field">
+            <textarea id="targets" name="targets" hidden></textarea>
+            <div id="targetRows" class="target-rows"></div>
+            <small class="field-hint">Press Enter to add another species, or paste a list.</small>
+          </div>
+        </section>
+
+        <section class="form-group">
           <div class="group-label">
             <i data-lucide="sliders-horizontal"></i>
             <span>Search Settings</span>
@@ -178,62 +190,6 @@
               </div>
             </label>
           </div>
-        </section>
-
-        <section class="form-group">
-          <div class="group-label">
-            <i data-lucide="feather"></i>
-            <span>Birding Data</span>
-          </div>
-          <div id="ebirdAccessStatus" class="ebird-access-status is-checking" role="status" aria-live="polite" aria-atomic="true">
-            <i data-lucide="loader-circle"></i>
-            <div>
-              <strong>Checking eBird access</strong>
-              <small>Confirming live bird data availability.</small>
-            </div>
-          </div>
-
-          <div class="target-field">
-            <span>Target species</span>
-            <textarea id="targets" name="targets" hidden></textarea>
-            <div id="targetRows" class="target-rows"></div>
-            <small class="field-hint">Press Enter to add another species, or paste a list.</small>
-          </div>
-          <div class="life-list-import">
-            <div>
-              <span>Life list</span>
-              <small id="lifeListStatus" class="field-hint">Import an eBird or iNaturalist CSV to boost likely lifers.</small>
-            </div>
-            <div class="file-actions">
-              <label class="file-button">
-                <input id="lifeListInput" name="lifeListInput" type="file" accept=".csv,.tsv,.txt,text/csv,text/tab-separated-values">
-                <i data-lucide="upload"></i>
-                Import
-              </label>
-              <button type="button" id="clearLifeListButton" title="Clear imported life list" aria-label="Clear imported life list">
-                <i data-lucide="trash-2"></i>
-              </button>
-            </div>
-          </div>
-
-          <details id="ebirdTokenDetails" class="advanced-settings">
-            <summary>
-              <span>Personal eBird API token</span>
-              <small>Optional</small>
-              <i data-lucide="chevron-down"></i>
-            </summary>
-            <div class="advanced-settings-content">
-              <label>
-                <span>Personal eBird API token</span>
-                <input id="apiToken" name="apiToken" type="password" autocomplete="off" placeholder="Paste your eBird API token">
-                <small class="field-hint">Overrides Birdtrip's shared eBird access for searches from this browser.</small>
-              </label>
-              <label class="check-line">
-                <input id="rememberToken" name="rememberToken" type="checkbox">
-                <span>Remember token in this browser</span>
-              </label>
-            </div>
-          </details>
         </section>
 
         <div class="actions">
@@ -483,6 +439,47 @@
       </aside>
     </main>
   </div>
+
+  <dialog id="settingsModal" class="settings-modal" aria-labelledby="settingsModalTitle">
+    <div class="settings-modal-header">
+      <h2 id="settingsModalTitle">Settings</h2>
+      <button type="button" id="closeSettingsButton" class="icon-button" title="Close settings" aria-label="Close settings">
+        <i data-lucide="x"></i>
+      </button>
+    </div>
+    <div id="ebirdAccessStatus" class="ebird-access-status is-checking" role="status" aria-live="polite" aria-atomic="true">
+      <i data-lucide="loader-circle"></i>
+      <div>
+        <strong>Checking eBird access</strong>
+        <small>Confirming live bird data availability.</small>
+      </div>
+    </div>
+    <div class="life-list-import">
+      <div>
+        <span>Life list</span>
+        <small id="lifeListStatus" class="field-hint">Import an eBird or iNaturalist CSV to boost likely lifers.</small>
+      </div>
+      <div class="file-actions">
+        <label class="file-button">
+          <input id="lifeListInput" name="lifeListInput" type="file" accept=".csv,.tsv,.txt,text/csv,text/tab-separated-values">
+          <i data-lucide="upload"></i>
+          Import
+        </label>
+        <button type="button" id="clearLifeListButton" title="Clear imported life list" aria-label="Clear imported life list">
+          <i data-lucide="trash-2"></i>
+        </button>
+      </div>
+    </div>
+    <label>
+      <span>Personal eBird API token</span>
+      <input id="apiToken" name="apiToken" type="password" autocomplete="off" placeholder="Paste your eBird API token">
+      <small class="field-hint">Optional. Overrides Birdtrip's shared eBird access for searches from this browser.</small>
+    </label>
+    <label class="check-line">
+      <input id="rememberToken" name="rememberToken" type="checkbox">
+      <span>Remember token in this browser</span>
+    </label>
+  </dialog>
 
   <section id="report" class="report" aria-hidden="true"></section>
 

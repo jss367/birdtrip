@@ -25,7 +25,6 @@ const state = {
   ebirdAccessIssue: null,
   provider: "osm",
   userSelectedProvider: false,
-  settingsFlashTimer: null,
   lifeList: {
     source: "",
     fileName: "",
@@ -52,7 +51,8 @@ const els = {
   shareTripButton: document.querySelector("#shareTripButton"),
   downloadReportButton: document.querySelector("#downloadReportButton"),
   settingsButton: document.querySelector("#settingsButton"),
-  searchSettingsGroup: document.querySelector("#searchSettingsGroup"),
+  settingsModal: document.querySelector("#settingsModal"),
+  closeSettingsButton: document.querySelector("#closeSettingsButton"),
   setupStatus: document.querySelector("#setupStatus"),
   form: document.querySelector("#searchForm"),
   modeButtons: document.querySelectorAll(".mode-switch button[data-mode]"),
@@ -86,7 +86,6 @@ const els = {
   radiusKmLabel: document.querySelector("#radiusKmLabel"),
   maxStops: document.querySelector("#maxStops"),
   ebirdAccessStatus: document.querySelector("#ebirdAccessStatus"),
-  ebirdTokenDetails: document.querySelector("#ebirdTokenDetails"),
   apiToken: document.querySelector("#apiToken"),
   rememberToken: document.querySelector("#rememberToken"),
   targets: document.querySelector("#targets"),
@@ -193,8 +192,6 @@ function normalizeMode(mode) {
 const SAVED_TRIPS_KEY = "birdtripSavedTrips";
 const CONFIG_WAIT_TIMEOUT_MS = 6000;
 const SHARE_URL_VERSION = "1";
-// Matches the settings-flash animation duration in styles.css.
-const SETTINGS_FLASH_MS = 1200;
 
 function setupMigrationController() {
   migrationController = window.BirdtripMigrationMap.createController({
@@ -288,7 +285,11 @@ function init() {
   els.maxDetour.addEventListener("input", updateInputSummaries);
   els.shareTripButton.addEventListener("click", shareCurrentTrip);
   els.downloadReportButton.addEventListener("click", downloadHtmlReport);
-  els.settingsButton.addEventListener("click", revealSearchSettings);
+  els.settingsButton.addEventListener("click", () => openSettingsModal());
+  els.closeSettingsButton.addEventListener("click", () => els.settingsModal.close());
+  els.settingsModal.addEventListener("click", (event) => {
+    if (event.target === els.settingsModal) els.settingsModal.close();
+  });
   els.printButton.addEventListener("click", () => {
     renderReport();
     window.print();
@@ -326,28 +327,9 @@ function init() {
   if (window.lucide) window.lucide.createIcons();
 }
 
-// The header gear points at the whole Search Settings group rather than one field:
-// "Max added" is hidden outside route mode, so aiming at it made the gear a no-op
-// in area, species, and migration mode.
-function revealSearchSettings() {
-  const group = els.searchSettingsGroup;
-  // Chromium honors an explicit "smooth" request even under prefers-reduced-motion,
-  // so the jump has to be opted out of here rather than left to the media query.
-  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  group.scrollIntoView({ block: "start", behavior: reduceMotion ? "auto" : "smooth" });
-
-  // Hold the highlight on a timer instead of animationend: reduced motion has no
-  // animation to end, and a timer restarts cleanly on repeat clicks.
-  window.clearTimeout(state.settingsFlashTimer);
-  group.classList.remove("is-flashed");
-  void group.offsetWidth;
-  group.classList.add("is-flashed");
-  state.settingsFlashTimer = window.setTimeout(() => group.classList.remove("is-flashed"), SETTINGS_FLASH_MS);
-
-  const firstField = [...group.querySelectorAll("input, select, textarea")].find(
-    (field) => !field.disabled && field.offsetParent !== null
-  );
-  (firstField || group).focus({ preventScroll: true });
+function openSettingsModal(options = {}) {
+  if (!els.settingsModal.open) els.settingsModal.showModal();
+  if (options.focusToken) els.apiToken.focus();
 }
 
 async function initializeStartupMap(preferredProvider, sharedSearch) {
@@ -1341,10 +1323,10 @@ async function runRouteSearch(params) {
   updateRouteSummary(route);
 
   if (!shouldAttemptEbirdSearch()) {
-    setStatus("eBird access needed", "Route loaded. Add a personal eBird token under Birding Data to rank live birding stops.");
+    setStatus("eBird access needed", "Route loaded. Add a personal eBird token in Settings (the gear icon) to rank live birding stops.");
     els.resultContext.textContent = "Route loaded, but live bird data needs eBird access.";
     els.resultsList.className = "results-list empty";
-    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add a personal eBird token under Birding Data to rank live birding stops.</p></div>';
+    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add a personal eBird token in Settings (the gear icon) to rank live birding stops.</p></div>';
     if (window.lucide) window.lucide.createIcons();
     return;
   }
@@ -1398,10 +1380,10 @@ async function runAreaSearch(params) {
   updateAreaSummary(params.radiusKm);
 
   if (!shouldAttemptEbirdSearch()) {
-    setStatus("eBird access needed", "Area loaded. Add a personal eBird token under Birding Data to rank live birding stops.");
+    setStatus("eBird access needed", "Area loaded. Add a personal eBird token in Settings (the gear icon) to rank live birding stops.");
     els.resultContext.textContent = "Area loaded, but live bird data needs eBird access.";
     els.resultsList.className = "results-list empty";
-    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add a personal eBird token under Birding Data to rank live birding stops.</p></div>';
+    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add a personal eBird token in Settings (the gear icon) to rank live birding stops.</p></div>';
     if (window.lucide) window.lucide.createIcons();
     return;
   }
@@ -1461,10 +1443,10 @@ async function runSpeciesSearch(params) {
   updateAreaSummary(params.radiusKm);
 
   if (!shouldAttemptEbirdSearch()) {
-    setStatus("eBird access needed", "Location loaded. Add a personal eBird token under Birding Data to map species sightings.");
+    setStatus("eBird access needed", "Location loaded. Add a personal eBird token in Settings (the gear icon) to map species sightings.");
     els.resultContext.textContent = "Location loaded, but live bird data needs eBird access.";
     els.resultsList.className = "results-list empty";
-    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add a personal eBird token under Birding Data to map species sightings.</p></div>';
+    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add a personal eBird token in Settings (the gear icon) to map species sightings.</p></div>';
     if (window.lucide) window.lucide.createIcons();
     return;
   }
@@ -1913,9 +1895,6 @@ function updateSetupStatus() {
       </div>
     `;
   }
-  if (els.ebirdTokenDetails && !isChecking && (!hasAccess || activeAccessIssue)) {
-    els.ebirdTokenDetails.open = true;
-  }
   renderInsights();
   if (window.lucide) window.lucide.createIcons();
 }
@@ -1949,8 +1928,8 @@ function clearPersonalEbirdAccessIssue() {
 
 function revealEbirdTokenForError(status, source) {
   state.ebirdAccessIssue = { status, source };
-  if (els.ebirdTokenDetails) els.ebirdTokenDetails.open = true;
   updateSetupStatus();
+  openSettingsModal({ focusToken: true });
 }
 
 function hasEbirdAccess() {
@@ -4707,7 +4686,7 @@ function renderInsights() {
     } else {
       els.sightingSummary.textContent = canAttemptSearch
         ? "Recent sightings appear after you map a species."
-        : "Add a personal eBird token under Birding Data to map recent species sightings.";
+        : "Add a personal eBird token in Settings (the gear icon) to map recent species sightings.";
     }
     return;
   }
@@ -4749,7 +4728,7 @@ function renderInsights() {
   } else {
     const searchedWithoutToken = state.mode === "area" ? state.areaCenter && !canAttemptSearch : state.route && !canAttemptSearch;
     els.sightingSummary.textContent = searchedWithoutToken
-      ? `${state.mode === "area" ? "Area" : "Route"} is ready. Add a personal eBird token under Birding Data to load recent sightings and notable reports.`
+      ? `${state.mode === "area" ? "Area" : "Route"} is ready. Add a personal eBird token in Settings (the gear icon) to load recent sightings and notable reports.`
       : "Recent eBird activity and notable reports appear after search.";
   }
 }
