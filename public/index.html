@@ -32,18 +32,6 @@
         </div>
       </div>
       <div class="header-actions">
-        <button type="button" id="quickStartButton" class="ghost-button">
-          <i data-lucide="sparkles"></i>
-          Quick Start
-        </button>
-        <button type="button" id="shareTripButton" class="ghost-button">
-          <i data-lucide="share-2"></i>
-          Share
-        </button>
-        <button type="button" id="downloadReportButton" class="ghost-button">
-          <i data-lucide="file-down"></i>
-          Download HTML
-        </button>
         <span id="setupStatus" class="setup-badge setup-checking" role="status" aria-live="polite">
           <i data-lucide="loader-circle"></i>
           Checking Setup
@@ -367,6 +355,16 @@
             <span><b class="tier lifer"></b>Likely lifer</span>
             <span><b class="tier low"></b>Target match</span>
           </div>
+          <div class="results-actions" id="resultsActions" hidden>
+            <button type="button" id="shareTripButton" class="ghost-button">
+              <i data-lucide="share-2"></i>
+              Share
+            </button>
+            <button type="button" id="downloadReportButton" class="ghost-button">
+              <i data-lucide="file-down"></i>
+              Download HTML
+            </button>
+          </div>
         </div>
         <div class="insight-strip">
           <section class="insight-panel">
@@ -501,45 +499,6 @@
       </div>
     </article>
   </template>
-
-  <div id="quickStartModal" class="modal-backdrop" hidden>
-    <section class="quick-start-modal" role="dialog" aria-modal="true" aria-labelledby="quickStartTitle">
-      <button type="button" id="closeQuickStart" class="icon-button close-modal" title="Close">
-        <i data-lucide="x"></i>
-      </button>
-      <div class="modal-kicker">
-        <i data-lucide="sparkles"></i>
-        Quick Start
-      </div>
-      <h2 id="quickStartTitle">Plan a birding route in minutes</h2>
-      <div class="quick-steps">
-        <div>
-          <b>1</b>
-          <span>Add a route</span>
-          <p>Start with origin and destination. The sample route is ready for a fast trial.</p>
-        </div>
-        <div>
-          <b>2</b>
-          <span>Connect bird data</span>
-          <p>Paste an eBird token or use the server EBIRD_API_KEY for live recent sightings.</p>
-        </div>
-        <div>
-          <b>3</b>
-          <span>Choose targets</span>
-          <p>Targets improve the ranking by surfacing lifers and wanted species.</p>
-        </div>
-      </div>
-      <div class="modal-actions">
-        <button type="button" id="modalSampleButton" class="primary">
-          <i data-lucide="map-pinned"></i>
-          Use Sample Route
-        </button>
-        <button type="button" id="modalExploreButton">
-          Explore Without Setup
-        </button>
-      </div>
-    </section>
-  </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>

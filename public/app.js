@@ -46,7 +46,7 @@ const state = {
 };
 
 const els = {
-  quickStartButton: document.querySelector("#quickStartButton"),
+  resultsActions: document.querySelector("#resultsActions"),
   shareTripButton: document.querySelector("#shareTripButton"),
   downloadReportButton: document.querySelector("#downloadReportButton"),
   settingsButton: document.querySelector("#settingsButton"),
@@ -147,10 +147,6 @@ const els = {
   detailsPanel: document.querySelector("#detailsPanel"),
   detailsContent: document.querySelector("#detailsContent"),
   closeDetails: document.querySelector("#closeDetails"),
-  quickStartModal: document.querySelector("#quickStartModal"),
-  closeQuickStart: document.querySelector("#closeQuickStart"),
-  modalSampleButton: document.querySelector("#modalSampleButton"),
-  modalExploreButton: document.querySelector("#modalExploreButton"),
   submitLabel: document.querySelector("#submitLabel"),
   mapRegion: document.querySelector(".map-region"),
   mapAreaLegend: document.querySelector("#mapAreaLegend"),
@@ -279,32 +275,11 @@ function init() {
   els.lifeListInput.addEventListener("change", handleLifeListFile);
   els.clearLifeListButton.addEventListener("click", clearLifeList);
   els.maxDetour.addEventListener("input", updateInputSummaries);
-  els.quickStartButton.addEventListener("click", openQuickStart);
   els.shareTripButton.addEventListener("click", shareCurrentTrip);
   els.downloadReportButton.addEventListener("click", downloadHtmlReport);
   els.settingsButton.addEventListener("click", () => {
     els.maxDetour.scrollIntoView({ block: "center", behavior: "smooth" });
     els.maxDetour.focus();
-  });
-  els.closeQuickStart.addEventListener("click", closeQuickStart);
-  els.quickStartModal.addEventListener("click", (event) => {
-    if (event.target === els.quickStartModal) closeQuickStart();
-  });
-  els.modalSampleButton.addEventListener("click", () => {
-    useSampleRoute();
-    closeQuickStart();
-    els.origin.focus();
-  });
-  els.modalExploreButton.addEventListener("click", () => {
-    const needsToken = !shouldAttemptEbirdSearch();
-    setStatus(
-      needsToken ? "Explore without setup" : "Ready",
-      needsToken
-        ? "Enter a route to preview distance and drive time. Add an eBird token when you want live bird rankings."
-        : "Enter a route to load recent sightings and notable reports."
-    );
-    closeQuickStart();
-    els.origin.focus();
   });
   els.printButton.addEventListener("click", () => {
     renderReport();
@@ -1831,15 +1806,8 @@ async function copyTextToClipboard(text) {
   if (!copied) throw new Error("Clipboard copy failed");
 }
 
-function openQuickStart() {
-  els.quickStartModal.hidden = false;
-  if (window.lucide) window.lucide.createIcons();
-  els.closeQuickStart.focus();
-}
-
-function closeQuickStart() {
-  els.quickStartModal.hidden = true;
-  els.quickStartButton.focus();
+function updateResultsActions() {
+  els.resultsActions.hidden = !hasReportableSearch();
 }
 
 function updateSetupStatus() {
@@ -2162,12 +2130,9 @@ function clearSearchArtifacts() {
 function setBusy(isBusy) {
   const controls = [
     ...els.form.querySelectorAll("button, input, select, textarea"),
-    els.quickStartButton,
     els.shareTripButton,
     els.downloadReportButton,
     els.settingsButton,
-    els.modalSampleButton,
-    els.modalExploreButton,
     els.tripName,
     els.savedTripSelect,
     els.saveTripButton,
@@ -2184,7 +2149,10 @@ function setBusy(isBusy) {
     }
     control.disabled = isBusy;
   });
-  if (!isBusy) updateSavedTripControls();
+  if (!isBusy) {
+    updateSavedTripControls();
+    updateResultsActions();
+  }
 }
 
 function setStatus(title, message) {
@@ -4538,6 +4506,7 @@ function observationAliases(obs) {
 }
 
 function renderInsights() {
+  updateResultsActions();
   const liveDetour = clamp(Number(els.maxDetour.value || 60), 0, 240);
   const liveTargets = parseTargetsInput();
   const canAttemptSearch = shouldAttemptEbirdSearch();
