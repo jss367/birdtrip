@@ -284,17 +284,6 @@
       const layer = this.layer;
       if (!layer) return;
       const els = this.els;
-      if (els.resultsTitle) els.resultsTitle.textContent = "Migration Map";
-      if (els.resultLegend) els.resultLegend.hidden = true;
-      if (els.itineraryBuilder) els.itineraryBuilder.hidden = true;
-      if (els.comparisonPanel) els.comparisonPanel.hidden = true;
-      if (els.routeDistance) els.routeDistance.textContent = String(layer.corridors.length);
-      if (els.hotspotCount) els.hotspotCount.textContent = `${layer.corridors[0]?.intensity || 0}%`;
-      if (els.notableCount) els.notableCount.textContent = directionShort(layer.month.direction);
-      if (els.candidateCount) els.candidateCount.textContent = String(layer.corridors.length);
-      if (els.liferCount) els.liferCount.textContent = "-";
-      if (els.targetCount) els.targetCount.textContent = layer.groupKey === "all" ? "6" : "1";
-      if (els.maxAdded) els.maxAdded.textContent = layer.month.label;
       if (els.resultContext) {
         els.resultContext.textContent = `${layer.group.label}; ${layer.month.name}; ${layer.month.phase.toLowerCase()}.`;
       }
@@ -312,7 +301,7 @@
         </section>
         <section class="migration-note">
           <i data-lucide="info"></i>
-          <p>${escapeHtml(layer.group.focus)} This annual timeline shows modeled macro patterns for the United States; it is not live radar and does not identify individual birds.</p>
+          <p>${escapeHtml(layer.group.focus)} This annual timeline shows illustrative generalized patterns for the United States; intensity values are relative, synthetic indicators, not measurements. It is not live radar and does not identify individual birds.</p>
         </section>
       `;
 
@@ -431,13 +420,6 @@
     return "circle-dot";
   }
 
-  function directionShort(direction) {
-    if (direction.includes("North")) return "N";
-    if (direction.includes("South")) return "S";
-    if (direction.includes("Breeding")) return "B";
-    return "W";
-  }
-
   function popup(corridor) {
     return `<strong>${escapeHtml(corridor.name)}</strong><br>${escapeHtml(corridor.direction)}; ${corridor.intensity}% relative intensity<br>${escapeHtml(corridor.summary)}`;
   }
@@ -550,7 +532,7 @@
         ${param("Corridors shown", migration.corridors.length)}
       </dl>
       <h2>Interpretation</h2>
-      <p>${escapeHtml(migration.group.description)} ${escapeHtml(migration.group.focus)} This is a modeled macro visualization, not live radar or species-level tracking.</p>
+      <p>${escapeHtml(migration.group.description)} ${escapeHtml(migration.group.focus)} This is an illustrative generalized visualization; intensity values are relative, synthetic indicators, not measurements. It is not live radar or species-level tracking.</p>
       ${corridorsBlock}
     `;
   }
