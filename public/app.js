@@ -3560,10 +3560,11 @@ async function addNotableObservations(candidates, params) {
 async function addAreaNotableObservations(candidates, params) {
   const center = state.areaCenter;
   setStatus("Adding notable birds", "Checking recent notable reports across the area.");
+  const feedDistKm = Math.min(params.radiusKm + 10, 50);
   let feed = [];
   try {
     feed = await apiJson(
-      `/api/ebird/notable?lat=${center.lat}&lng=${center.lng}&dist=${Math.min(params.radiusKm + 10, 50)}&back=${params.recentDays}&maxResults=500`,
+      `/api/ebird/notable?lat=${center.lat}&lng=${center.lng}&dist=${feedDistKm}&back=${params.recentDays}&maxResults=500`,
       { token: params.token }
     );
   } catch {
@@ -3571,8 +3572,30 @@ async function addAreaNotableObservations(candidates, params) {
   }
   const valid = (Array.isArray(feed) ? feed : []).filter((obs) => Number.isFinite(obs.lat) && Number.isFinite(obs.lng));
   const notableRadiusKm = Math.min(params.radiusKm, 10);
+  const uncovered = [];
   for (const candidate of candidates) {
-    candidate.notable = valid.filter((obs) => haversineKm(candidate, obs) <= notableRadiusKm);
+    if (haversineKm(center, candidate) + notableRadiusKm > feedDistKm) {
+      uncovered.push(candidate);
+    } else {
+      candidate.notable = valid.filter((obs) => haversineKm(candidate, obs) <= notableRadiusKm);
+    }
+  }
+  let failed = 0;
+  for (let i = 0; i < uncovered.length; i += 1) {
+    const candidate = uncovered[i];
+    setStatus("Adding notable birds", `Checking notable reports near the area edge ${i + 1} of ${uncovered.length}.`);
+    try {
+      candidate.notable = await apiJson(
+        `/api/ebird/notable?lat=${candidate.lat}&lng=${candidate.lng}&dist=${notableRadiusKm}&back=${params.recentDays}&maxResults=100`,
+        { token: params.token }
+      );
+    } catch {
+      candidate.notable = [];
+      failed += 1;
+    }
+  }
+  if (failed) {
+    addWarning(`${failed} of ${uncovered.length} notable-report lookups failed; notable counts may be understated.`);
   }
 }
 
