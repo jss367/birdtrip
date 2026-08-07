@@ -35,7 +35,8 @@ Decision: move the Migration Map to its own page on the same site.
 ## Non-goals
 
 - No new migration features or data changes; corridor data and visuals carry over
-  as-is.
+  as-is. (Descriptive copy about the data is updated — see "Data provenance
+  wording" — but the data and rendering are not.)
 - No Google Maps support on the new page (Leaflet/OSM only).
 - No visual redesign of the corridor rendering, timeline bar, or corridor cards.
 
@@ -96,10 +97,22 @@ the new page's results pane includes an equivalent subtitle element. The
 overview/note/corridor-card rendering, month buttons,
 playback, and `buildLayer` logic are unchanged.
 
+**Data provenance wording:** the corridor data is hand-authored, not derived from
+a documented model, and a standalone page lends the visualization more apparent
+authority. The note block and the HTML report replace "modeled macro patterns"
+with "illustrative generalized patterns", and state that intensity values are
+relative, synthetic indicators — not measurements. No other copy changes.
+
 ### 4. Main app cleanup: `index.html` + `app.js`
 
 - The Migration entry in the mode switch stays in the same visual position but
-  becomes an `<a href="./migration.html">` styled like the sibling mode buttons.
+  becomes an `<a href="./migration.html">`. The mode-switch CSS currently targets
+  only `.mode-switch button` (base, `.is-active`, `:disabled`, and two responsive
+  blocks), so a shared class (e.g. `.mode-switch-item`) is introduced and applied
+  to both the buttons and the link, with all selectors updated; the link gets the
+  same hover/focus states. The group's `aria-label` changes from "Search mode"
+  (inaccurate once it contains a navigation link) to "Birdtrip tools", and the
+  link needs no external-page affordance — it is plain same-site navigation.
 - Removed from `index.html`: the migration controls form group and the migration
   timeline bar; the `migration-map.js` script tag.
 - Removed from `app.js`: the `migration` mode from `normalizeMode`, all
@@ -113,13 +126,19 @@ playback, and `buildLayer` logic are unchanged.
 ### 5. Legacy share-link redirect
 
 `app.js` currently parses `?bt=1&mode=migration&migrationGroup=…&migrationMonth=…`
-(plus legacy `migrationSeason`/`migrationWeek`). On load, if a shared URL resolves
-to migration mode, the main page redirects
-(`location.replace`) to `migration.html?group=<group>&month=<month>`, mapping
-legacy season/week to a month exactly as `cleanSharedMigrationMonth` does today.
-If the shared URL carries no resolvable month, the `month` param is omitted and
-the new page uses its default. The month-mapping helper moves out of the
-migration-mode code path so it survives the cleanup.
+(plus legacy `migrationSeason`/`migrationWeek`). The redirect check runs as the
+**first statement of `init()`**, before `readSharedSearchFromUrl`,
+`restorePreferences`, `normalizeMode`, controller setup, and map initialization —
+the current parse path calls `normalizeMode` and
+`window.BirdtripMigrationMap.isGroup`, so running it first would either coerce
+migration links to route mode or reference a global the main page no longer
+loads. The redirect helper is self-contained: it uses a small local whitelist of
+the six group keys and a local copy of the season/week→month mapping from
+`cleanSharedMigrationMonth` (that logic moves out of the shared-search parser,
+which no longer handles migration). If the URL is a migration share link, the
+page redirects via `location.replace` to `migration.html?group=<group>&month=<month>`;
+if no month is resolvable, the `month` param is omitted and the new page uses
+its default.
 
 ### 6. Housekeeping
 
@@ -130,13 +149,21 @@ migration-mode code path so it survives the cleanup.
 
 ## Error handling
 
-- Invalid/missing URL params and corrupt localStorage values fall back to
-  defaults (April, all migrants) — same clamping the module already does.
+- **Input validation rule (exact):** a `month` is accepted only if it is an
+  integer string 0–11; a `group` only if it is one of the six known keys. An
+  invalid value causes that *source* to be ignored (not clamped — note the
+  existing `clamp` turns `NaN` into January, which is not the desired fallback),
+  falling through the precedence chain: URL param → localStorage → defaults
+  (April, all migrants). Corrupt localStorage JSON is treated the same as
+  absent.
 - Clipboard write failure on Share falls back to showing the URL in a prompt
   (same behavior as the main app's share fallback, if present; otherwise a
   minimal inline fallback).
-- Leaflet CDN failure: page shows the results pane content; no special handling
-  beyond what the main app does today.
+- **Leaflet CDN failure:** map initialization is guarded (`window.L` check). If
+  Leaflet is absent, the bootstrap skips map creation and passes a null map
+  adapter — the controller already no-ops its map rendering when the adapter is
+  null (`renderMap` early-returns), so the group picker, timeline, and corridor
+  cards still render and stay interactive; only the map itself is empty.
 
 ## Testing / verification
 
@@ -147,8 +174,15 @@ There is no automated test suite (lint only). Verification:
    immediately with April/all defaults.
 3. Exercise group change, month scrub, Play, corridor card click (map fly-to +
    selection highlight), Share, Download HTML.
-4. Main app: migration button navigates to the new page; route/area/species
-   modes unaffected; no console errors referencing removed migration elements.
-5. Legacy link check: `/?bt=1&mode=migration&migrationGroup=warblers&migrationMonth=8`
+4. Main app: migration link navigates to the new page and is styled/focusable
+   like the sibling mode buttons; route/area/species modes unaffected; no
+   console errors referencing removed migration elements or the absent
+   `BirdtripMigrationMap` global.
+5. Legacy link checks: `/?bt=1&mode=migration&migrationGroup=warblers&migrationMonth=8`
    redirects to `migration.html?group=warblers&month=8`; a `migrationSeason=fall`
-   legacy URL maps to the expected month.
+   legacy URL maps to the expected month; a migration share link with no month
+   redirects without a `month` param.
+6. Precedence and bad input: a URL param overrides a differing localStorage
+   value; corrupt localStorage and invalid params (`month=bad`, `month=99`,
+   unknown group) fall through to defaults rather than clamping to January.
+7. Layout check at desktop and a narrow/mobile viewport for the new page.
