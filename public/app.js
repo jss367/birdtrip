@@ -1397,7 +1397,8 @@ async function runAreaSearch(params) {
     { token: params.token }
   );
   const rankedHotspots = rankAreaHotspots(hotspots, center, params);
-  const observationsBySample = await fetchRecentForHotspots(rankedHotspots, samples[0], params);
+  const targetHotspots = await rescueTargetHotspots(hotspots, rankedHotspots, center, params);
+  const observationsBySample = await fetchRecentForHotspots(rankedHotspots.concat(targetHotspots), samples[0], params);
   const candidates = buildCandidates(observationsBySample, samples, params);
 
   if (!candidates.length) {
@@ -3301,6 +3302,46 @@ function hotspotFetchPriority(hotspot, params) {
     : 0;
   const proximity = Math.max(0, 1 - hotspot.distanceKm / Math.max(params.radiusKm, 1));
   return richness * 0.7 + proximity * 0.3;
+}
+
+async function rescueTargetHotspots(hotspots, ranked, center, params) {
+  if (!params.targets.length || !Array.isArray(hotspots)) return [];
+  const rankedIds = new Set(ranked.map((hotspot) => hotspot.locId));
+  const droppedByLocId = new Map();
+  for (const hotspot of hotspots) {
+    if (!hotspot.locId || !Number.isFinite(hotspot.lat) || !Number.isFinite(hotspot.lng)) continue;
+    if (rankedIds.has(hotspot.locId) || droppedByLocId.has(hotspot.locId)) continue;
+    droppedByLocId.set(hotspot.locId, hotspot);
+  }
+  if (!droppedByLocId.size) return [];
+
+  const rescued = new Map();
+  let failed = 0;
+  for (const target of params.targets) {
+    setStatus("Scanning area", `Checking locations reporting target species: ${target}.`);
+    try {
+      const payload = await apiJson(
+        `/api/ebird/species?lat=${center.lat}&lng=${center.lng}&dist=${params.radiusKm}&back=${params.recentDays}&maxResults=1000&name=${encodeURIComponent(target)}`,
+        { token: params.token }
+      );
+      for (const obs of payload.observations || []) {
+        const hotspot = obs.locId ? droppedByLocId.get(obs.locId) : null;
+        if (hotspot) rescued.set(hotspot.locId, hotspot);
+      }
+    } catch (error) {
+      if (error.status !== 404) failed += 1;
+    }
+  }
+  if (failed) {
+    addWarning(`${failed} target-species lookups failed; some target locations may be missing from the ranking.`);
+  }
+  const limit = 40;
+  if (rescued.size > limit) {
+    addWarning(`Target species were reported at ${rescued.size} additional hotspots; only the ${limit} closest were checked.`);
+  }
+  return Array.from(rescued.values())
+    .sort((a, b) => haversineKm(center, a) - haversineKm(center, b))
+    .slice(0, limit);
 }
 
 async function fetchRecentForHotspots(hotspots, sample, params) {
