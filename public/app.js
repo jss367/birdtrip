@@ -3537,15 +3537,23 @@ async function addNotableObservations(candidates, params) {
     await addAreaNotableObservations(candidates, params);
     return;
   }
+  await fetchNotablesPerCandidate(selectNotableCandidates(candidates, params), params);
+}
+
+function selectNotableCandidates(candidates, params) {
   const top = candidates.slice(0, Math.max(params.maxStops, 6));
   const topIds = new Set(top.map((candidate) => candidate.id));
   for (const candidate of candidates) {
     if (candidate.preserved && !topIds.has(candidate.id)) top.push(candidate);
   }
+  return top;
+}
+
+async function fetchNotablesPerCandidate(list, params) {
   let failed = 0;
-  for (let i = 0; i < top.length; i += 1) {
-    const candidate = top[i];
-    setStatus("Adding notable birds", `Checking notable reports ${i + 1} of ${top.length}.`);
+  for (let i = 0; i < list.length; i += 1) {
+    const candidate = list[i];
+    setStatus("Adding notable birds", `Checking notable reports ${i + 1} of ${list.length}.`);
     try {
       candidate.notable = await apiJson(
         `/api/ebird/notable?lat=${candidate.lat}&lng=${candidate.lng}&dist=${Math.min(params.radiusKm, 10)}&back=${params.recentDays}&maxResults=100`,
@@ -3557,7 +3565,7 @@ async function addNotableObservations(candidates, params) {
     }
   }
   if (failed) {
-    addWarning(`${failed} of ${top.length} notable-report lookups failed; notable counts may be understated.`);
+    addWarning(`${failed} of ${list.length} notable-report lookups failed; notable counts may be understated.`);
   }
 }
 
@@ -3573,7 +3581,8 @@ async function addAreaNotableObservations(candidates, params) {
       { token: params.token }
     );
   } catch {
-    addWarning("The notable-report lookup failed; notable counts may be understated.");
+    await fetchNotablesPerCandidate(selectNotableCandidates(candidates, params), params);
+    return;
   }
   if (Array.isArray(feed) && feed.length >= feedMaxResults) {
     addWarning("The area has more notable reports than eBird returns in one request; notable counts may be understated.");
@@ -3588,23 +3597,7 @@ async function addAreaNotableObservations(candidates, params) {
       candidate.notable = valid.filter((obs) => haversineKm(candidate, obs) <= notableRadiusKm);
     }
   }
-  let failed = 0;
-  for (let i = 0; i < uncovered.length; i += 1) {
-    const candidate = uncovered[i];
-    setStatus("Adding notable birds", `Checking notable reports near the area edge ${i + 1} of ${uncovered.length}.`);
-    try {
-      candidate.notable = await apiJson(
-        `/api/ebird/notable?lat=${candidate.lat}&lng=${candidate.lng}&dist=${notableRadiusKm}&back=${params.recentDays}&maxResults=100`,
-        { token: params.token }
-      );
-    } catch {
-      candidate.notable = [];
-      failed += 1;
-    }
-  }
-  if (failed) {
-    addWarning(`${failed} of ${uncovered.length} notable-report lookups failed; notable counts may be understated.`);
-  }
+  await fetchNotablesPerCandidate(uncovered, params);
 }
 
 function scoreCandidates(candidates, params) {
