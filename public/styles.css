@@ -185,7 +185,7 @@ textarea:disabled {
   background: var(--panel-soft);
 }
 
-.mode-switch button {
+.mode-switch .mode-switch-item {
   min-width: 0;
   min-height: 38px;
   border: 0;
@@ -200,7 +200,17 @@ textarea:disabled {
   font-weight: 850;
 }
 
-.mode-switch button.is-active {
+.mode-switch a.mode-switch-item {
+  text-decoration: none;
+  text-align: center;
+}
+
+.mode-switch a.mode-switch-item:focus-visible {
+  outline: 2px solid var(--accent, #10b981);
+  outline-offset: 1px;
+}
+
+.mode-switch .mode-switch-item.is-active {
   color: white;
   background: var(--accent);
   box-shadow: 0 8px 18px rgba(16, 185, 129, 0.25);
@@ -2791,14 +2801,14 @@ button.stop-chip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .mode-switch button {
+  .mode-switch .mode-switch-item {
     gap: 5px;
     padding: 0 6px;
     overflow: hidden;
     font-size: 0.76rem;
   }
 
-  .mode-switch button svg {
+  .mode-switch .mode-switch-item svg {
     flex: 0 0 auto;
   }
 
@@ -2926,7 +2936,7 @@ button.stop-chip {
     grid-template-columns: 1fr;
   }
 
-  .mode-switch button {
+  .mode-switch .mode-switch-item {
     justify-content: flex-start;
     padding: 0 18px;
     font-size: 0.82rem;
