@@ -231,6 +231,42 @@ textarea:disabled {
   padding: 13px;
 }
 
+/* The header gear jumps here, so leave room for the sticky header and flash
+   the panel — otherwise the jump is invisible when the group is already on screen. */
+#searchSettingsGroup {
+  scroll-margin-top: 88px;
+  outline: none;
+}
+
+/* The highlight is a plain class so it still shows with the animation switched
+   off; the animation just fades it out for everyone else. */
+#searchSettingsGroup.is-flashed {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.22);
+  animation: settings-flash 1.2s ease-out forwards;
+}
+
+@keyframes settings-flash {
+  0%,
+  55% {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.22);
+  }
+  100% {
+    border-color: var(--line);
+    background: rgba(255, 255, 255, 0.88);
+    box-shadow: var(--soft-shadow);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #searchSettingsGroup.is-flashed {
+    animation: none;
+  }
+}
+
 .group-label,
 .status-heading {
   display: flex;

@@ -25,6 +25,7 @@ const state = {
   ebirdAccessIssue: null,
   provider: "osm",
   userSelectedProvider: false,
+  settingsFlashTimer: null,
   lifeList: {
     source: "",
     fileName: "",
@@ -51,6 +52,7 @@ const els = {
   shareTripButton: document.querySelector("#shareTripButton"),
   downloadReportButton: document.querySelector("#downloadReportButton"),
   settingsButton: document.querySelector("#settingsButton"),
+  searchSettingsGroup: document.querySelector("#searchSettingsGroup"),
   setupStatus: document.querySelector("#setupStatus"),
   form: document.querySelector("#searchForm"),
   modeButtons: document.querySelectorAll(".mode-switch button[data-mode]"),
@@ -191,6 +193,8 @@ function normalizeMode(mode) {
 const SAVED_TRIPS_KEY = "birdtripSavedTrips";
 const CONFIG_WAIT_TIMEOUT_MS = 6000;
 const SHARE_URL_VERSION = "1";
+// Matches the settings-flash animation duration in styles.css.
+const SETTINGS_FLASH_MS = 1200;
 
 function setupMigrationController() {
   migrationController = window.BirdtripMigrationMap.createController({
@@ -284,10 +288,7 @@ function init() {
   els.maxDetour.addEventListener("input", updateInputSummaries);
   els.shareTripButton.addEventListener("click", shareCurrentTrip);
   els.downloadReportButton.addEventListener("click", downloadHtmlReport);
-  els.settingsButton.addEventListener("click", () => {
-    els.maxDetour.scrollIntoView({ block: "center", behavior: "smooth" });
-    els.maxDetour.focus();
-  });
+  els.settingsButton.addEventListener("click", revealSearchSettings);
   els.printButton.addEventListener("click", () => {
     renderReport();
     window.print();
@@ -323,6 +324,30 @@ function init() {
   renderItineraryBuilder();
   renderComparison();
   if (window.lucide) window.lucide.createIcons();
+}
+
+// The header gear points at the whole Search Settings group rather than one field:
+// "Max added" is hidden outside route mode, so aiming at it made the gear a no-op
+// in area, species, and migration mode.
+function revealSearchSettings() {
+  const group = els.searchSettingsGroup;
+  // Chromium honors an explicit "smooth" request even under prefers-reduced-motion,
+  // so the jump has to be opted out of here rather than left to the media query.
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  group.scrollIntoView({ block: "start", behavior: reduceMotion ? "auto" : "smooth" });
+
+  // Hold the highlight on a timer instead of animationend: reduced motion has no
+  // animation to end, and a timer restarts cleanly on repeat clicks.
+  window.clearTimeout(state.settingsFlashTimer);
+  group.classList.remove("is-flashed");
+  void group.offsetWidth;
+  group.classList.add("is-flashed");
+  state.settingsFlashTimer = window.setTimeout(() => group.classList.remove("is-flashed"), SETTINGS_FLASH_MS);
+
+  const firstField = [...group.querySelectorAll("input, select, textarea")].find(
+    (field) => !field.disabled && field.offsetParent !== null
+  );
+  (firstField || group).focus({ preventScroll: true });
 }
 
 async function initializeStartupMap(preferredProvider, sharedSearch) {
