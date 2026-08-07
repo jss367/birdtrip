@@ -810,6 +810,7 @@ function serializeCandidate(candidate) {
     addedMinutes: candidate.addedMinutes,
     addedMiles: candidate.addedMiles,
     scoreParts: candidate.scoreParts,
+    scoredWithLifeList: candidate.scoredWithLifeList,
     score: candidate.score
   };
 }
@@ -921,6 +922,9 @@ function hydrateCandidate(candidate) {
       targets: 0,
       practicality: 0
     },
+    // Left undefined for trips saved before this was recorded, so scoreScale can
+    // tell "scored without a life list" apart from "we don't know".
+    scoredWithLifeList: typeof candidate.scoredWithLifeList === "boolean" ? candidate.scoredWithLifeList : undefined,
     score: Number.isFinite(candidate.score) ? candidate.score : 0
   };
 }
@@ -3411,6 +3415,7 @@ function scoreCandidates(candidates, params) {
       : params.maxDetour === 0
         ? 20
         : Math.max(0, 20 * (1 - candidate.addedMinutes / Math.max(params.maxDetour, 1)));
+    candidate.scoredWithLifeList = Boolean(params.lifeList?.size);
     candidate.scoreParts = {
       species: speciesScore,
       activity: activityScore,
@@ -4257,11 +4262,17 @@ function scoreComponents(candidate, isArea) {
   }));
 }
 
-// Derived from the scores themselves, not the current life list: saved trips keep the
-// scores they were built with, so a life list imported or cleared since then would
-// otherwise put the pill on a scale its own numbers can exceed.
+// Read from the scoring context each candidate was scored in, not the current life
+// list: saved trips keep the scores they were built with, so a life list imported or
+// cleared since then would otherwise put the pill on a scale its own numbers can
+// exceed. Trips saved before that context was recorded fall back to the scores
+// themselves, which can understate the scale but can never contradict it.
 function scoreScale(candidates) {
-  const includesLifers = candidates.some((candidate) => Number(candidate.scoreParts?.lifers) > 0);
+  const includesLifers = candidates.some((candidate) => (
+    typeof candidate.scoredWithLifeList === "boolean"
+      ? candidate.scoredWithLifeList
+      : Number(candidate.scoreParts?.lifers) > 0
+  ));
   const max = SCORE_COMPONENTS.reduce(
     (sum, part) => sum + (part.key === "lifers" && !includesLifers ? 0 : part.max),
     0
