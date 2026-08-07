@@ -3561,14 +3561,18 @@ async function addAreaNotableObservations(candidates, params) {
   const center = state.areaCenter;
   setStatus("Adding notable birds", "Checking recent notable reports across the area.");
   const feedDistKm = Math.min(params.radiusKm + 10, 50);
+  const feedMaxResults = 10000;
   let feed = [];
   try {
     feed = await apiJson(
-      `/api/ebird/notable?lat=${center.lat}&lng=${center.lng}&dist=${feedDistKm}&back=${params.recentDays}&maxResults=500`,
+      `/api/ebird/notable?lat=${center.lat}&lng=${center.lng}&dist=${feedDistKm}&back=${params.recentDays}&maxResults=${feedMaxResults}`,
       { token: params.token }
     );
   } catch {
     addWarning("The notable-report lookup failed; notable counts may be understated.");
+  }
+  if (Array.isArray(feed) && feed.length >= feedMaxResults) {
+    addWarning("The area has more notable reports than eBird returns in one request; notable counts may be understated.");
   }
   const valid = (Array.isArray(feed) ? feed : []).filter((obs) => Number.isFinite(obs.lat) && Number.isFinite(obs.lng));
   const notableRadiusKm = Math.min(params.radiusKm, 10);
