@@ -52,43 +52,24 @@
       </header>
 
       <form id="searchForm" class="search-form">
-        <div class="mode-switch" role="group" aria-label="Search mode">
-          <button type="button" id="routeModeButton" class="is-active" data-mode="route" aria-pressed="true">
+        <div class="mode-switch" role="group" aria-label="Birdtrip tools">
+          <button type="button" id="routeModeButton" class="mode-switch-item is-active" data-mode="route" aria-pressed="true">
             <i data-lucide="route"></i>
             Route
           </button>
-          <button type="button" id="areaModeButton" data-mode="area" aria-pressed="false">
+          <button type="button" id="areaModeButton" class="mode-switch-item" data-mode="area" aria-pressed="false">
             <i data-lucide="map"></i>
             Area
           </button>
-          <button type="button" id="speciesModeButton" data-mode="species" aria-pressed="false">
+          <button type="button" id="speciesModeButton" class="mode-switch-item" data-mode="species" aria-pressed="false">
             <i data-lucide="bird"></i>
             Species
           </button>
-          <button type="button" id="migrationModeButton" data-mode="migration" aria-pressed="false">
+          <a id="migrationMapLink" class="mode-switch-item" href="./migration.html">
             <i data-lucide="waves"></i>
             Migration
-          </button>
+          </a>
         </div>
-
-        <section class="form-group migration-controls" id="migrationControls" hidden>
-          <div class="group-label">
-            <i data-lucide="waves"></i>
-            <span>Migration Map</span>
-          </div>
-          <label>
-            <span>Bird group</span>
-            <select id="migrationGroup" name="migrationGroup">
-              <option value="all">All nocturnal migrants</option>
-              <option value="warblers">Warblers and songbirds</option>
-              <option value="waterfowl">Waterfowl</option>
-              <option value="shorebirds">Shorebirds</option>
-              <option value="raptors">Raptors</option>
-              <option value="hummingbirds">Hummingbirds</option>
-            </select>
-          </label>
-          <small class="field-hint">Use the timeline at the bottom of the map to animate broad annual migration patterns from January through December.</small>
-        </section>
 
         <section class="form-group" id="locationGroup">
           <div class="group-label">
@@ -344,20 +325,6 @@
           <span><b class="legend-dot sighting"></b> Species sighting</span>
           <span><b class="legend-line route"></b> <span id="mapAreaLegend">Route corridor</span></span>
         </div>
-        <div id="migrationTimelineBar" class="migration-timeline-bar" hidden>
-          <button type="button" id="migrationPlayButton" class="migration-play-button">
-            <i data-lucide="play"></i>
-            <span>Play</span>
-          </button>
-          <div class="migration-timeline-main">
-            <div class="migration-timeline-status">
-              <b id="migrationMonthLabel">April</b>
-              <span id="migrationPhaseLabel">Peak spring movement</span>
-            </div>
-            <input id="migrationMonth" name="migrationMonth" type="range" min="0" max="11" value="3" aria-label="Migration month">
-            <div id="migrationTimeline" class="migration-months" aria-label="Migration months"></div>
-          </div>
-        </div>
       </section>
 
       <section class="results-region">
@@ -520,7 +487,6 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
-  <script src="./migration-map.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>
