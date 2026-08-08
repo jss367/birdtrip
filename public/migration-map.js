@@ -159,7 +159,7 @@
   function buildLayer(params = {}) {
     const monthValue = clamp(Number(params.migrationMonth ?? 3), 0, 11);
     const month = MONTHS[monthValue] || MONTHS[3];
-    const groupKey = GROUPS[params.migrationGroup] ? params.migrationGroup : "all";
+    const groupKey = isGroup(params.migrationGroup) ? params.migrationGroup : "all";
     const group = GROUPS[groupKey];
     const monthWeight = group.months[month.value] ?? month.base;
     const candidates = group.corridors
@@ -551,7 +551,7 @@
   }
 
   function isGroup(value) {
-    return Boolean(GROUPS[value]);
+    return Object.prototype.hasOwnProperty.call(GROUPS, value);
   }
 
   function groupCount(value) {
