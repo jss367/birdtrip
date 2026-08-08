@@ -3248,6 +3248,12 @@ body.migration-page {
   border-left: 1px solid var(--border, #e5e7eb);
 }
 
+/* The 400px pane fits one card column; the shared auto-fill minimums (320/340px)
+   would overflow the list's content box into its padding here. */
+.migration-results-region .results-list {
+  grid-template-columns: 1fr;
+}
+
 .migration-group-picker {
   display: flex;
   flex-direction: column;
