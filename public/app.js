@@ -1930,11 +1930,12 @@ function clearPersonalEbirdAccessIssue() {
 
 // A single search fans out into many eBird requests that can all fail with the
 // same auth error, so prompt with the modal once per run — repeat failures only
-// refresh the status copy.
-function revealEbirdTokenForError(status, source) {
+// refresh the status copy. Background lookups (taxonomy autocomplete) never
+// prompt and never consume the search's one prompt.
+function revealEbirdTokenForError(status, source, options = {}) {
   state.ebirdAccessIssue = { status, source };
   updateSetupStatus();
-  if (state.ebirdModalPrompted) return;
+  if (options.prompt === false || state.ebirdModalPrompted) return;
   state.ebirdModalPrompted = true;
   openSettingsModal({ focusToken: true });
 }
@@ -2285,7 +2286,7 @@ async function apiJson(url, options = {}) {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     if (String(url).startsWith("/api/ebird/") && [401, 403, 429].includes(response.status)) {
-      revealEbirdTokenForError(response.status, options.token ? "personal" : "shared");
+      revealEbirdTokenForError(response.status, options.token ? "personal" : "shared", { prompt: !options.background });
     }
     const base = payload.error || response.statusText || "Request failed";
     const detail = detailText(payload.details);
@@ -2712,7 +2713,7 @@ async function fetchSpeciesAutocomplete(query) {
   try {
     const matches = await apiJson(
       `/api/ebird/taxonomy/search?q=${encodeURIComponent(query)}`,
-      { signal: controller.signal, token: els.apiToken.value.trim() }
+      { signal: controller.signal, token: els.apiToken.value.trim(), background: true }
     );
     if (ctx.controller !== controller) return;
     ctx.lastQuery = query;
@@ -3108,7 +3109,7 @@ function targetTaxonomyLookup(name) {
   if (!targetRowsState.taxonomy.has(key)) {
     const promise = apiJson(
       `/api/ebird/taxonomy/search?q=${encodeURIComponent(name)}`,
-      { token: els.apiToken.value.trim() }
+      { token: els.apiToken.value.trim(), background: true }
     )
       .then((matches) => {
         if (!Array.isArray(matches)) {

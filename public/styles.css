@@ -3121,7 +3121,8 @@ button.stop-chip {
     background: white;
   }
 
-  .app-shell {
+  .app-shell,
+  .settings-modal {
     display: none !important;
   }
 
