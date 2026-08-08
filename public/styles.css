@@ -2920,14 +2920,33 @@ button.stop-chip {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
+  .stop-metrics .metric-help:nth-child(3)::after {
+    right: 6px;
+    left: auto;
+    transform: translateY(3px);
+  }
+
   .stop-metrics .metric-help:nth-child(4)::after {
     left: 6px;
     transform: translateY(3px);
   }
 
+  .stop-metrics .metric-help:nth-child(5)::after {
+    right: auto;
+    left: 50%;
+    transform: translate(-50%, 3px);
+  }
+
+  .stop-metrics .metric-help:nth-child(3):hover::after,
+  .stop-metrics .metric-help:nth-child(3):focus-visible::after,
   .stop-metrics .metric-help:nth-child(4):hover::after,
   .stop-metrics .metric-help:nth-child(4):focus-visible::after {
     transform: translateY(0);
+  }
+
+  .stop-metrics .metric-help:nth-child(5):hover::after,
+  .stop-metrics .metric-help:nth-child(5):focus-visible::after {
+    transform: translate(-50%, 0);
   }
 
   .map-glass {

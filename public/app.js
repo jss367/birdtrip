@@ -4172,6 +4172,7 @@ function renderResults() {
 
 function setMetricTooltip(element, text) {
   element.dataset.tooltip = text;
+  element.setAttribute("role", "group");
   element.setAttribute("aria-label", text);
   element.tabIndex = 0;
 }
