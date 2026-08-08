@@ -4094,20 +4094,48 @@ function renderResults() {
     node.querySelector(".stop-reason p").textContent = candidateReasonText(candidate, isArea);
     const detourWrap = node.querySelector(".metric-detour-wrap");
     const offrouteWrap = node.querySelector(".metric-offroute-wrap");
+    const speciesWrap = node.querySelector(".metric-species-wrap");
+    const notableWrap = node.querySelector(".metric-notable-wrap");
+    const targetsWrap = node.querySelector(".metric-targets-wrap");
+    const recentDays = state.params?.recentDays || 14;
     if (isArea) {
-      detourWrap.title = "Distance from search center";
-      offrouteWrap.title = "Search radius";
       node.querySelector(".metric-detour").textContent = `${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi`;
       node.querySelector(".metric-offroute").textContent = `${state.params.radiusKm} km`;
+      setMetricTooltip(
+        detourWrap,
+        `Distance from center: straight-line distance from the search center to this stop.`
+      );
+      setMetricTooltip(
+        offrouteWrap,
+        `Search radius: stops were searched for within ${state.params.radiusKm} km of the center.`
+      );
     } else {
-      detourWrap.title = "Added drive time";
-      offrouteWrap.title = "Approx. distance off route";
       node.querySelector(".metric-detour").textContent = `+${Math.round(candidate.addedMinutes)}m`;
       node.querySelector(".metric-offroute").textContent = `${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi`;
+      setMetricTooltip(
+        detourWrap,
+        `Added drive time: about ${Math.round(candidate.addedMinutes)} extra minutes for a route via this stop instead of the direct route.`
+      );
+      setMetricTooltip(
+        offrouteWrap,
+        `Distance off route: about ${formatMiles(kmToMiles(candidate.routeDistanceKm))} miles in a straight line from the nearest sampled point on your route.`
+      );
     }
     node.querySelector(".metric-species").textContent = candidate.species.size;
     node.querySelector(".metric-notable").textContent = uniqueNotableCount(candidate);
     node.querySelector(".metric-targets").textContent = candidate.targetMatches.length;
+    setMetricTooltip(
+      speciesWrap,
+      `Recent species: ${candidate.species.size} distinct ${pluralize("species", candidate.species.size)} reported at this stop in the last ${recentDays} ${pluralize("day", recentDays)}.`
+    );
+    setMetricTooltip(
+      notableWrap,
+      `Nearby notable species: ${uniqueNotableCount(candidate)} distinct ${pluralize("species", uniqueNotableCount(candidate))} from eBird's notable reports within ${Math.min(state.params.radiusKm, 10)} km in the last ${recentDays} ${pluralize("day", recentDays)}.`
+    );
+    setMetricTooltip(
+      targetsWrap,
+      `Target matches: ${candidate.targetMatches.length} ${pluralize("species", candidate.targetMatches.length)} from your target list reported at this stop in the last ${recentDays} ${pluralize("day", recentDays)}.`
+    );
     const links = candidateLinks(candidate);
     const pin = node.querySelector(".stop-pin");
     const compareButton = node.querySelector(".compare-toggle");
@@ -4140,6 +4168,12 @@ function renderResults() {
 
   renderComparison();
   if (window.lucide) window.lucide.createIcons();
+}
+
+function setMetricTooltip(element, text) {
+  element.dataset.tooltip = text;
+  element.setAttribute("aria-label", text);
+  element.tabIndex = 0;
 }
 
 function renderMarkers() {
