@@ -25,6 +25,7 @@ const state = {
   ebirdAccessIssue: null,
   provider: "osm",
   userSelectedProvider: false,
+  ebirdModalPrompted: false,
   lifeList: {
     source: "",
     fileName: "",
@@ -1228,6 +1229,7 @@ function clearResults() {
 async function runSearch(options = {}) {
   const { persistPreferences = true } = options;
   if (persistPreferences) savePreferences();
+  state.ebirdModalPrompted = false;
   setBusy(true);
 
   try {
@@ -1926,9 +1928,14 @@ function clearPersonalEbirdAccessIssue() {
   }
 }
 
+// A single search fans out into many eBird requests that can all fail with the
+// same auth error, so prompt with the modal once per run — repeat failures only
+// refresh the status copy.
 function revealEbirdTokenForError(status, source) {
   state.ebirdAccessIssue = { status, source };
   updateSetupStatus();
+  if (state.ebirdModalPrompted) return;
+  state.ebirdModalPrompted = true;
   openSettingsModal({ focusToken: true });
 }
 
