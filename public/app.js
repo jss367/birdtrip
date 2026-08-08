@@ -289,7 +289,13 @@ function init() {
   els.settingsButton.addEventListener("click", () => openSettingsModal());
   els.closeSettingsButton.addEventListener("click", () => els.settingsModal.close());
   els.settingsModal.addEventListener("click", (event) => {
-    if (event.target === els.settingsModal) els.settingsModal.close();
+    // Clicks on the dialog's own padding and grid gaps also target the dialog,
+    // so only treat clicks outside its rectangle as backdrop clicks.
+    if (event.target !== els.settingsModal) return;
+    const rect = els.settingsModal.getBoundingClientRect();
+    const insidePanel = event.clientX >= rect.left && event.clientX <= rect.right &&
+      event.clientY >= rect.top && event.clientY <= rect.bottom;
+    if (!insidePanel) els.settingsModal.close();
   });
   els.printButton.addEventListener("click", () => {
     renderReport();
