@@ -85,7 +85,8 @@ function throwClientInputError(message) {
 }
 
 function boundedNumber(value, fallback, min, max) {
-  const parsed = Number(value ?? fallback);
+  const raw = typeof value === "string" && value.trim() === "" ? fallback : value ?? fallback;
+  const parsed = Number(raw);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.max(min, Math.min(max, parsed));
 }
@@ -554,6 +555,47 @@ async function handleApi(req, res, url) {
         endpoint.searchParams.set("includeProvisional", "true");
         endpoint.searchParams.set("sort", "date");
       }
+
+      const data = await fetchJson(endpoint.toString(), { "x-ebirdapitoken": String(token) });
+      return sendJson(res, 200, data);
+    }
+
+    if (url.pathname === "/api/ebird/hotspots") {
+      const token = req.headers["x-ebird-api-token"] || process.env.EBIRD_API_KEY;
+      if (!token) return sendError(res, 401, "An eBird API token is required");
+
+      const lat = boundedNumber(url.searchParams.get("lat"), NaN, -90, 90);
+      const lng = boundedNumber(url.searchParams.get("lng"), NaN, -180, 180);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        return sendError(res, 400, "lat and lng are required");
+      }
+
+      const dist = boundedNumber(url.searchParams.get("dist"), 25, 1, 50);
+      const back = boundedNumber(url.searchParams.get("back"), 14, 1, 30);
+      const endpoint = new URL("https://api.ebird.org/v2/ref/hotspot/geo");
+      endpoint.searchParams.set("lat", String(lat));
+      endpoint.searchParams.set("lng", String(lng));
+      endpoint.searchParams.set("dist", String(dist));
+      endpoint.searchParams.set("back", String(back));
+      endpoint.searchParams.set("fmt", "json");
+
+      const data = await fetchJson(endpoint.toString(), { "x-ebirdapitoken": String(token) });
+      return sendJson(res, 200, data);
+    }
+
+    if (url.pathname === "/api/ebird/hotspot-recent") {
+      const token = req.headers["x-ebird-api-token"] || process.env.EBIRD_API_KEY;
+      if (!token) return sendError(res, 401, "An eBird API token is required");
+
+      const locId = String(url.searchParams.get("locId") || "");
+      if (!/^L\d+$/.test(locId)) {
+        return sendError(res, 400, "locId must be an eBird location code like L123456");
+      }
+
+      const back = boundedNumber(url.searchParams.get("back"), 14, 1, 30);
+      const endpoint = new URL(`https://api.ebird.org/v2/data/obs/${locId}/recent`);
+      endpoint.searchParams.set("back", String(back));
+      endpoint.searchParams.set("includeProvisional", "true");
 
       const data = await fetchJson(endpoint.toString(), { "x-ebirdapitoken": String(token) });
       return sendJson(res, 200, data);

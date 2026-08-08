@@ -1323,9 +1323,16 @@ async function runAreaSearch(params) {
     return;
   }
 
-  setStatus("Scanning area", "Requesting recent eBird observations near the selected location.");
+  setStatus("Scanning area", "Finding recently visited eBird hotspots near the selected location.");
   const samples = [{ lat: center.lat, lng: center.lng, index: 0 }];
-  const observationsBySample = await fetchRecentForSamples(samples, params);
+  const hotspots = await apiJson(
+    `/api/ebird/hotspots?lat=${center.lat}&lng=${center.lng}&dist=${params.radiusKm}&back=${params.recentDays}`,
+    { token: params.token }
+  );
+  const rankedHotspots = rankAreaHotspots(hotspots, center, params);
+  const targetHotspots = await rescueTargetHotspots(hotspots, rankedHotspots, center, params);
+  const liferHotspots = await rescueLiferHotspots(hotspots, rankedHotspots.concat(targetHotspots), center, params);
+  const observationsBySample = await fetchRecentForHotspots(rankedHotspots.concat(targetHotspots, liferHotspots), samples[0], params);
   const candidates = buildCandidates(observationsBySample, samples, params);
 
   if (!candidates.length) {
@@ -3253,6 +3260,142 @@ async function fetchRecentForSamples(samples, params) {
   return all;
 }
 
+function rankAreaHotspots(hotspots, center, params) {
+  if (!Array.isArray(hotspots)) return [];
+  const limit = clamp(params.maxStops * 3, 30, 40);
+  return hotspots
+    .filter((hotspot) => hotspot.locId && Number.isFinite(hotspot.lat) && Number.isFinite(hotspot.lng))
+    .map((hotspot) => ({ ...hotspot, distanceKm: haversineKm(center, hotspot) }))
+    .sort((a, b) => hotspotFetchPriority(b, params) - hotspotFetchPriority(a, params))
+    .slice(0, limit);
+}
+
+function hotspotFetchPriority(hotspot, params) {
+  const richness = Number.isFinite(hotspot.numSpeciesAllTime)
+    ? Math.min(hotspot.numSpeciesAllTime, 400) / 400
+    : 0;
+  const proximity = Math.max(0, 1 - hotspot.distanceKm / Math.max(params.radiusKm, 1));
+  return richness * 0.7 + proximity * 0.3;
+}
+
+async function rescueTargetHotspots(hotspots, ranked, center, params) {
+  if (!params.targets.length || !Array.isArray(hotspots)) return [];
+  const rankedIds = new Set(ranked.map((hotspot) => hotspot.locId));
+  const droppedByLocId = new Map();
+  for (const hotspot of hotspots) {
+    if (!hotspot.locId || !Number.isFinite(hotspot.lat) || !Number.isFinite(hotspot.lng)) continue;
+    if (rankedIds.has(hotspot.locId) || droppedByLocId.has(hotspot.locId)) continue;
+    droppedByLocId.set(hotspot.locId, hotspot);
+  }
+  if (!droppedByLocId.size) return [];
+
+  const rescued = new Map();
+  const feedMaxResults = 10000;
+  let failed = 0;
+  for (const target of params.targets) {
+    setStatus("Scanning area", `Checking locations reporting target species: ${target}.`);
+    try {
+      const payload = await apiJson(
+        `/api/ebird/species?lat=${center.lat}&lng=${center.lng}&dist=${params.radiusKm}&back=${params.recentDays}&maxResults=${feedMaxResults}&name=${encodeURIComponent(target)}`,
+        { token: params.token }
+      );
+      const observations = Array.isArray(payload.observations) ? payload.observations : [];
+      if (observations.length >= feedMaxResults) {
+        addWarning(`"${target}" has more reports than eBird returns in one request; some of its locations may be missing from the ranking.`);
+      }
+      for (const obs of observations) {
+        const hotspot = obs.locId ? droppedByLocId.get(obs.locId) : null;
+        if (hotspot) rescued.set(hotspot.locId, hotspot);
+      }
+    } catch (error) {
+      if (error.status !== 404) failed += 1;
+    }
+  }
+  if (failed) {
+    addWarning(`${failed} target-species lookups failed; some target locations may be missing from the ranking.`);
+  }
+  const limit = 40;
+  if (rescued.size > limit) {
+    addWarning(`Target species were reported at ${rescued.size} additional hotspots; only the ${limit} closest were checked.`);
+  }
+  return Array.from(rescued.values())
+    .sort((a, b) => haversineKm(center, a) - haversineKm(center, b))
+    .slice(0, limit);
+}
+
+async function rescueLiferHotspots(hotspots, alreadyChosen, center, params) {
+  if (!params.lifeList?.size || !Array.isArray(hotspots)) return [];
+  const chosenIds = new Set(alreadyChosen.map((hotspot) => hotspot.locId));
+  const droppedByLocId = new Map();
+  for (const hotspot of hotspots) {
+    if (!hotspot.locId || !Number.isFinite(hotspot.lat) || !Number.isFinite(hotspot.lng)) continue;
+    if (chosenIds.has(hotspot.locId) || droppedByLocId.has(hotspot.locId)) continue;
+    droppedByLocId.set(hotspot.locId, hotspot);
+  }
+  if (!droppedByLocId.size) return [];
+
+  setStatus("Scanning area", "Checking for unseen species at additional hotspots.");
+  const feedMaxResults = 10000;
+  let feed;
+  try {
+    feed = await apiJson(
+      `/api/ebird/recent?lat=${center.lat}&lng=${center.lng}&dist=${params.radiusKm}&back=${params.recentDays}&maxResults=${feedMaxResults}`,
+      { token: params.token }
+    );
+  } catch {
+    addWarning("Could not check the remaining hotspots for unseen species; lifer coverage may be incomplete.");
+    return [];
+  }
+  if (Array.isArray(feed) && feed.length >= feedMaxResults) {
+    addWarning("The area has more recently reported species than eBird returns in one request; lifer coverage may be incomplete.");
+  }
+
+  const rescued = new Map();
+  for (const obs of Array.isArray(feed) ? feed : []) {
+    const hotspot = obs.locId ? droppedByLocId.get(obs.locId) : null;
+    if (!hotspot || rescued.has(obs.locId)) continue;
+    if (!isSeenObservation(obs, params.lifeList)) rescued.set(obs.locId, hotspot);
+  }
+  const limit = 20;
+  if (rescued.size > limit) {
+    addWarning(`Unseen species were reported at ${rescued.size} additional hotspots; only the ${limit} closest were checked.`);
+  }
+  return Array.from(rescued.values())
+    .sort((a, b) => haversineKm(center, a) - haversineKm(center, b))
+    .slice(0, limit);
+}
+
+async function fetchRecentForHotspots(hotspots, sample, params) {
+  const chunks = [];
+  for (let i = 0; i < hotspots.length; i += 4) chunks.push(hotspots.slice(i, i + 4));
+
+  const observations = [];
+  let failed = 0;
+  for (let i = 0; i < chunks.length; i += 1) {
+    setStatus("Scanning area", `Checking hotspots ${i * 4 + 1}-${Math.min((i + 1) * 4, hotspots.length)} of ${hotspots.length}.`);
+    const batch = await Promise.all(chunks[i].map((hotspot) => {
+      const url = `/api/ebird/hotspot-recent?locId=${encodeURIComponent(hotspot.locId)}&back=${params.recentDays}`;
+      return apiJson(url, { token: params.token })
+        .then((results) => (Array.isArray(results) ? results : []).map((obs) => ({
+          ...obs,
+          locId: obs.locId || hotspot.locId,
+          locName: obs.locName || hotspot.locName,
+          lat: Number.isFinite(obs.lat) ? obs.lat : hotspot.lat,
+          lng: Number.isFinite(obs.lng) ? obs.lng : hotspot.lng
+        })))
+        .catch(() => {
+          failed += 1;
+          return [];
+        });
+    }));
+    for (const entry of batch) observations.push(...entry);
+  }
+  if (failed) {
+    addWarning(`${failed} of ${hotspots.length} hotspot lookups failed; ranking uses the data that loaded.`);
+  }
+  return [{ sample, observations }];
+}
+
 function buildCandidates(observationsBySample, samples, params) {
   const byKey = new Map();
 
@@ -3308,10 +3451,32 @@ function buildCandidates(observationsBySample, samples, params) {
       : [];
   }
 
-  return candidates
+  const ranked = candidates
     .filter((candidate) => candidate.species.size > 0)
-    .sort((a, b) => preliminaryScore(b) - preliminaryScore(a))
-    .slice(0, Math.max(params.maxStops * 3, params.maxStops));
+    .sort((a, b) => preliminaryScore(b) - preliminaryScore(a));
+  const limit = Math.max(params.maxStops * 3, params.maxStops);
+  const kept = ranked.slice(0, limit);
+  const overflow = ranked.slice(limit);
+  const keptIds = new Set(kept.map((candidate) => candidate.id));
+  const keepExtras = (matches) => {
+    const extras = overflow.filter((candidate) => !keptIds.has(candidate.id) && matches(candidate));
+    for (const candidate of extras.slice(0, params.maxStops)) {
+      keptIds.add(candidate.id);
+      candidate.preserved = true;
+      kept.push(candidate);
+    }
+    return extras.length;
+  };
+  if (params.targets.length) {
+    const total = keepExtras((candidate) => candidate.targetMatches.length > 0);
+    if (total > params.maxStops) {
+      addWarning(`${total - params.maxStops} lower-ranked locations reporting target species were left out of the candidate list.`);
+    }
+  }
+  if (params.lifeList?.size) {
+    keepExtras((candidate) => candidate.liferSpecies.length > 0);
+  }
+  return kept;
 }
 
 function preliminaryScore(candidate) {
@@ -3346,11 +3511,27 @@ async function evaluateDetours(candidates, origin, destination, baseDurationSeco
 }
 
 async function addNotableObservations(candidates, params) {
+  if (params.mode === "area" && state.areaCenter) {
+    await addAreaNotableObservations(candidates, params);
+    return;
+  }
+  await fetchNotablesPerCandidate(selectNotableCandidates(candidates, params), params);
+}
+
+function selectNotableCandidates(candidates, params) {
   const top = candidates.slice(0, Math.max(params.maxStops, 6));
+  const topIds = new Set(top.map((candidate) => candidate.id));
+  for (const candidate of candidates) {
+    if (candidate.preserved && !topIds.has(candidate.id)) top.push(candidate);
+  }
+  return top;
+}
+
+async function fetchNotablesPerCandidate(list, params) {
   let failed = 0;
-  for (let i = 0; i < top.length; i += 1) {
-    const candidate = top[i];
-    setStatus("Adding notable birds", `Checking notable reports ${i + 1} of ${top.length}.`);
+  for (let i = 0; i < list.length; i += 1) {
+    const candidate = list[i];
+    setStatus("Adding notable birds", `Checking notable reports ${i + 1} of ${list.length}.`);
     try {
       candidate.notable = await apiJson(
         `/api/ebird/notable?lat=${candidate.lat}&lng=${candidate.lng}&dist=${Math.min(params.radiusKm, 10)}&back=${params.recentDays}&maxResults=100`,
@@ -3362,8 +3543,39 @@ async function addNotableObservations(candidates, params) {
     }
   }
   if (failed) {
-    addWarning(`${failed} of ${top.length} notable-report lookups failed; notable counts may be understated.`);
+    addWarning(`${failed} of ${list.length} notable-report lookups failed; notable counts may be understated.`);
   }
+}
+
+async function addAreaNotableObservations(candidates, params) {
+  const center = state.areaCenter;
+  setStatus("Adding notable birds", "Checking recent notable reports across the area.");
+  const feedDistKm = Math.min(params.radiusKm + 10, 50);
+  const feedMaxResults = 10000;
+  let feed = [];
+  try {
+    feed = await apiJson(
+      `/api/ebird/notable?lat=${center.lat}&lng=${center.lng}&dist=${feedDistKm}&back=${params.recentDays}&maxResults=${feedMaxResults}`,
+      { token: params.token }
+    );
+  } catch {
+    await fetchNotablesPerCandidate(selectNotableCandidates(candidates, params), params);
+    return;
+  }
+  if (Array.isArray(feed) && feed.length >= feedMaxResults) {
+    addWarning("The area has more notable reports than eBird returns in one request; notable counts may be understated.");
+  }
+  const valid = (Array.isArray(feed) ? feed : []).filter((obs) => Number.isFinite(obs.lat) && Number.isFinite(obs.lng));
+  const notableRadiusKm = Math.min(params.radiusKm, 10);
+  const uncovered = [];
+  for (const candidate of candidates) {
+    if (haversineKm(center, candidate) + notableRadiusKm > feedDistKm) {
+      uncovered.push(candidate);
+    } else {
+      candidate.notable = valid.filter((obs) => haversineKm(candidate, obs) <= notableRadiusKm);
+    }
+  }
+  await fetchNotablesPerCandidate(uncovered, params);
 }
 
 function scoreCandidates(candidates, params) {
