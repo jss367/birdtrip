@@ -3206,6 +3206,16 @@ body.migration-page {
   white-space: nowrap;
 }
 
+/* Clipboard-fallback state: the URL must stay fully visible and copyable. */
+.migration-page-status.is-expanded {
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  word-break: break-all;
+  user-select: all;
+}
+
 .migration-layout {
   flex: 1;
   min-height: 0;

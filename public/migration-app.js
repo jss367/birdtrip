@@ -171,8 +171,10 @@
     window.history.replaceState(null, "", url);
   }
 
-  function setPageStatus(message) {
-    if (els.status) els.status.textContent = message;
+  function setPageStatus(message, options = {}) {
+    if (!els.status) return;
+    els.status.textContent = message;
+    els.status.classList.toggle("is-expanded", Boolean(options.expanded));
   }
 
   async function copyTextToClipboard(text) {
@@ -198,7 +200,7 @@
       await copyTextToClipboard(url);
       setPageStatus("Link copied.");
     } catch {
-      setPageStatus(`Copy this link: ${url}`);
+      setPageStatus(url, { expanded: true });
     }
   });
 
