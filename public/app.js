@@ -20,8 +20,10 @@ const state = {
   sightings: [],
   sightingLocations: [],
   selectedSightingId: null,
+  ebirdAccessIssue: null,
   provider: "osm",
   userSelectedProvider: false,
+  settingsFlashTimer: null,
   lifeList: {
     source: "",
     fileName: "",
@@ -44,10 +46,11 @@ const state = {
 };
 
 const els = {
-  quickStartButton: document.querySelector("#quickStartButton"),
+  resultsActions: document.querySelector("#resultsActions"),
   shareTripButton: document.querySelector("#shareTripButton"),
   downloadReportButton: document.querySelector("#downloadReportButton"),
   settingsButton: document.querySelector("#settingsButton"),
+  searchSettingsGroup: document.querySelector("#searchSettingsGroup"),
   setupStatus: document.querySelector("#setupStatus"),
   form: document.querySelector("#searchForm"),
   modeButtons: document.querySelectorAll(".mode-switch button[data-mode]"),
@@ -71,6 +74,8 @@ const els = {
   radiusKm: document.querySelector("#radiusKm"),
   radiusKmLabel: document.querySelector("#radiusKmLabel"),
   maxStops: document.querySelector("#maxStops"),
+  ebirdAccessStatus: document.querySelector("#ebirdAccessStatus"),
+  ebirdTokenDetails: document.querySelector("#ebirdTokenDetails"),
   apiToken: document.querySelector("#apiToken"),
   rememberToken: document.querySelector("#rememberToken"),
   targets: document.querySelector("#targets"),
@@ -136,10 +141,6 @@ const els = {
   detailsPanel: document.querySelector("#detailsPanel"),
   detailsContent: document.querySelector("#detailsContent"),
   closeDetails: document.querySelector("#closeDetails"),
-  quickStartModal: document.querySelector("#quickStartModal"),
-  closeQuickStart: document.querySelector("#closeQuickStart"),
-  modalSampleButton: document.querySelector("#modalSampleButton"),
-  modalExploreButton: document.querySelector("#modalExploreButton"),
   submitLabel: document.querySelector("#submitLabel"),
   mapRegion: document.querySelector(".map-region"),
   mapAreaLegend: document.querySelector("#mapAreaLegend"),
@@ -177,6 +178,8 @@ function normalizeMode(mode) {
 const SAVED_TRIPS_KEY = "birdtripSavedTrips";
 const CONFIG_WAIT_TIMEOUT_MS = 6000;
 const SHARE_URL_VERSION = "1";
+// Matches the settings-flash animation duration in styles.css.
+const SETTINGS_FLASH_MS = 1200;
 
 const MIGRATION_PAGE_GROUPS = ["all", "warblers", "waterfowl", "shorebirds", "raptors", "hummingbirds"];
 
@@ -243,9 +246,13 @@ function init() {
   els.rememberToken.addEventListener("change", savePreferences);
   els.apiToken.addEventListener("change", () => {
     if (els.rememberToken.checked) savePreferences();
+    clearPersonalEbirdAccessIssue();
     updateSetupStatus();
   });
-  els.apiToken.addEventListener("input", updateSetupStatus);
+  els.apiToken.addEventListener("input", () => {
+    clearPersonalEbirdAccessIssue();
+    updateSetupStatus();
+  });
   els.mapProvider.addEventListener("change", () => {
     state.userSelectedProvider = true;
     setMapProvider(providerFromInput());
@@ -253,33 +260,9 @@ function init() {
   els.lifeListInput.addEventListener("change", handleLifeListFile);
   els.clearLifeListButton.addEventListener("click", clearLifeList);
   els.maxDetour.addEventListener("input", updateInputSummaries);
-  els.quickStartButton.addEventListener("click", openQuickStart);
   els.shareTripButton.addEventListener("click", shareCurrentTrip);
   els.downloadReportButton.addEventListener("click", downloadHtmlReport);
-  els.settingsButton.addEventListener("click", () => {
-    els.maxDetour.scrollIntoView({ block: "center", behavior: "smooth" });
-    els.maxDetour.focus();
-  });
-  els.closeQuickStart.addEventListener("click", closeQuickStart);
-  els.quickStartModal.addEventListener("click", (event) => {
-    if (event.target === els.quickStartModal) closeQuickStart();
-  });
-  els.modalSampleButton.addEventListener("click", () => {
-    useSampleRoute();
-    closeQuickStart();
-    els.origin.focus();
-  });
-  els.modalExploreButton.addEventListener("click", () => {
-    const needsToken = !shouldAttemptEbirdSearch();
-    setStatus(
-      needsToken ? "Explore without setup" : "Ready",
-      needsToken
-        ? "Enter a route to preview distance and drive time. Add an eBird token when you want live bird rankings."
-        : "Enter a route to load recent sightings and notable reports."
-    );
-    closeQuickStart();
-    els.origin.focus();
-  });
+  els.settingsButton.addEventListener("click", revealSearchSettings);
   els.printButton.addEventListener("click", () => {
     renderReport();
     window.print();
@@ -315,6 +298,30 @@ function init() {
   renderItineraryBuilder();
   renderComparison();
   if (window.lucide) window.lucide.createIcons();
+}
+
+// The header gear points at the whole Search Settings group rather than one field:
+// "Max added" is hidden outside route mode, so aiming at it made the gear a no-op
+// in area and species mode.
+function revealSearchSettings() {
+  const group = els.searchSettingsGroup;
+  // Chromium honors an explicit "smooth" request even under prefers-reduced-motion,
+  // so the jump has to be opted out of here rather than left to the media query.
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  group.scrollIntoView({ block: "start", behavior: reduceMotion ? "auto" : "smooth" });
+
+  // Hold the highlight on a timer instead of animationend: reduced motion has no
+  // animation to end, and a timer restarts cleanly on repeat clicks.
+  window.clearTimeout(state.settingsFlashTimer);
+  group.classList.remove("is-flashed");
+  void group.offsetWidth;
+  group.classList.add("is-flashed");
+  state.settingsFlashTimer = window.setTimeout(() => group.classList.remove("is-flashed"), SETTINGS_FLASH_MS);
+
+  const firstField = [...group.querySelectorAll("input, select, textarea")].find(
+    (field) => !field.disabled && field.offsetParent !== null
+  );
+  (firstField || group).focus({ preventScroll: true });
 }
 
 async function initializeStartupMap(preferredProvider, sharedSearch) {
@@ -753,6 +760,7 @@ function serializeCandidate(candidate) {
     addedMinutes: candidate.addedMinutes,
     addedMiles: candidate.addedMiles,
     scoreParts: candidate.scoreParts,
+    scoredWithLifeList: candidate.scoredWithLifeList,
     score: candidate.score
   };
 }
@@ -860,6 +868,9 @@ function hydrateCandidate(candidate) {
       targets: 0,
       practicality: 0
     },
+    // Left undefined for trips saved before this was recorded, so scoreScale can
+    // tell "scored without a life list" apart from "we don't know".
+    scoredWithLifeList: typeof candidate.scoredWithLifeList === "boolean" ? candidate.scoredWithLifeList : undefined,
     score: Number.isFinite(candidate.score) ? candidate.score : 0
   };
 }
@@ -899,6 +910,7 @@ async function loadAppConfig() {
   try {
     const config = await apiJson("/api/config");
     const ebirdServerConfigured = Boolean(config.ebirdConfigured || config.ebird?.serverConfigured);
+    state.ebirdAccessIssue = null;
     state.config = {
       ...state.config,
       ...config,
@@ -1157,6 +1169,10 @@ async function runSearch(options = {}) {
 
   try {
     await waitForAppConfig();
+    if (state.ebirdAccessIssue && hasEbirdAccess()) {
+      state.ebirdAccessIssue = null;
+      updateSetupStatus();
+    }
     const params = readParams();
     clearSearchArtifacts();
     state.params = params;
@@ -1242,10 +1258,10 @@ async function runRouteSearch(params) {
   updateRouteSummary(route);
 
   if (!shouldAttemptEbirdSearch()) {
-    setStatus("Token needed", "Route loaded. Add an eBird token or configure EBIRD_API_KEY to rank live birding stops.");
+    setStatus("eBird access needed", "Route loaded. Add a personal eBird token under Birding Data to rank live birding stops.");
     els.resultContext.textContent = "Route loaded, but live bird data needs eBird access.";
     els.resultsList.className = "results-list empty";
-    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add an eBird token or configure EBIRD_API_KEY to rank live birding stops.</p></div>';
+    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add a personal eBird token under Birding Data to rank live birding stops.</p></div>';
     if (window.lucide) window.lucide.createIcons();
     return;
   }
@@ -1299,10 +1315,10 @@ async function runAreaSearch(params) {
   updateAreaSummary(params.radiusKm);
 
   if (!shouldAttemptEbirdSearch()) {
-    setStatus("Token needed", "Area loaded. Add an eBird token or configure EBIRD_API_KEY to rank live birding stops.");
+    setStatus("eBird access needed", "Area loaded. Add a personal eBird token under Birding Data to rank live birding stops.");
     els.resultContext.textContent = "Area loaded, but live bird data needs eBird access.";
     els.resultsList.className = "results-list empty";
-    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add an eBird token or configure EBIRD_API_KEY to rank live birding stops.</p></div>';
+    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add a personal eBird token under Birding Data to rank live birding stops.</p></div>';
     if (window.lucide) window.lucide.createIcons();
     return;
   }
@@ -1362,10 +1378,10 @@ async function runSpeciesSearch(params) {
   updateAreaSummary(params.radiusKm);
 
   if (!shouldAttemptEbirdSearch()) {
-    setStatus("Token needed", "Location loaded. Add an eBird token or configure EBIRD_API_KEY to map species sightings.");
+    setStatus("eBird access needed", "Location loaded. Add a personal eBird token under Birding Data to map species sightings.");
     els.resultContext.textContent = "Location loaded, but live bird data needs eBird access.";
     els.resultsList.className = "results-list empty";
-    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add an eBird token or configure EBIRD_API_KEY to map species sightings.</p></div>';
+    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add a personal eBird token under Birding Data to map species sightings.</p></div>';
     if (window.lucide) window.lucide.createIcons();
     return;
   }
@@ -1709,30 +1725,110 @@ async function copyTextToClipboard(text) {
   if (!copied) throw new Error("Clipboard copy failed");
 }
 
-function openQuickStart() {
-  els.quickStartModal.hidden = false;
-  if (window.lucide) window.lucide.createIcons();
-  els.closeQuickStart.focus();
-}
-
-function closeQuickStart() {
-  els.quickStartModal.hidden = true;
-  els.quickStartButton.focus();
+function updateResultsActions() {
+  els.resultsActions.hidden = !hasReportableSearch();
 }
 
 function updateSetupStatus() {
   const hasAccess = hasEbirdAccess();
+  const hasPersonalToken = Boolean(els.apiToken.value.trim());
+  const hasServerAccess = Boolean(
+    state.config.ebirdConfigured === true || state.config.ebird?.serverConfigured === true
+  );
   const isChecking = state.config.ebirdConfigured === null && !els.apiToken.value.trim();
+  const activeAccessIssue = state.ebirdAccessIssue && (
+    state.ebirdAccessIssue.source === "personal" || !hasPersonalToken
+  )
+    ? state.ebirdAccessIssue
+    : null;
+  const hasWorkingAccess = hasAccess && !activeAccessIssue;
   els.setupStatus.classList.toggle("setup-checking", isChecking);
-  els.setupStatus.classList.toggle("setup-ready", hasAccess);
-  els.setupStatus.classList.toggle("setup-needed", !isChecking && !hasAccess);
+  els.setupStatus.classList.toggle("setup-ready", hasWorkingAccess);
+  els.setupStatus.classList.toggle("setup-needed", !isChecking && !hasWorkingAccess);
   els.setupStatus.innerHTML = isChecking
     ? '<i data-lucide="loader-circle"></i>Checking Setup'
-    : hasAccess
+    : hasWorkingAccess
       ? '<i data-lucide="check-circle-2"></i>Ready to Search'
       : '<i data-lucide="circle-alert"></i>Setup Required';
+  if (els.ebirdAccessStatus) {
+    const accessState = isChecking
+      ? {
+          className: "is-checking",
+          icon: "loader-circle",
+          title: "Checking eBird access",
+          detail: "Confirming live bird data availability."
+        }
+      : activeAccessIssue
+        ? ebirdAccessIssueStatus(activeAccessIssue.status, hasPersonalToken)
+        : hasPersonalToken
+          ? {
+              className: "is-personal",
+              icon: "key-round",
+              title: "Using your personal eBird token",
+              detail: hasServerAccess
+                ? "Your token overrides Birdtrip's shared access."
+                : "Your token enables live sightings in this browser."
+            }
+          : hasServerAccess
+            ? {
+                className: "is-ready",
+                icon: "check-circle-2",
+                title: "Live eBird data included",
+                detail: "Birdtrip's shared access is ready—no token needed."
+              }
+            : {
+                className: "is-needed",
+                icon: "circle-alert",
+                title: "Personal eBird token needed",
+                detail: "Add a token below to load live sightings."
+              };
+    els.ebirdAccessStatus.className = `ebird-access-status ${accessState.className}`;
+    els.ebirdAccessStatus.innerHTML = `
+      <i data-lucide="${accessState.icon}"></i>
+      <div>
+        <strong>${accessState.title}</strong>
+        <small>${accessState.detail}</small>
+      </div>
+    `;
+  }
+  if (els.ebirdTokenDetails && !isChecking && (!hasAccess || activeAccessIssue)) {
+    els.ebirdTokenDetails.open = true;
+  }
   renderInsights();
   if (window.lucide) window.lucide.createIcons();
+}
+
+function ebirdAccessIssueStatus(status, hasPersonalToken) {
+  if (status === 429) {
+    return {
+      className: "is-needed",
+      icon: "clock-3",
+      title: "eBird access is temporarily limited",
+      detail: hasPersonalToken
+        ? "Retry later or check the token you supplied."
+        : "Retry later or use a personal token."
+    };
+  }
+  return {
+    className: "is-needed",
+    icon: "circle-alert",
+    title: hasPersonalToken ? "Personal eBird token not accepted" : "Shared eBird access is unavailable",
+    detail: hasPersonalToken
+      ? "Check your token below and try again."
+      : "Add a personal token below and try again."
+  };
+}
+
+function clearPersonalEbirdAccessIssue() {
+  if (state.ebirdAccessIssue?.source === "personal") {
+    state.ebirdAccessIssue = null;
+  }
+}
+
+function revealEbirdTokenForError(status, source) {
+  state.ebirdAccessIssue = { status, source };
+  if (els.ebirdTokenDetails) els.ebirdTokenDetails.open = true;
+  updateSetupStatus();
 }
 
 function hasEbirdAccess() {
@@ -2036,12 +2132,9 @@ function clearSearchArtifacts() {
 function setBusy(isBusy) {
   const controls = [
     ...els.form.querySelectorAll("button, input, select, textarea"),
-    els.quickStartButton,
     els.shareTripButton,
     els.downloadReportButton,
     els.settingsButton,
-    els.modalSampleButton,
-    els.modalExploreButton,
     els.tripName,
     els.savedTripSelect,
     els.saveTripButton,
@@ -2058,7 +2151,10 @@ function setBusy(isBusy) {
     }
     control.disabled = isBusy;
   });
-  if (!isBusy) updateSavedTripControls();
+  if (!isBusy) {
+    updateSavedTripControls();
+    updateResultsActions();
+  }
 }
 
 function setStatus(title, message) {
@@ -2076,6 +2172,9 @@ async function apiJson(url, options = {}) {
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
+    if (String(url).startsWith("/api/ebird/") && [401, 403, 429].includes(response.status)) {
+      revealEbirdTokenForError(response.status, options.token ? "personal" : "shared");
+    }
     const base = payload.error || response.statusText || "Request failed";
     const detail = detailText(payload.details);
     const error = new Error(detail ? `${base} — ${detail}` : base);
@@ -3285,6 +3384,7 @@ function scoreCandidates(candidates, params) {
       : params.maxDetour === 0
         ? 20
         : Math.max(0, 20 * (1 - candidate.addedMinutes / Math.max(params.maxDetour, 1)));
+    candidate.scoredWithLifeList = Boolean(params.lifeList?.size);
     candidate.scoreParts = {
       species: speciesScore,
       activity: activityScore,
@@ -3770,17 +3870,22 @@ function renderResults() {
     return;
   }
 
+  const scale = scoreScale(state.results);
   state.results.forEach((candidate, index) => {
     const node = els.resultTemplate.content.cloneNode(true);
     const card = node.querySelector(".stop-card");
     card.dataset.id = candidate.id;
     if (candidate.id === state.selectedId) card.classList.add("is-selected");
     if (isPinned(candidate.id)) card.classList.add("is-pinned");
-    node.querySelector(".rank").textContent = String(index + 1);
+    const rank = node.querySelector(".rank");
+    rank.textContent = String(index + 1);
+    rank.title = `Rank ${index + 1} of ${state.results.length} by score`;
     node.querySelector(".stop-name").textContent = candidate.name;
     node.querySelector(".stop-preview").textContent = speciesPreview(candidate);
     node.querySelector(".stop-chips").innerHTML = candidateChips(candidate, index);
-    node.querySelector(".score-pill").textContent = candidate.score;
+    const scorePill = node.querySelector(".score-pill");
+    scorePill.querySelector("b").textContent = candidate.score;
+    scorePill.title = scoreTooltip(candidate, isArea, scale);
     node.querySelector(".stop-reason p").textContent = candidateReasonText(candidate, isArea);
     const detourWrap = node.querySelector(".metric-detour-wrap");
     const offrouteWrap = node.querySelector(".metric-offroute-wrap");
@@ -3822,7 +3927,7 @@ function renderResults() {
     dir.setAttribute("aria-label", `Directions to ${candidate.name}`);
     ebird.setAttribute("aria-label", `${candidate.name} on eBird`);
     const mainButton = node.querySelector(".stop-main");
-    mainButton.setAttribute("aria-label", `View ${candidate.name}`);
+    mainButton.setAttribute("aria-label", `View ${candidate.name}, rank ${index + 1} of ${state.results.length}, score ${candidate.score} of ${scale.max}`);
     mainButton.addEventListener("click", () => selectCandidate(candidate.id));
     setupCandidateSpeciesPreviews(card);
     els.resultsList.appendChild(node);
@@ -3891,12 +3996,7 @@ function renderDetails(candidate) {
     <section class="score-line">
       <h4>Score</h4>
       <div class="score-bars">
-        ${scoreRow("Species", candidate.scoreParts.species, 45)}
-        ${scoreRow("Activity", candidate.scoreParts.activity, 15)}
-        ${scoreRow("Notable", candidate.scoreParts.notable, 20)}
-        ${scoreRow("Targets", candidate.scoreParts.targets, 15)}
-        ${scoreRow("Lifers", candidate.scoreParts.lifers, 18)}
-        ${scoreRow(isArea ? "Proximity" : "Route", candidate.scoreParts.practicality, 20)}
+        ${scoreComponents(candidate, isArea).map((part) => scoreRow(part.label, part.value, part.max)).join("")}
       </div>
     </section>
     ${lifers.length ? `
@@ -4081,16 +4181,11 @@ function compareFreshnessCell(candidate) {
 }
 
 function compareScoreCell(candidate) {
-  const routeLabel = state.params?.mode === "area" ? "Proximity" : "Route";
+  const isArea = state.params?.mode === "area";
   return `
     <b>${candidate.score} total</b>
     <div class="comparison-score">
-      ${compactScorePart("Species", candidate.scoreParts.species, 45)}
-      ${compactScorePart("Activity", candidate.scoreParts.activity, 15)}
-      ${compactScorePart("Notable", candidate.scoreParts.notable, 20)}
-      ${compactScorePart("Targets", candidate.scoreParts.targets, 15)}
-      ${compactScorePart("Lifers", candidate.scoreParts.lifers, 18)}
-      ${compactScorePart(routeLabel, candidate.scoreParts.practicality, 20)}
+      ${scoreComponents(candidate, isArea).map((part) => compactScorePart(part.label, part.value, part.max)).join("")}
     </div>
   `;
 }
@@ -4110,6 +4205,51 @@ function updateVisibleDetails() {
   if (els.detailsPanel.hidden || !state.selectedId) return;
   const candidate = state.results.find((item) => item.id === state.selectedId);
   if (candidate) renderDetails(candidate);
+}
+
+const SCORE_COMPONENTS = [
+  { key: "species", label: "Species", max: 45 },
+  { key: "activity", label: "Activity", max: 15 },
+  { key: "notable", label: "Notable", max: 20 },
+  { key: "targets", label: "Targets", max: 15 },
+  { key: "lifers", label: "Lifers", max: 18 },
+  { key: "practicality", label: "Route", areaLabel: "Proximity", max: 20 }
+];
+
+function scoreComponents(candidate, isArea) {
+  const parts = candidate.scoreParts || {};
+  return SCORE_COMPONENTS.map((part) => ({
+    key: part.key,
+    label: isArea && part.areaLabel ? part.areaLabel : part.label,
+    max: part.max,
+    value: Number.isFinite(parts[part.key]) ? parts[part.key] : 0
+  }));
+}
+
+// Read from the scoring context each candidate was scored in, not the current life
+// list: saved trips keep the scores they were built with, so a life list imported or
+// cleared since then would otherwise put the pill on a scale its own numbers can
+// exceed. Trips saved before that context was recorded fall back to the scores
+// themselves, which can understate the scale but can never contradict it.
+function scoreScale(candidates) {
+  const includesLifers = candidates.some((candidate) => (
+    typeof candidate.scoredWithLifeList === "boolean"
+      ? candidate.scoredWithLifeList
+      : Number(candidate.scoreParts?.lifers) > 0
+  ));
+  const max = SCORE_COMPONENTS.reduce(
+    (sum, part) => sum + (part.key === "lifers" && !includesLifers ? 0 : part.max),
+    0
+  );
+  return { includesLifers, max };
+}
+
+function scoreTooltip(candidate, isArea, scale) {
+  const breakdown = scoreComponents(candidate, isArea)
+    .filter((part) => scale.includesLifers || part.key !== "lifers")
+    .map((part) => `${part.label} ${part.value.toFixed(1)}/${part.max}`)
+    .join(", ");
+  return `Score ${candidate.score} of ${scale.max} — ${breakdown}`;
 }
 
 function scoreRow(label, value, max) {
@@ -4407,6 +4547,7 @@ function observationAliases(obs) {
 }
 
 function renderInsights() {
+  updateResultsActions();
   const liveDetour = clamp(Number(els.maxDetour.value || 60), 0, 240);
   const liveTargets = parseTargetsInput();
   const canAttemptSearch = shouldAttemptEbirdSearch();
@@ -4428,7 +4569,7 @@ function renderInsights() {
     } else {
       els.sightingSummary.textContent = canAttemptSearch
         ? "Recent sightings appear after you map a species."
-        : "Add an eBird token to map recent species sightings.";
+        : "Add a personal eBird token under Birding Data to map recent species sightings.";
     }
     return;
   }
@@ -4470,7 +4611,7 @@ function renderInsights() {
   } else {
     const searchedWithoutToken = state.mode === "area" ? state.areaCenter && !canAttemptSearch : state.route && !canAttemptSearch;
     els.sightingSummary.textContent = searchedWithoutToken
-      ? `${state.mode === "area" ? "Area" : "Route"} is ready. Add an eBird token to load recent sightings and notable reports.`
+      ? `${state.mode === "area" ? "Area" : "Route"} is ready. Add a personal eBird token under Birding Data to load recent sightings and notable reports.`
       : "Recent eBird activity and notable reports appear after search.";
   }
 }
