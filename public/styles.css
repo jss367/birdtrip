@@ -577,6 +577,7 @@ select {
 .settings-modal {
   width: min(430px, calc(100vw - 32px));
   max-height: calc(100vh - 64px);
+  overflow-y: auto;
   margin: auto;
   border: 1px solid var(--line);
   border-radius: 14px;
