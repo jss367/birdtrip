@@ -1143,6 +1143,8 @@ function resetAutocomplete(field) {
 
 function clearResults() {
   state.results = [];
+  state.candidatePool = [];
+  state.balanceLocked = false;
   state.route = null;
   state.areaCenter = null;
   state.sightings = [];
@@ -1312,14 +1314,18 @@ async function runRouteSearch(params) {
     return;
   }
 
+  // The re-ranking pool must have complete notable data so candidates are
+  // comparable: bound it, then fetch notables for every member. evaluateDetours
+  // already drops over-budget candidates; the filter is belt-and-suspenders.
+  const eligible = practical.filter((candidate) => candidate.addedMinutes <= params.maxDetour);
+  const pool = selectNotableCandidates(eligible, params);
   setStatus("Adding notable birds", "Checking recent notable reports for the strongest candidates.");
-  await addNotableObservations(practical, params);
-  scoreCandidates(practical, params);
+  await fetchNotablesPerCandidate(pool, params);
+  scoreCandidates(pool, params);
 
-  state.results = practical
-    .filter((candidate) => candidate.addedMinutes <= params.maxDetour)
-    .sort(compareByRankUtility)
-    .slice(0, params.maxStops);
+  state.balanceLocked = false;
+  state.candidatePool = pool;
+  deriveVisibleResults();
 
   renderResults();
   renderMarkers();
@@ -1373,12 +1379,12 @@ async function runAreaSearch(params) {
   }));
 
   setStatus("Adding notable birds", "Checking recent notable reports for the strongest area matches.");
-  await addNotableObservations(practical, params);
+  await addAreaNotableObservations(practical, params);
   scoreCandidates(practical, params);
 
-  state.results = practical
-    .sort(compareByRankUtility)
-    .slice(0, params.maxStops);
+  state.balanceLocked = false;
+  state.candidatePool = practical;
+  deriveVisibleResults();
 
   renderResults();
   renderMarkers();
@@ -1963,25 +1969,30 @@ function renderResultsIfPresent() {
   renderMarkers();
   renderReport();
   if (state.selectedId) {
-    const candidate = state.results.find((item) => item.id === state.selectedId);
+    const candidate = candidateById(state.selectedId);
     if (candidate) renderDetails(candidate);
   }
 }
 
 function applyLifeListToCurrentResults() {
-  if (!state.results.length) return;
+  const pool = state.candidatePool.length ? state.candidatePool : state.results;
+  if (!pool.length) return;
   const params = {
     ...(state.params || {}),
     maxDetour: state.params?.maxDetour ?? clamp(Number(els.maxDetour.value || 60), 0, 240),
     lifeList: new Set(state.lifeList.species)
   };
-  for (const candidate of state.results) {
+  for (const candidate of pool) {
     candidate.liferSpecies = params.lifeList.size
       ? Array.from(candidate.species.values()).filter((obs) => !isSeenObservation(obs, params.lifeList))
       : [];
   }
-  scoreCandidates(state.results, params);
-  state.results.sort(compareByRankUtility);
+  scoreCandidates(pool, params);
+  if (state.candidatePool.length) {
+    deriveVisibleResults();
+  } else {
+    state.results.sort(compareByRankUtility);
+  }
 }
 
 function parseLifeListText(text, fileName = "") {
@@ -2131,6 +2142,8 @@ function cleanSpeciesName(value) {
 
 function clearSearchArtifacts() {
   state.results = [];
+  state.candidatePool = [];
+  state.balanceLocked = false;
   state.selectedId = null;
   state.comparisonIds = [];
   state.pinnedIds = [];
@@ -3537,16 +3550,10 @@ async function evaluateDetours(candidates, origin, destination, baseDurationSeco
   return practical;
 }
 
-async function addNotableObservations(candidates, params) {
-  if (params.mode === "area" && state.areaCenter) {
-    await addAreaNotableObservations(candidates, params);
-    return;
-  }
-  await fetchNotablesPerCandidate(selectNotableCandidates(candidates, params), params);
-}
-
+// Bounds the route-mode re-ranking pool: every candidate kept here gets a
+// notable lookup so pool members stay comparable when the balance changes.
 function selectNotableCandidates(candidates, params) {
-  const top = candidates.slice(0, Math.max(params.maxStops, 6));
+  const top = candidates.slice(0, Math.max(params.maxStops * 2, 12));
   const topIds = new Set(top.map((candidate) => candidate.id));
   for (const candidate of candidates) {
     if (candidate.preserved && !topIds.has(candidate.id)) top.push(candidate);
@@ -3657,6 +3664,23 @@ function compareByRankUtility(a, b) {
   return (b.rankUtility - a.rankUtility) || String(a.id).localeCompare(String(b.id));
 }
 
+// The visible list is always derived from the full scored pool so that
+// re-ranking (balance changes, life-list updates) can admit candidates from
+// outside the current top maxStops.
+function deriveVisibleResults() {
+  applyBalance(state.candidatePool);
+  const maxStops = Number.isFinite(state.params?.maxStops)
+    ? state.params.maxStops
+    : clamp(Number(els.maxStops.value || 10), 3, 20);
+  state.results = [...state.candidatePool].sort(compareByRankUtility).slice(0, maxStops);
+}
+
+function candidateById(id) {
+  return state.candidatePool.find((item) => item.id === id)
+    || state.results.find((item) => item.id === id)
+    || null;
+}
+
 function weightedUniqueSpecies(observations, recentDays) {
   const bySpecies = new Map();
   for (const obs of observations) {
@@ -3719,7 +3743,8 @@ function parseObservationDate(value) {
 }
 
 function pinnedStops() {
-  const byId = new Map(state.results.map((candidate) => [candidate.id, candidate]));
+  const source = state.candidatePool.length ? state.candidatePool : state.results;
+  const byId = new Map(source.map((candidate) => [candidate.id, candidate]));
   const stops = state.pinnedIds.map((id) => byId.get(id)).filter(Boolean);
   if (stops.length !== state.pinnedIds.length) {
     state.pinnedIds = stops.map((stop) => stop.id);
@@ -3732,7 +3757,7 @@ function isPinned(id) {
 }
 
 function togglePinned(id) {
-  const candidate = state.results.find((item) => item.id === id);
+  const candidate = candidateById(id);
   if (!candidate) return;
   if (isPinned(id)) {
     state.pinnedIds = state.pinnedIds.filter((pinnedId) => pinnedId !== id);
@@ -4238,7 +4263,7 @@ function renderMarkers() {
 }
 
 function selectCandidate(id) {
-  const candidate = state.results.find((item) => item.id === id);
+  const candidate = candidateById(id);
   if (!candidate) return;
   state.selectedId = id;
   renderDetails(candidate);
