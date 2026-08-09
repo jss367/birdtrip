@@ -720,7 +720,8 @@ function readTripSettings() {
       maxStops: Number.isFinite(state.params.maxStops) ? String(state.params.maxStops) : els.maxStops.value,
       targets: Array.isArray(state.params.targets) ? state.params.targets.join("\n") : els.targets.value,
       speciesQuery: typeof state.params.speciesQuery === "string" ? state.params.speciesQuery : els.speciesQuery.value,
-      searchMode: typeof state.params.mode === "string" ? state.params.mode : state.mode
+      searchMode: typeof state.params.mode === "string" ? state.params.mode : state.mode,
+      balance: String(state.balance)
     };
   }
 
@@ -728,6 +729,7 @@ function readTripSettings() {
   for (const field of PREF_FIELDS) settings[field] = els[field].value;
   settings.searchMode = state.mode;
   settings.mapProvider = state.provider;
+  settings.balance = String(state.balance);
   return settings;
 }
 
@@ -738,6 +740,8 @@ function applyTripSettings(settings) {
   if (typeof settings.searchMode === "string") {
     setSearchMode(settings.searchMode, { persist: false });
   }
+  // Trips saved before the balance control existed restore at the default.
+  setBalance(settings.balance !== undefined ? Number(settings.balance) : DEFAULT_BALANCE, { skipRerank: true });
   updateInputSummaries();
 }
 
@@ -791,6 +795,14 @@ function restoreTripState(trip) {
   state.results = Array.isArray(savedState.results)
     ? savedState.results.filter(isObjectRecord).map(hydrateCandidate)
     : [];
+  // Saved trips serialize only the truncated visible results, not the full
+  // candidate pool, so re-ranking a restored trip would silently produce wrong
+  // orderings — lock the balance control and keep the saved order. Display
+  // scores are recomputed from scoreParts at the stored balance (already
+  // applied by applyTripSettings) so they sit on the 0-100 scale.
+  state.candidatePool = [];
+  state.balanceLocked = true;
+  applyBalance(state.results);
   state.selectedId = savedState.selectedId || null;
   state.warnings = Array.isArray(savedState.warnings) ? savedState.warnings : [];
   state.params = isObjectRecord(savedState.params)
