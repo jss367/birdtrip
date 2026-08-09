@@ -73,6 +73,12 @@ const els = {
   mapProvider: document.querySelector("#mapProvider"),
   mapProviderHint: document.querySelector("#mapProviderHint"),
   maxDetourField: document.querySelector("#maxDetourField"),
+  balanceField: document.querySelector("#balanceField"),
+  balanceSlider: document.querySelector("#balanceSlider"),
+  balanceHint: document.querySelector("#balanceHint"),
+  balanceFieldResults: document.querySelector("#balanceFieldResults"),
+  balanceSliderResults: document.querySelector("#balanceSliderResults"),
+  balanceHintResults: document.querySelector("#balanceHintResults"),
   maxDetour: document.querySelector("#maxDetour"),
   recentDays: document.querySelector("#recentDays"),
   radiusKm: document.querySelector("#radiusKm"),
@@ -272,6 +278,8 @@ function init() {
   els.lifeListInput.addEventListener("change", handleLifeListFile);
   els.clearLifeListButton.addEventListener("click", clearLifeList);
   els.maxDetour.addEventListener("input", updateInputSummaries);
+  els.balanceSlider.addEventListener("input", () => setBalance(els.balanceSlider.value));
+  els.balanceSliderResults.addEventListener("input", () => setBalance(els.balanceSliderResults.value));
   els.shareTripButton.addEventListener("click", shareCurrentTrip);
   els.downloadReportButton.addEventListener("click", downloadHtmlReport);
   els.settingsButton.addEventListener("click", () => openSettingsModal());
@@ -376,6 +384,7 @@ function readSharedSearchFromUrl() {
     radiusKm: cleanSharedNumber(search.get("radiusKm"), 1, 50),
     maxStops: cleanSharedNumber(search.get("maxStops"), 3, 20),
     targets: cleanSharedTargets(search.get("targets"), 1200),
+    balance: cleanSharedNumber(search.get("balance"), 0, 4),
     pins: cleanSharedIdList(search.getAll("pin"), 5),
     autoRun: search.get("run") === "1"
   };
@@ -400,6 +409,8 @@ function applySharedSearch(shared) {
   if (shared.radiusKm) els.radiusKm.value = shared.radiusKm;
   if (shared.maxStops) els.maxStops.value = shared.maxStops;
   if (shared.targets) els.targets.value = shared.targets;
+  // "0" is a valid position; only an absent/invalid param falls back to default.
+  setBalance(shared.balance === "" ? DEFAULT_BALANCE : Number(shared.balance), { skipRerank: true });
   state.pendingPinnedIds = shared.pins || [];
   updateInputSummaries();
   setStatus(
@@ -513,6 +524,8 @@ function setSearchMode(mode, options = {}) {
   els.destinationField.hidden = isAreaLike;
   els.destination.required = !isAreaLike;
   els.maxDetourField.hidden = state.mode !== "route";
+  els.balanceField.hidden = state.mode === "species";
+  syncBalanceControls();
   els.maxDetour.disabled = isAreaLike;
   els.radiusKmLabel.textContent = isSpecies ? "Search radius" : isArea ? "Area radius" : "Corridor radius";
   els.submitLabel.textContent = isSpecies ? "Map Sightings" : isArea ? "Search Area" : "Find Stops";
@@ -1732,6 +1745,7 @@ function buildShareUrl(options = {}) {
   url.searchParams.set("radiusKm", String(clamp(Number(els.radiusKm.value || 25), 1, 50)));
   url.searchParams.set("maxStops", String(clamp(Number(els.maxStops.value || 10), 3, 20)));
   if (els.targets.value.trim()) url.searchParams.set("targets", els.targets.value.trim());
+  if (state.balance !== DEFAULT_BALANCE) url.searchParams.set("balance", String(state.balance));
   for (const id of state.pinnedIds.slice(0, 5)) url.searchParams.append("pin", id);
   if (autoRun) url.searchParams.set("run", "1");
   return url.toString();
@@ -3681,6 +3695,40 @@ function candidateById(id) {
     || null;
 }
 
+function setBalance(index, options = {}) {
+  const parsed = Math.round(Number(index));
+  state.balance = Number.isFinite(parsed) ? clamp(parsed, 0, BALANCE_LEVELS.length - 1) : DEFAULT_BALANCE;
+  syncBalanceControls();
+  if (options.skipRerank || state.balanceLocked || !state.candidatePool.length) return;
+  deriveVisibleResults();
+  renderResults();
+  renderMarkers();
+  renderReport();
+  refreshSharedUrlIfPresent();
+}
+
+function syncBalanceControls() {
+  if (!els.balanceSlider) return;
+  const level = BALANCE_LEVELS[state.balance] || BALANCE_LEVELS[DEFAULT_BALANCE];
+  const pairs = [
+    [els.balanceSlider, els.balanceHint],
+    [els.balanceSliderResults, els.balanceHintResults]
+  ];
+  for (const [slider, hint] of pairs) {
+    if (!slider) continue;
+    slider.value = String(state.balance);
+    slider.disabled = state.balanceLocked;
+    if (hint) {
+      hint.textContent = state.balanceLocked
+        ? "Saved trips keep their original ranking."
+        : level.label;
+    }
+  }
+  if (els.balanceFieldResults) {
+    els.balanceFieldResults.hidden = state.mode === "species" || !state.results.length;
+  }
+}
+
 function weightedUniqueSpecies(observations, recentDays) {
   const bySpecies = new Map();
   for (const obs of observations) {
@@ -4247,6 +4295,7 @@ function renderResults() {
   });
 
   renderComparison();
+  syncBalanceControls();
   if (window.lucide) window.lucide.createIcons();
 }
 

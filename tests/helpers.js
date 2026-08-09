@@ -16,7 +16,16 @@ async function runAreaSearch(page, { maxStops = 5, beforeSubmit } = {}) {
 }
 
 function visibleOrder(page) {
-  return page.locator(".stop-card .stop-name").allTextContents();
+  return page.locator(".stop-card:not(.is-out-of-rank) .stop-name").allTextContents();
 }
 
-module.exports = { runAreaSearch, visibleOrder };
+// range.fill() doesn't reliably fire "input" for range controls across
+// Playwright versions; set the value and dispatch explicitly.
+async function setSlider(page, selector, value) {
+  await page.locator(selector).evaluate((el, v) => {
+    el.value = String(v);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  }, value);
+}
+
+module.exports = { runAreaSearch, visibleOrder, setSlider };
