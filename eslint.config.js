@@ -19,8 +19,8 @@ module.exports = [
     }
   },
   {
-    // Node server and this config file (CommonJS).
-    files: ["server.js", "eslint.config.js"],
+    // Node server, tests, and config files (CommonJS).
+    files: ["server.js", "eslint.config.js", "playwright.config.js", "tests/**/*.js"],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "commonjs",

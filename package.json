@@ -5,13 +5,15 @@
   "description": "A local route-corridor birding planner using OSM or Google Maps services with eBird.",
   "scripts": {
     "start": "node server.js",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "test": "playwright test"
   },
   "engines": {
     "node": ">=18"
   },
   "devDependencies": {
     "@eslint/js": "^9.15.0",
+    "@playwright/test": "^1.62.1",
     "eslint": "^9.15.0",
     "globals": "^15.12.0"
   }
