@@ -2315,6 +2315,86 @@ button.stop-chip {
   font-size: 0.82rem;
 }
 
+.stop-metrics .metric-help {
+  position: relative;
+  cursor: help;
+  outline-offset: -3px;
+}
+
+.stop-metrics .metric-help::before,
+.stop-metrics .metric-help::after {
+  position: absolute;
+  z-index: 30;
+  pointer-events: none;
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 120ms ease, transform 120ms ease, visibility 120ms ease;
+}
+
+.stop-metrics .metric-help::before {
+  content: "";
+  left: 50%;
+  bottom: calc(100% + 2px);
+  border: 6px solid transparent;
+  border-top-color: #26372e;
+  transform: translate(-50%, 3px);
+}
+
+.stop-metrics .metric-help::after {
+  content: attr(data-tooltip);
+  left: 50%;
+  bottom: calc(100% + 14px);
+  width: 230px;
+  max-width: calc(100vw - 40px);
+  padding: 9px 11px;
+  border-radius: 7px;
+  background: #26372e;
+  color: white;
+  box-shadow: 0 10px 25px rgba(31, 47, 34, 0.22);
+  font-size: 0.73rem;
+  font-weight: 700;
+  line-height: 1.35;
+  text-align: left;
+  white-space: normal;
+  transform: translate(-50%, 3px);
+}
+
+.stop-metrics .metric-help:first-child::after {
+  left: 6px;
+  transform: translateY(3px);
+}
+
+.stop-metrics .metric-help:last-child::after {
+  right: 6px;
+  left: auto;
+  transform: translateY(3px);
+}
+
+.stop-metrics .metric-help:hover::before,
+.stop-metrics .metric-help:hover::after,
+.stop-metrics .metric-help:focus::before,
+.stop-metrics .metric-help:focus::after {
+  visibility: visible;
+  opacity: 1;
+}
+
+.stop-metrics .metric-help:hover::before,
+.stop-metrics .metric-help:focus::before {
+  transform: translate(-50%, 0);
+}
+
+.stop-metrics .metric-help:hover::after,
+.stop-metrics .metric-help:focus::after {
+  transform: translate(-50%, 0);
+}
+
+.stop-metrics .metric-help:first-child:hover::after,
+.stop-metrics .metric-help:first-child:focus::after,
+.stop-metrics .metric-help:last-child:hover::after,
+.stop-metrics .metric-help:last-child:focus::after {
+  transform: translateY(0);
+}
+
 .stop-links {
   display: flex;
   gap: 1px;
@@ -2838,6 +2918,35 @@ button.stop-chip {
 
   .stop-metrics {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .stop-metrics .metric-help:nth-child(3)::after {
+    right: 6px;
+    left: auto;
+    transform: translateY(3px);
+  }
+
+  .stop-metrics .metric-help:nth-child(4)::after {
+    left: 6px;
+    transform: translateY(3px);
+  }
+
+  .stop-metrics .metric-help:nth-child(5)::after {
+    right: auto;
+    left: 50%;
+    transform: translate(-50%, 3px);
+  }
+
+  .stop-metrics .metric-help:nth-child(3):hover::after,
+  .stop-metrics .metric-help:nth-child(3):focus::after,
+  .stop-metrics .metric-help:nth-child(4):hover::after,
+  .stop-metrics .metric-help:nth-child(4):focus::after {
+    transform: translateY(0);
+  }
+
+  .stop-metrics .metric-help:nth-child(5):hover::after,
+  .stop-metrics .metric-help:nth-child(5):focus::after {
+    transform: translate(-50%, 0);
   }
 
   .map-glass {
