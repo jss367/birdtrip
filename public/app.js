@@ -4099,11 +4099,12 @@ function renderResults() {
     const targetsWrap = node.querySelector(".metric-targets-wrap");
     const recentDays = state.params?.recentDays || 14;
     if (isArea) {
-      node.querySelector(".metric-detour").textContent = `${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi`;
+      const centerDistanceMiles = formatMiles(kmToMiles(candidate.routeDistanceKm));
+      node.querySelector(".metric-detour").textContent = `${centerDistanceMiles} mi`;
       node.querySelector(".metric-offroute").textContent = `${state.params.radiusKm} km`;
       setMetricTooltip(
         detourWrap,
-        `Distance from center: straight-line distance from the search center to this stop.`
+        `Distance from center: ${centerDistanceMiles} mi in a straight line from the search center to this stop.`
       );
       setMetricTooltip(
         offrouteWrap,

@@ -2372,26 +2372,26 @@ button.stop-chip {
 
 .stop-metrics .metric-help:hover::before,
 .stop-metrics .metric-help:hover::after,
-.stop-metrics .metric-help:focus-visible::before,
-.stop-metrics .metric-help:focus-visible::after {
+.stop-metrics .metric-help:focus::before,
+.stop-metrics .metric-help:focus::after {
   visibility: visible;
   opacity: 1;
 }
 
 .stop-metrics .metric-help:hover::before,
-.stop-metrics .metric-help:focus-visible::before {
+.stop-metrics .metric-help:focus::before {
   transform: translate(-50%, 0);
 }
 
 .stop-metrics .metric-help:hover::after,
-.stop-metrics .metric-help:focus-visible::after {
+.stop-metrics .metric-help:focus::after {
   transform: translate(-50%, 0);
 }
 
 .stop-metrics .metric-help:first-child:hover::after,
-.stop-metrics .metric-help:first-child:focus-visible::after,
+.stop-metrics .metric-help:first-child:focus::after,
 .stop-metrics .metric-help:last-child:hover::after,
-.stop-metrics .metric-help:last-child:focus-visible::after {
+.stop-metrics .metric-help:last-child:focus::after {
   transform: translateY(0);
 }
 
@@ -2938,14 +2938,14 @@ button.stop-chip {
   }
 
   .stop-metrics .metric-help:nth-child(3):hover::after,
-  .stop-metrics .metric-help:nth-child(3):focus-visible::after,
+  .stop-metrics .metric-help:nth-child(3):focus::after,
   .stop-metrics .metric-help:nth-child(4):hover::after,
-  .stop-metrics .metric-help:nth-child(4):focus-visible::after {
+  .stop-metrics .metric-help:nth-child(4):focus::after {
     transform: translateY(0);
   }
 
   .stop-metrics .metric-help:nth-child(5):hover::after,
-  .stop-metrics .metric-help:nth-child(5):focus-visible::after {
+  .stop-metrics .metric-help:nth-child(5):focus::after {
     transform: translate(-50%, 0);
   }
 
