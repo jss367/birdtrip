@@ -50,8 +50,12 @@ Each scored candidate carries four distinct values (raw `scoreParts` are unchang
 | `displayScore` | `round(rankUtility / (birdMax + convMult × 20) × 100)` | All user-facing scores (cards, popups, reports), always 0–100 |
 
 `convMult` comes from the balance control. At `convMult = 1`, `rankUtility` equals today's
-`score` before rounding, so the default ordering is exactly current behavior in every
+`score` before rounding, so the default ordering matches current behavior in every
 configuration (targets, life list, route or area mode). Rounding happens only at display.
+One deliberate exception: today's sort key is the *rounded* score, so candidates that
+currently tie after rounding may swap under the unrounded key. Sort by `rankUtility`
+descending with candidate `id` as a deterministic tie-break; this unrounded ordering is
+the accepted behavior and the test baseline.
 
 `isHotspot` switches from `score >= 65` to `siteQuality >= 55 || species.size >= 40`.
 (65 of a ~115 total that included up to 20 practicality points ≈ 55 of the 80-point
@@ -99,6 +103,9 @@ Instead:
   slice `maxStops`, render.
 - `selectCandidate`, pin handling, and any candidate-by-id lookup read `candidatePool`,
   not `state.results`.
+- `applyLifeListToCurrentResults` (which re-scores and re-sorts `state.results` directly
+  when a life list is uploaded after a search) switches to the same
+  score-pool-then-derive path.
 
 ### Re-ranking interaction
 
@@ -126,8 +133,9 @@ consistently because Overall is the weighted blend of the two subscores shown.
 
 ### Saved trips
 
-- `serializeTripState` gains the balance position in settings; restoring a trip restores
-  the stored scores and shows the stored balance.
+- The balance position is persisted in trip *settings* (the payload that already stores
+  `searchMode`, not the `serializeTripState` state object); restoring a trip restores the
+  stored scores and shows the stored balance.
 - The slider is inert for restored trips because saved trips serialize only the truncated
   visible `results`, not the candidate pool — re-ranking a partial pool would silently
   produce wrong orderings. (Candidates do serialize raw observations, so live re-scoring
@@ -147,8 +155,9 @@ Add `@playwright/test` as a devDependency with an `npm test` script (the repo is
 lint-only; cached Chromium alone is not reproducible). Tests stub `/api/ebird/*` with
 fixtures (a Barcelona-like area fixture and a route fixture) and assert:
 
-1. Default ordering is byte-identical to the pre-change ordering, with and without a
-   life list.
+1. Default ordering matches the baseline ordering — generated after the prerequisite
+   target-normalization fix, before the slider change, with rounding-tie swaps accepted
+   per the tie-break rule — with and without a life list.
 2. A candidate outside the default top `maxStops` enters the visible list at
    "Prioritize birding".
 3. Both mirrored controls and the URL param stay synchronized.
