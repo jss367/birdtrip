@@ -15,6 +15,19 @@ async function runAreaSearch(page, { maxStops = 5, beforeSubmit } = {}) {
   await expect(page.locator(".stop-card")).toHaveCount(maxStops, { timeout: 15000 });
 }
 
+async function runRouteSearch(page, { maxStops = 5 } = {}) {
+  await stubApis(page);
+  await page.goto("/");
+  await page.click("#settingsButton");
+  await page.fill("#apiToken", "TEST_TOKEN");
+  await page.keyboard.press("Escape");
+  await page.fill("#origin", "Test Center, Barcelona");
+  await page.fill("#destination", "Test East, Barcelona");
+  await page.fill("#maxStops", String(maxStops));
+  await page.click('button[type="submit"]');
+  await expect(page.locator(".stop-card")).toHaveCount(maxStops, { timeout: 15000 });
+}
+
 function visibleOrder(page) {
   return page.locator(".stop-card:not(.is-out-of-rank) .stop-name").allTextContents();
 }
@@ -28,4 +41,4 @@ async function setSlider(page, selector, value) {
   }, value);
 }
 
-module.exports = { runAreaSearch, visibleOrder, setSlider };
+module.exports = { runAreaSearch, runRouteSearch, visibleOrder, setSlider };

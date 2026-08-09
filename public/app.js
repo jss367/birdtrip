@@ -4204,14 +4204,43 @@ function renderResults() {
   }
 
   state.results.forEach((candidate, index) => {
-    const node = els.resultTemplate.content.cloneNode(true);
+    els.resultsList.appendChild(buildStopCard(candidate, index, { outOfRank: false }));
+  });
+
+  const outOfRankPinned = outOfRankPinnedStops();
+  if (outOfRankPinned.length) {
+    const heading = document.createElement("p");
+    heading.className = "out-of-rank-heading";
+    heading.textContent = "Pinned — outside current top results";
+    els.resultsList.appendChild(heading);
+    outOfRankPinned.forEach((candidate) => {
+      els.resultsList.appendChild(buildStopCard(candidate, state.results.length, { outOfRank: true }));
+    });
+  }
+
+  renderComparison();
+  syncBalanceControls();
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function outOfRankPinnedStops() {
+  return pinnedStops().filter((stop) => !state.results.some((item) => item.id === stop.id));
+}
+
+function buildStopCard(candidate, index, { outOfRank }) {
+  const isArea = state.params?.mode === "area";
+  const node = els.resultTemplate.content.cloneNode(true);
+  {
     const card = node.querySelector(".stop-card");
     card.dataset.id = candidate.id;
     if (candidate.id === state.selectedId) card.classList.add("is-selected");
     if (isPinned(candidate.id)) card.classList.add("is-pinned");
+    if (outOfRank) card.classList.add("is-out-of-rank");
     const rank = node.querySelector(".rank");
-    rank.textContent = String(index + 1);
-    rank.title = `Rank ${index + 1} of ${state.results.length} by score`;
+    rank.textContent = outOfRank ? "📌" : String(index + 1);
+    rank.title = outOfRank
+      ? "Pinned stop outside the current top results"
+      : `Rank ${index + 1} of ${state.results.length} by score`;
     node.querySelector(".stop-name").textContent = candidate.name;
     node.querySelector(".stop-preview").textContent = speciesPreview(candidate);
     node.querySelector(".stop-chips").innerHTML = candidateChips(candidate, index);
@@ -4288,15 +4317,13 @@ function renderResults() {
     dir.setAttribute("aria-label", `Directions to ${candidate.name}`);
     ebird.setAttribute("aria-label", `${candidate.name} on eBird`);
     const mainButton = node.querySelector(".stop-main");
-    mainButton.setAttribute("aria-label", `View ${candidate.name}, rank ${index + 1} of ${state.results.length}, score ${candidate.score} of 100`);
+    mainButton.setAttribute("aria-label", outOfRank
+      ? `View ${candidate.name}, pinned outside current top results, score ${candidate.score} of 100`
+      : `View ${candidate.name}, rank ${index + 1} of ${state.results.length}, score ${candidate.score} of 100`);
     mainButton.addEventListener("click", () => selectCandidate(candidate.id));
     setupCandidateSpeciesPreviews(card);
-    els.resultsList.appendChild(node);
-  });
-
-  renderComparison();
-  syncBalanceControls();
-  if (window.lucide) window.lucide.createIcons();
+  }
+  return node;
 }
 
 function setMetricTooltip(element, text) {
@@ -4308,7 +4335,7 @@ function setMetricTooltip(element, text) {
 
 function renderMarkers() {
   if (!state.mapAdapter) return;
-  state.mapAdapter.setMarkers(state.results, state.selectedId, selectCandidate);
+  state.mapAdapter.setMarkers(state.results.concat(outOfRankPinnedStops()), state.selectedId, selectCandidate);
 }
 
 function selectCandidate(id) {

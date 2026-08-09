@@ -86,12 +86,41 @@ function allNotables() {
 }
 
 const GEOCODE = [{ lat: CENTER.lat, lng: CENTER.lng, name: "Test Center, Barcelona" }];
+const ROUTE_END = { ...kmOffset(5, 0), name: "Test East, Barcelona" };
+const BASE_ROUTE = {
+  geometry: { coordinates: [[CENTER.lng, CENTER.lat], [ROUTE_END.lng, ROUTE_END.lat]] },
+  distanceMeters: 5000,
+  durationSeconds: 600
+};
 
 async function stubApis(page) {
   // Playwright matches routes in reverse registration order: the catch-all
   // must be registered first so the specific stubs below take precedence.
   await page.route("**/api/ebird/**", (route) => route.fulfill({ json: [] }));
-  await page.route("**/api/geocode**", (route) => route.fulfill({ json: GEOCODE }));
+  await page.route("**/api/geocode**", (route) => {
+    const q = new URL(route.request().url()).searchParams.get("q") || "";
+    route.fulfill({ json: q.includes("East") ? [ROUTE_END] : GEOCODE });
+  });
+  await page.route((url) => url.pathname === "/api/route", (route) => route.fulfill({ json: BASE_ROUTE }));
+  await page.route((url) => url.pathname === "/api/route-via", (route) => {
+    // Detour proportional to area distance: addedMinutes = 60 * d/25, so route
+    // practicality 20*(1 - m/60) reproduces the area conv-points column and
+    // the fixture table's orderings carry over unchanged.
+    const params = new URL(route.request().url()).searchParams;
+    const [lng, lat] = String(params.get("via") || "0,0").split(",").map(Number);
+    const d = haversineKm(CENTER, { lat, lng });
+    route.fulfill({
+      json: {
+        geometry: BASE_ROUTE.geometry,
+        distanceMeters: BASE_ROUTE.distanceMeters + Math.round(d * 1000),
+        durationSeconds: BASE_ROUTE.durationSeconds + 3600 * (d / 25)
+      }
+    });
+  });
+  await page.route("**/api/ebird/recent**", (route) => {
+    // Unfiltered is safe: the obsKey dedupe collapses duplicates across samples.
+    route.fulfill({ json: HOTSPOTS.flatMap((h) => recentFor(h.locId)) });
+  });
   await page.route("**/api/ebird/hotspots**", (route) => route.fulfill({ json: hotspotList() }));
   await page.route("**/api/ebird/hotspot-recent**", (route) => {
     const url = new URL(route.request().url());
