@@ -3580,7 +3580,10 @@ function scoreCandidates(candidates, params) {
     const speciesScore = Math.min(weightedSpecies, 90) / 90 * 45;
     const activityScore = Math.min(weightedActivity, 250) / 250 * 15;
     const notableScore = Math.min(weightedNotable, 8) / 8 * 20;
-    const targetScore = Math.min(weightedTargets, 5) / 5 * 15;
+    const targetSlots = Math.min(params.targets.length, 5);
+    const targetScore = targetSlots
+      ? Math.min(weightedTargets, targetSlots) / targetSlots * 15
+      : 0;
     const liferScore = params.lifeList?.size
       ? Math.min(candidate.liferSpecies.length, 8) / 8 * 18
       : 0;

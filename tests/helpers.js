@@ -1,7 +1,7 @@
 const { expect } = require("@playwright/test");
 const { stubApis } = require("./fixtures");
 
-async function runAreaSearch(page, { maxStops = 5 } = {}) {
+async function runAreaSearch(page, { maxStops = 5, beforeSubmit } = {}) {
   await stubApis(page);
   await page.goto("/");
   await page.click("#settingsButton");
@@ -10,6 +10,7 @@ async function runAreaSearch(page, { maxStops = 5 } = {}) {
   await page.click('[data-mode="area"]');
   await page.fill("#origin", "Test Center, Barcelona");
   await page.fill("#maxStops", String(maxStops));
+  if (beforeSubmit) await beforeSubmit();
   await page.click('button[type="submit"]');
   await expect(page.locator(".stop-card")).toHaveCount(maxStops, { timeout: 15000 });
 }
