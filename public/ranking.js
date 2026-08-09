@@ -47,16 +47,26 @@
 
   function sampleRouteForCoverage(coordinates, options = {}) {
     const corridorRadiusKm = clamp(Number(options.corridorRadiusKm), 1, 50);
-    const queryRadiusKm = clamp(Number(options.queryRadiusKm ?? 200), corridorRadiusKm + 1, 500);
+    const queryRadiusKm = clamp(Number(options.queryRadiusKm ?? 200), 1, 500);
+    const coverageFeasible = queryRadiusKm > corridorRadiusKm;
     const maxSamples = Math.max(2, Math.floor(Number(options.maxSamples) || 16));
     const { segments, totalKm } = routeSegments(Array.isArray(coordinates) ? coordinates : []);
     if (!segments.length) {
-      return { samples: [], totalKm: 0, requiredSamples: 0, coverageComplete: true, queryRadiusKm };
+      return {
+        samples: [],
+        totalKm: 0,
+        requiredSamples: 0,
+        coverageComplete: true,
+        coverageFeasible,
+        queryRadiusKm
+      };
     }
 
-    const maxSpacingKm = Math.max(1, 2 * (queryRadiusKm - corridorRadiusKm));
-    const requiredSamples = Math.max(2, Math.ceil(totalKm / maxSpacingKm) + 1);
-    const sampleCount = Math.min(maxSamples, requiredSamples);
+    const maxSpacingKm = coverageFeasible ? 2 * (queryRadiusKm - corridorRadiusKm) : 0;
+    const requiredSamples = coverageFeasible
+      ? Math.max(2, Math.ceil(totalKm / maxSpacingKm) + 1)
+      : Infinity;
+    const sampleCount = coverageFeasible ? Math.min(maxSamples, requiredSamples) : maxSamples;
     const samples = [];
     let segmentIndex = 0;
 
@@ -77,7 +87,8 @@
       samples,
       totalKm,
       requiredSamples,
-      coverageComplete: requiredSamples <= maxSamples,
+      coverageComplete: coverageFeasible && requiredSamples <= maxSamples,
+      coverageFeasible,
       queryRadiusKm,
       maxSpacingKm
     };
@@ -98,8 +109,7 @@
     return { distanceKm: Math.hypot(dx, dy), ratio };
   }
 
-  function distanceToRouteKm(point, coordinates) {
-    const { segments, totalKm } = routeSegments(Array.isArray(coordinates) ? coordinates : []);
+  function distanceToRouteIndex(point, segments, totalKm) {
     if (!segments.length) return { distanceKm: Infinity, progress: 0 };
     let nearest = { distanceKm: Infinity, progressKm: 0 };
     for (const segment of segments) {
@@ -115,6 +125,20 @@
       distanceKm: nearest.distanceKm,
       progress: totalKm ? nearest.progressKm / totalKm : 0
     };
+  }
+
+  function createRouteIndex(coordinates) {
+    const { segments, totalKm } = routeSegments(Array.isArray(coordinates) ? coordinates : []);
+    return Object.freeze({
+      totalKm,
+      distanceTo(point) {
+        return distanceToRouteIndex(point, segments, totalKm);
+      }
+    });
+  }
+
+  function distanceToRouteKm(point, coordinates) {
+    return createRouteIndex(coordinates).distanceTo(point);
   }
 
   function parseObservationDay(value) {
@@ -148,11 +172,12 @@
 
   function richnessPrior(numSpeciesAllTime) {
     const richness = Math.max(0, Number(numSpeciesAllTime) || 0);
-    return Math.log1p(richness) / Math.log1p(500);
+    return richness ? Math.log1p(richness) / Math.log1p(richness + 500) : 0;
   }
 
   root.BirdtripRanking = Object.freeze({
     clamp,
+    createRouteIndex,
     distanceToRouteKm,
     haversineKm,
     normalizedScore,

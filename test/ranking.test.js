@@ -26,6 +26,20 @@ test("coverage sampling scales with route length and reports partial coverage", 
   assert.ok(partial.requiredSamples > 16);
 });
 
+test("coverage sampling preserves an infeasible query radius", () => {
+  const result = ranking.sampleRouteForCoverage([[0, 0], [1, 0]], {
+    corridorRadiusKm: 25,
+    queryRadiusKm: 25,
+    maxSamples: 14
+  });
+
+  assert.equal(result.queryRadiusKm, 25);
+  assert.equal(result.coverageFeasible, false);
+  assert.equal(result.coverageComplete, false);
+  assert.equal(result.requiredSamples, Infinity);
+  assert.equal(result.samples.length, 14);
+});
+
 test("distance to route uses the polyline rather than sample points", () => {
   const route = [[0, 0], [10, 0], [10, 10]];
   const horizontal = ranking.distanceToRouteKm({ lng: 5, lat: 1 }, route);
@@ -34,6 +48,15 @@ test("distance to route uses the polyline rather than sample points", () => {
   assert.ok(horizontal.distanceKm > 109 && horizontal.distanceKm < 112);
   assert.ok(vertical.distanceKm > 109 && vertical.distanceKm < 112);
   assert.ok(horizontal.progress < vertical.progress);
+});
+
+test("a route index reuses geometry without changing distance results", () => {
+  const route = [[0, 0], [10, 0], [10, 10]];
+  const point = { lng: 9, lat: 7 };
+  const direct = ranking.distanceToRouteKm(point, route);
+  const indexed = ranking.createRouteIndex(route).distanceTo(point);
+
+  assert.deepEqual(indexed, direct);
 });
 
 test("freshness has a fixed seven-day half-life and rejects unknown dates", () => {
@@ -59,6 +82,8 @@ test("score normalization removes disabled component maxima", () => {
 });
 
 test("all-time richness prior preserves ordering without a hard cap", () => {
+  assert.ok(ranking.richnessPrior(1000) < 1);
+  assert.ok(ranking.richnessPrior(1000) > ranking.richnessPrior(500));
   assert.ok(ranking.richnessPrior(500) > ranking.richnessPrior(400));
   assert.ok(ranking.richnessPrior(400) > ranking.richnessPrior(100));
 });

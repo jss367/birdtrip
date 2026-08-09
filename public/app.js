@@ -48,6 +48,7 @@ const state = {
 const ranking = window.BirdtripRanking;
 const SCORING_VERSION = 2;
 const DISCOVERY_QUERY_RADIUS_KM = 200;
+const ACTIVITY_QUERY_RADIUS_KM = 50;
 const MAX_DISCOVERY_SAMPLES = 16;
 const MAX_ACTIVITY_SAMPLES = 14;
 const ACTIVITY_MAX_RESULTS = 1000;
@@ -743,6 +744,14 @@ function serializeTripState() {
 }
 
 function serializeCandidate(candidate) {
+  const evidence = isObjectRecord(candidate.evidence)
+    ? {
+        ...candidate.evidence,
+        recent: isObjectRecord(candidate.evidence.recent)
+          ? { ...candidate.evidence.recent, observations: undefined }
+          : candidate.evidence.recent
+      }
+    : candidate.evidence;
   return {
     id: candidate.id,
     locId: candidate.locId,
@@ -761,8 +770,9 @@ function serializeCandidate(candidate) {
     allTimeSpeciesCount: candidate.allTimeSpeciesCount,
     latestObservationDate: candidate.latestObservationDate,
     activityPrior: candidate.activityPrior,
+    activityObserved: candidate.activityObserved,
     discoverySources: candidate.discoverySources,
-    evidence: candidate.evidence,
+    evidence,
     scoreParts: candidate.scoreParts,
     scoringVersion: candidate.scoringVersion,
     enabledScoreParts: candidate.enabledScoreParts,
@@ -856,6 +866,24 @@ function hydrateCandidate(candidate) {
     seen.add(obsKey);
   }
 
+  const evidence = isObjectRecord(candidate.evidence)
+    ? {
+        ...candidate.evidence,
+        recent: isObjectRecord(candidate.evidence.recent)
+          ? {
+              ...candidate.evidence.recent,
+              observations: Array.isArray(candidate.evidence.recent.observations)
+                ? candidate.evidence.recent.observations.filter(isObjectRecord)
+                : observations
+            }
+          : { status: "legacy", observations }
+      }
+    : {
+        recent: { status: "legacy", observations },
+        seasonal: { status: "unavailable" },
+        notableNearby: { status: "legacy", observations: notable }
+      };
+
   return {
     ...candidate,
     observations,
@@ -879,11 +907,7 @@ function hydrateCandidate(candidate) {
     scoredWithLifeList: typeof candidate.scoredWithLifeList === "boolean" ? candidate.scoredWithLifeList : undefined,
     scoringVersion: Number.isFinite(candidate.scoringVersion) ? candidate.scoringVersion : 1,
     enabledScoreParts: Array.isArray(candidate.enabledScoreParts) ? candidate.enabledScoreParts : [],
-    evidence: isObjectRecord(candidate.evidence) ? candidate.evidence : {
-      recent: { status: "legacy", observations },
-      seasonal: { status: "unavailable" },
-      notableNearby: { status: "legacy", observations: notable }
-    },
+    evidence,
     score: Number.isFinite(candidate.score) ? candidate.score : 0
   };
 }
@@ -1288,20 +1312,29 @@ async function runRouteSearch(params) {
   });
   const activityPlan = ranking.sampleRouteForCoverage(route.geometry.coordinates, {
     corridorRadiusKm: params.radiusKm,
-    queryRadiusKm: 50,
+    queryRadiusKm: ACTIVITY_QUERY_RADIUS_KM,
     maxSamples: MAX_ACTIVITY_SAMPLES
   });
+  const routeIndex = ranking.createRouteIndex(route.geometry.coordinates);
   if (!discoveryPlan.coverageComplete) {
     addWarning(`This route needs ${discoveryPlan.requiredSamples} discovery samples for full coverage; Birdtrip checked ${discoveryPlan.samples.length}. Results cover only part of the requested corridor.`);
   }
   const [discoveredHotspots, activityBySample] = await Promise.all([
-    fetchHotspotDirectoryForRoute(discoveryPlan.samples, route.geometry.coordinates, params),
-    fetchRecentForSamples(activityPlan.samples, params)
+    fetchHotspotDirectoryForRoute(
+      discoveryPlan.samples,
+      routeIndex,
+      params
+    ),
+    fetchRecentForSamples(activityPlan.samples, params, activityPlan.queryRadiusKm)
   ]);
   applyActivityPrior(discoveredHotspots, activityBySample, params);
   const shortlistedHotspots = shortlistHotspots(discoveredHotspots, params, "route");
   const hotspotEvidence = await fetchRecentForHotspots(shortlistedHotspots, params);
-  const candidates = buildCandidatesFromHotspots(hotspotEvidence, params, route.geometry.coordinates);
+  const candidates = buildCandidatesFromHotspots(
+    hotspotEvidence,
+    params,
+    routeIndex
+  );
 
   if (!candidates.length) {
     setStatus("No candidates", "No known eBird hotspots were found in the covered route corridor. Try a wider radius.");
@@ -3264,7 +3297,7 @@ function updateAreaSummary(radiusKm) {
   renderInsights();
 }
 
-async function fetchRecentForSamples(samples, params) {
+async function fetchRecentForSamples(samples, params, queryRadiusKm = params.radiusKm) {
   const chunks = [];
   for (let i = 0; i < samples.length; i += 4) chunks.push(samples.slice(i, i + 4));
 
@@ -3272,7 +3305,7 @@ async function fetchRecentForSamples(samples, params) {
   for (let i = 0; i < chunks.length; i += 1) {
     setStatus(params.mode === "area" ? "Scanning area" : "Scanning route", `Requesting recent observations ${i * 4 + 1}-${Math.min((i + 1) * 4, samples.length)} of ${samples.length}.`);
     const batch = await Promise.all(chunks[i].map((sample) => {
-      const url = `/api/ebird/recent?lat=${sample.lat}&lng=${sample.lng}&dist=${params.radiusKm}&back=${params.recentDays}&maxResults=${ACTIVITY_MAX_RESULTS}`;
+      const url = `/api/ebird/recent?lat=${sample.lat}&lng=${sample.lng}&dist=${queryRadiusKm}&back=${params.recentDays}&maxResults=${ACTIVITY_MAX_RESULTS}`;
       return apiJson(url, { token: params.token })
         .then((observations) => ({
           sample,
@@ -3294,7 +3327,7 @@ async function fetchRecentForSamples(samples, params) {
   return all;
 }
 
-async function fetchHotspotDirectoryForRoute(samples, coordinates, params) {
+async function fetchHotspotDirectoryForRoute(samples, routeIndex, params) {
   const chunks = [];
   for (let i = 0; i < samples.length; i += 4) chunks.push(samples.slice(i, i + 4));
   const byId = new Map();
@@ -3324,7 +3357,7 @@ async function fetchHotspotDirectoryForRoute(samples, coordinates, params) {
   }
 
   return Array.from(byId.values()).map((hotspot) => {
-    const routeMatch = ranking.distanceToRouteKm(hotspot, coordinates);
+    const routeMatch = routeIndex.distanceTo(hotspot);
     return {
       ...hotspot,
       routeDistanceKm: routeMatch.distanceKm,
@@ -3352,11 +3385,20 @@ function applyActivityPrior(hotspots, observationsBySample, params) {
     }
   }
 
+  const observedPriors = Array.from(byLocation.values())
+    .map((activity) => Array.from(activity.species.values()).reduce((sum, weight) => sum + weight, 0))
+    .sort((a, b) => a - b);
+  const middle = Math.floor(observedPriors.length / 2);
+  const neutralActivityPrior = observedPriors.length % 2
+    ? observedPriors[middle]
+    : (observedPriors[middle - 1] + observedPriors[middle]) / 2 || 0;
+
   for (const hotspot of Array.isArray(hotspots) ? hotspots : []) {
     const activity = byLocation.get(hotspot.locId);
+    hotspot.activityObserved = Boolean(activity);
     hotspot.activityPrior = activity
       ? Array.from(activity.species.values()).reduce((sum, weight) => sum + weight, 0)
-      : 0;
+      : neutralActivityPrior;
     hotspot.activityTargetCount = activity?.targets.size || 0;
     hotspot.activityUnseenCount = activity?.unseen.size || 0;
   }
@@ -3406,6 +3448,7 @@ function shortlistHotspots(hotspots, params, mode) {
   const bandCount = Math.min(10, Math.max(4, params.maxStops));
   for (let band = 0; band < bandCount; band += 1) {
     const inBand = ranked.find((hotspot) => {
+      if (selectedIds.has(hotspot.locId)) return false;
       const normalized = mode === "area"
         ? (hotspot.areaAngle + Math.PI) / (2 * Math.PI)
         : hotspot.routeProgress;
@@ -3550,7 +3593,7 @@ async function fetchRecentForHotspots(hotspots, params) {
   return evidence;
 }
 
-function buildCandidatesFromHotspots(evidence, params, routeCoordinates, areaCenter = null) {
+function buildCandidatesFromHotspots(evidence, params, routeIndex, areaCenter = null) {
   return evidence.map((entry) => {
     const hotspot = entry.hotspot;
     const observations = entry.observations.filter(isObjectRecord);
@@ -3564,8 +3607,10 @@ function buildCandidatesFromHotspots(evidence, params, routeCoordinates, areaCen
         : `${speciesKey}|${obs.obsDt || ""}|${obs.howMany ?? ""}`;
       seen.add(obsKey);
     }
-    const routeMatch = routeCoordinates
-      ? ranking.distanceToRouteKm(hotspot, routeCoordinates)
+    const routeMatch = routeIndex
+      ? Number.isFinite(hotspot.routeDistanceKm) && Number.isFinite(hotspot.routeProgress)
+        ? { distanceKm: hotspot.routeDistanceKm, progress: hotspot.routeProgress }
+        : routeIndex.distanceTo(hotspot)
       : { distanceKm: haversineKm(areaCenter, hotspot), progress: 0 };
     const targetMatches = params.targets.map((target) => species.get(target)).filter(Boolean);
     const liferSpecies = params.lifeList?.size
@@ -3588,6 +3633,7 @@ function buildCandidatesFromHotspots(evidence, params, routeCoordinates, areaCen
       allTimeSpeciesCount: Number(hotspot.numSpeciesAllTime) || 0,
       latestObservationDate: hotspot.latestObsDt || "",
       activityPrior: hotspot.activityPrior || 0,
+      activityObserved: Boolean(hotspot.activityObserved),
       discoverySources: ["ebird-hotspot"],
       evidence: {
         recent: {
@@ -3785,7 +3831,7 @@ function scoreCandidates(candidates, params) {
     const weightedUnseen = weightedUnseenTotal(candidate.observations, params.lifeList);
     const currentScore = Math.min(weightedSpecies, 90) / 90 * 28
       + Math.min(weightedActivity, 250) / 250 * 7;
-    const stableScore = Math.min(1, ranking.richnessPrior(candidate.allTimeSpeciesCount)) * 10;
+    const stableScore = ranking.richnessPrior(candidate.allTimeSpeciesCount) * 10;
     const personalScore = personalEnabled
       ? Math.min(weightedTargets, 5) / 5 * 8 + Math.min(weightedUnseen, 8) / 8 * 7
       : 0;
