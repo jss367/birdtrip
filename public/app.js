@@ -4,6 +4,9 @@ const state = {
   route: null,
   routeName: "",
   results: [],
+  candidatePool: [],
+  balance: 2,
+  balanceLocked: false,
   selectedId: null,
   savedTrips: [],
   comparisonIds: [],
@@ -159,6 +162,17 @@ const autocomplete = {
 };
 
 const speciesAutocomplete = { timer: 0, controller: null, items: [], activeIndex: -1, lastQuery: "" };
+
+// Ranking preference: convMult scales practicality points against bird points
+// in rankUtility. Index 2 (convMult 1) reproduces the pre-slider formula.
+const BALANCE_LEVELS = [
+  { convMult: 0, label: "Prioritize birding" },
+  { convMult: 0.5, label: "Leaning birding" },
+  { convMult: 1, label: "Recommended" },
+  { convMult: 2, label: "Leaning convenience" },
+  { convMult: 5, label: "Less driving" }
+];
+const DEFAULT_BALANCE = 2;
 
 const PREF_FIELDS = [
   "origin",
@@ -750,6 +764,9 @@ function serializeCandidate(candidate) {
     addedMiles: candidate.addedMiles,
     scoreParts: candidate.scoreParts,
     scoredWithLifeList: candidate.scoredWithLifeList,
+    siteQuality: candidate.siteQuality,
+    birdPoints: candidate.birdPoints,
+    birdMax: candidate.birdMax,
     score: candidate.score
   };
 }
@@ -839,6 +856,20 @@ function hydrateCandidate(candidate) {
     seen.add(obsKey);
   }
 
+  const scoreParts = candidate.scoreParts || {
+    species: 0,
+    activity: 0,
+    notable: 0,
+    targets: 0,
+    practicality: 0
+  };
+  // Left undefined for trips saved before this was recorded, so display code
+  // can tell "scored without a life list" apart from "we don't know".
+  const scoredWithLifeList = typeof candidate.scoredWithLifeList === "boolean"
+    ? candidate.scoredWithLifeList
+    : undefined;
+  const siteRaw = (Number(scoreParts.species) || 0) + (Number(scoreParts.activity) || 0) + (Number(scoreParts.notable) || 0);
+
   return {
     ...candidate,
     observations,
@@ -850,16 +881,19 @@ function hydrateCandidate(candidate) {
       ? candidate.liferSpecies.filter(isObjectRecord)
       : [],
     routeDistanceKm: Number.isFinite(candidate.routeDistanceKm) ? candidate.routeDistanceKm : 0,
-    scoreParts: candidate.scoreParts || {
-      species: 0,
-      activity: 0,
-      notable: 0,
-      targets: 0,
-      practicality: 0
-    },
-    // Left undefined for trips saved before this was recorded, so scoreScale can
-    // tell "scored without a life list" apart from "we don't know".
-    scoredWithLifeList: typeof candidate.scoredWithLifeList === "boolean" ? candidate.scoredWithLifeList : undefined,
+    scoreParts,
+    scoredWithLifeList,
+    // Rebuild balance inputs from scoreParts for trips saved before these
+    // fields existed; saves that carried them win via the fallbacks.
+    siteQuality: Number.isFinite(candidate.siteQuality)
+      ? candidate.siteQuality
+      : Math.round(siteRaw / 80 * 100),
+    birdPoints: Number.isFinite(candidate.birdPoints)
+      ? candidate.birdPoints
+      : siteRaw + (Number(scoreParts.targets) || 0) + (Number(scoreParts.lifers) || 0),
+    birdMax: Number.isFinite(candidate.birdMax)
+      ? candidate.birdMax
+      : ((scoredWithLifeList ?? (Number(scoreParts.lifers) || 0) > 0) ? 113 : 95),
     score: Number.isFinite(candidate.score) ? candidate.score : 0
   };
 }
@@ -1284,7 +1318,7 @@ async function runRouteSearch(params) {
 
   state.results = practical
     .filter((candidate) => candidate.addedMinutes <= params.maxDetour)
-    .sort((a, b) => b.score - a.score)
+    .sort(compareByRankUtility)
     .slice(0, params.maxStops);
 
   renderResults();
@@ -1343,7 +1377,7 @@ async function runAreaSearch(params) {
   scoreCandidates(practical, params);
 
   state.results = practical
-    .sort((a, b) => b.score - a.score)
+    .sort(compareByRankUtility)
     .slice(0, params.maxStops);
 
   renderResults();
@@ -1947,7 +1981,7 @@ function applyLifeListToCurrentResults() {
       : [];
   }
   scoreCandidates(state.results, params);
-  state.results.sort((a, b) => b.score - a.score);
+  state.results.sort(compareByRankUtility);
 }
 
 function parseLifeListText(text, fileName = "") {
@@ -3601,8 +3635,26 @@ function scoreCandidates(candidates, params) {
       lifers: liferScore,
       practicality: practicalityScore
     };
-    candidate.score = Math.round(speciesScore + activityScore + notableScore + targetScore + liferScore + practicalityScore);
+    // siteQuality excludes targets/lifers so personal inputs can't mint a
+    // "Top hotspot"; birdPoints is the personalized non-practicality total.
+    candidate.siteQuality = Math.round((speciesScore + activityScore + notableScore) / 80 * 100);
+    candidate.birdPoints = speciesScore + activityScore + notableScore + targetScore + liferScore;
+    candidate.birdMax = params.lifeList?.size ? 113 : 95;
   }
+  applyBalance(candidates);
+}
+
+function applyBalance(candidates, balanceIndex = state.balance) {
+  const level = BALANCE_LEVELS[balanceIndex] || BALANCE_LEVELS[DEFAULT_BALANCE];
+  for (const candidate of candidates) {
+    const practicality = Number(candidate.scoreParts?.practicality) || 0;
+    candidate.rankUtility = candidate.birdPoints + level.convMult * practicality;
+    candidate.score = Math.round(candidate.rankUtility / (candidate.birdMax + level.convMult * 20) * 100);
+  }
+}
+
+function compareByRankUtility(a, b) {
+  return (b.rankUtility - a.rankUtility) || String(a.id).localeCompare(String(b.id));
 }
 
 function weightedUniqueSpecies(observations, recentDays) {
@@ -3924,7 +3976,7 @@ function bestWithinBudget(minutes) {
 }
 
 function compareBirdingRouteValue(a, b) {
-  if (b.score !== a.score) return b.score - a.score;
+  if (b.rankUtility !== a.rankUtility) return b.rankUtility - a.rankUtility;
   const bValue = birdingValuePerMinute(b);
   const aValue = birdingValuePerMinute(a);
   if (bValue !== aValue) return bValue - aValue;
@@ -4078,7 +4130,6 @@ function renderResults() {
     return;
   }
 
-  const scale = scoreScale(state.results);
   state.results.forEach((candidate, index) => {
     const node = els.resultTemplate.content.cloneNode(true);
     const card = node.querySelector(".stop-card");
@@ -4093,7 +4144,7 @@ function renderResults() {
     node.querySelector(".stop-chips").innerHTML = candidateChips(candidate, index);
     const scorePill = node.querySelector(".score-pill");
     scorePill.querySelector("b").textContent = candidate.score;
-    scorePill.title = scoreTooltip(candidate, isArea, scale);
+    scorePill.title = scoreTooltip(candidate, isArea);
     node.querySelector(".stop-reason p").textContent = candidateReasonText(candidate, isArea);
     const detourWrap = node.querySelector(".metric-detour-wrap");
     const offrouteWrap = node.querySelector(".metric-offroute-wrap");
@@ -4164,7 +4215,7 @@ function renderResults() {
     dir.setAttribute("aria-label", `Directions to ${candidate.name}`);
     ebird.setAttribute("aria-label", `${candidate.name} on eBird`);
     const mainButton = node.querySelector(".stop-main");
-    mainButton.setAttribute("aria-label", `View ${candidate.name}, rank ${index + 1} of ${state.results.length}, score ${candidate.score} of ${scale.max}`);
+    mainButton.setAttribute("aria-label", `View ${candidate.name}, rank ${index + 1} of ${state.results.length}, score ${candidate.score} of 100`);
     mainButton.addEventListener("click", () => selectCandidate(candidate.id));
     setupCandidateSpeciesPreviews(card);
     els.resultsList.appendChild(node);
@@ -4427,7 +4478,7 @@ function compareFreshnessCell(candidate) {
 function compareScoreCell(candidate) {
   const isArea = state.params?.mode === "area";
   return `
-    <b>${candidate.score} total</b>
+    <b>${candidate.score} of 100</b>
     <div class="comparison-score">
       ${scoreComponents(candidate, isArea).map((part) => compactScorePart(part.label, part.value, part.max)).join("")}
     </div>
@@ -4470,30 +4521,18 @@ function scoreComponents(candidate, isArea) {
   }));
 }
 
-// Read from the scoring context each candidate was scored in, not the current life
-// list: saved trips keep the scores they were built with, so a life list imported or
-// cleared since then would otherwise put the pill on a scale its own numbers can
-// exceed. Trips saved before that context was recorded fall back to the scores
-// themselves, which can understate the scale but can never contradict it.
-function scoreScale(candidates) {
-  const includesLifers = candidates.some((candidate) => (
-    typeof candidate.scoredWithLifeList === "boolean"
-      ? candidate.scoredWithLifeList
-      : Number(candidate.scoreParts?.lifers) > 0
-  ));
-  const max = SCORE_COMPONENTS.reduce(
-    (sum, part) => sum + (part.key === "lifers" && !includesLifers ? 0 : part.max),
-    0
-  );
-  return { includesLifers, max };
-}
-
-function scoreTooltip(candidate, isArea, scale) {
+// Overall is the balance-weighted blend of the two normalized subscores; the
+// raw component breakdown explains the Birding side without needing to sum to
+// the headline.
+function scoreTooltip(candidate, isArea) {
+  const birdPct = Math.round((Number(candidate.birdPoints) || 0) / (Number(candidate.birdMax) || 95) * 100);
+  const convPct = Math.round((Number(candidate.scoreParts?.practicality) || 0) / 20 * 100);
+  const level = BALANCE_LEVELS[state.balance] || BALANCE_LEVELS[DEFAULT_BALANCE];
   const breakdown = scoreComponents(candidate, isArea)
-    .filter((part) => scale.includesLifers || part.key !== "lifers")
+    .filter((part) => part.key !== "lifers" || part.value > 0)
     .map((part) => `${part.label} ${part.value.toFixed(1)}/${part.max}`)
     .join(", ");
-  return `Score ${candidate.score} of ${scale.max} — ${breakdown}`;
+  return `Overall ${candidate.score} of 100 — Birding ${birdPct}/100, Convenience ${convPct}/100, Preference: ${level.label} — ${breakdown}`;
 }
 
 function scoreRow(label, value, max) {
@@ -4683,8 +4722,18 @@ function positionCandidateSpeciesPreview(menu) {
   menu.style.setProperty("--stop-chip-bridge-dropdown-right", `${dropdownOffset + dropdownWidth - bridgeLeft}px`);
 }
 
+// Classification uses siteQuality (species + activity + notable, /80), never
+// the balance-weighted display score: sliding toward convenience or importing
+// a life list must not mint or revoke "Top hotspot".
 function isHotspot(candidate) {
-  return candidate.score >= 65 || candidate.species.size >= 40;
+  return siteQualityOf(candidate) >= 55 || candidate.species.size >= 40;
+}
+
+function siteQualityOf(candidate) {
+  if (Number.isFinite(candidate.siteQuality)) return candidate.siteQuality;
+  const parts = candidate.scoreParts || {};
+  const raw = (Number(parts.species) || 0) + (Number(parts.activity) || 0) + (Number(parts.notable) || 0);
+  return Math.round(raw / 80 * 100);
 }
 
 function uniqueNotableCount(candidate) {

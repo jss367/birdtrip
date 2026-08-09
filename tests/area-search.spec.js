@@ -7,6 +7,26 @@ test("area search renders ranked stops from fixtures", async ({ page }) => {
   expect(names).toHaveLength(5);
 });
 
+test("default ordering matches the balanced baseline", async ({ page }) => {
+  await runAreaSearch(page);
+  expect(await visibleOrder(page)).toEqual([
+    "City Park Alpha",
+    "City Park Gamma",
+    "Harbor Park",
+    "City Park Beta",
+    "Wetland Reserve North"
+  ]);
+});
+
+test("scores display on a 0-100 scale", async ({ page }) => {
+  await runAreaSearch(page);
+  const title = await page.locator(".score-pill").first().getAttribute("title");
+  expect(title).toMatch(/Overall \d+ of 100/);
+  expect(title).toMatch(/Birding \d+\/100/);
+  expect(title).toMatch(/Convenience \d+\/100/);
+  expect(title).toMatch(/Preference: Recommended/);
+});
+
 test("single-target search earns full target points", async ({ page }) => {
   await runAreaSearch(page, {
     beforeSubmit: async () => {
