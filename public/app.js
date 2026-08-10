@@ -57,6 +57,7 @@ const MAX_INITIAL_DETOURS = 20;
 const MAX_TOTAL_DETOURS = 40;
 const MAX_ROUTE_TARGETS = 10;
 const MAX_ROUTE_TARGET_LOOKUPS = 20;
+const MAX_ROUTE_UNSEEN_PROBES = 10;
 
 const els = {
   resultsActions: document.querySelector("#resultsActions"),
@@ -1347,6 +1348,9 @@ async function runRouteSearch(params) {
     hotspot.activityTargetCount = Math.max(1, hotspot.activityTargetCount || 0);
     hotspot.explicitTargetRescue = true;
   }
+  const targetAwareShortlist = shortlistHotspots(discoveredHotspots, params, "route");
+  const unseenProbes = reserveRouteUnseenEvidence(discoveredHotspots, targetAwareShortlist, params);
+  for (const hotspot of unseenProbes) hotspot.importedListProbe = true;
   const shortlistedHotspots = shortlistHotspots(discoveredHotspots, params, "route");
   const hotspotEvidence = await fetchRecentForHotspots(shortlistedHotspots, params);
   const candidates = buildCandidatesFromHotspots(
@@ -3463,6 +3467,7 @@ function shortlistHotspots(hotspots, params, mode) {
 
   ranked.filter((hotspot) => hotspot.activityTargetCount).forEach(add);
   ranked.filter((hotspot) => hotspot.activityUnseenCount).slice(0, params.maxStops).forEach(add);
+  ranked.filter((hotspot) => hotspot.importedListProbe).slice(0, params.maxStops).forEach(add);
 
   const bandCount = Math.min(10, Math.max(4, params.maxStops));
   for (let band = 0; band < bandCount; band += 1) {
@@ -3604,6 +3609,33 @@ function evenlySpacedItems(items, limit) {
   return Array.from({ length: limit }, (_, index) => (
     items[Math.round(index * (items.length - 1) / (limit - 1))]
   ));
+}
+
+function reserveRouteUnseenEvidence(hotspots, alreadySelected, params) {
+  if (!params.lifeList?.size || hotspots.length <= alreadySelected.length) return [];
+  const selectedIds = new Set(alreadySelected.map((hotspot) => hotspot.locId));
+  const dropped = hotspots
+    .filter((hotspot) => hotspot.locId && !selectedIds.has(hotspot.locId))
+    .sort((a, b) => hotspotFetchPriority(b, params) - hotspotFetchPriority(a, params));
+  const limit = Math.min(MAX_ROUTE_UNSEEN_PROBES, params.maxStops, dropped.length);
+  if (!limit) return [];
+
+  const probes = [];
+  const probeIds = new Set();
+  const add = (hotspot) => {
+    if (!hotspot || probeIds.has(hotspot.locId) || probes.length >= limit) return;
+    probeIds.add(hotspot.locId);
+    probes.push(hotspot);
+  };
+  for (let band = 0; band < limit; band += 1) {
+    add(dropped.find((hotspot) => (
+      hotspot.routeProgress >= band / limit
+      && hotspot.routeProgress <= (band + 1) / limit
+    )));
+  }
+  dropped.forEach(add);
+  addWarning(`Imported-list matching reserved ${probes.length} additional route hotspots for per-location evidence. Other corridor hotspots may also report species not on your list.`);
+  return probes;
 }
 
 async function rescueLiferHotspots(hotspots, alreadyChosen, center, params) {
