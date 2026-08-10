@@ -7,6 +7,14 @@
     return degrees * Math.PI / 180;
   }
 
+  function normalizeLongitude(degrees) {
+    return ((degrees + 180) % 360 + 360) % 360 - 180;
+  }
+
+  function longitudeDelta(from, to) {
+    return normalizeLongitude(to - from);
+  }
+
   function clamp(value, min, max) {
     if (!Number.isFinite(value)) return min;
     return Math.max(min, Math.min(max, value));
@@ -40,7 +48,7 @@
       ? clamp(distanceKm / segment.distanceKm, 0, 1)
       : 0;
     return {
-      lng: segment.start.lng + (segment.end.lng - segment.start.lng) * ratio,
+      lng: normalizeLongitude(segment.start.lng + longitudeDelta(segment.start.lng, segment.end.lng) * ratio),
       lat: segment.start.lat + (segment.end.lat - segment.start.lat) * ratio
     };
   }
@@ -98,9 +106,9 @@
     const meanLat = toRadians((point.lat + segment.start.lat + segment.end.lat) / 3);
     const lngKm = 111.32 * Math.max(0.01, Math.cos(meanLat));
     const latKm = 110.574;
-    const bx = (segment.end.lng - segment.start.lng) * lngKm;
+    const bx = longitudeDelta(segment.start.lng, segment.end.lng) * lngKm;
     const by = (segment.end.lat - segment.start.lat) * latKm;
-    const px = (point.lng - segment.start.lng) * lngKm;
+    const px = longitudeDelta(segment.start.lng, point.lng) * lngKm;
     const py = (point.lat - segment.start.lat) * latKm;
     const lengthSquared = bx * bx + by * by;
     const ratio = lengthSquared ? clamp((px * bx + py * by) / lengthSquared, 0, 1) : 0;

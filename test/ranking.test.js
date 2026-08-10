@@ -59,6 +59,19 @@ test("a route index reuses geometry without changing distance results", () => {
   assert.deepEqual(indexed, direct);
 });
 
+test("route sampling and distance use the short path across the antimeridian", () => {
+  const route = [[179, 0], [-179, 0]];
+  const samples = ranking.sampleRouteForCoverage(route, {
+    corridorRadiusKm: 25,
+    queryRadiusKm: 200,
+    maxSamples: 4
+  }).samples;
+  const midpoint = ranking.distanceToRouteKm({ lng: 180, lat: 0 }, route);
+
+  assert.ok(midpoint.distanceKm < 0.001);
+  assert.ok(samples.every((sample) => Math.abs(sample.lng) > 170));
+});
+
 test("freshness has a fixed seven-day half-life and rejects unknown dates", () => {
   const now = new Date(2026, 7, 8);
   assert.equal(ranking.observationFreshnessWeight("2026-08-08", { now }), 1);
