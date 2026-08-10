@@ -83,6 +83,13 @@ test("life-list ranking matches the lifer-weighted baseline", async ({ page }) =
   ]);
 });
 
+test("out-of-range shared balance falls back to the default", async ({ page }) => {
+  await stubApis(page);
+  await page.goto("/?bt=1&mode=area&origin=Test+Center%2C+Barcelona&maxStops=5&balance=99");
+  await expect(page.locator("#balanceSlider")).toHaveValue("2");
+  await expect(page.locator("#balanceHint")).toContainText("Recommended");
+});
+
 test("shared URL restores the balance position", async ({ page }) => {
   await stubApis(page);
   await page.goto("/?bt=1&mode=area&origin=Test+Center%2C+Barcelona&maxStops=5&balance=0&run=1");

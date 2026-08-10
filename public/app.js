@@ -383,8 +383,10 @@ function readSharedSearchFromUrl() {
     recentDays: cleanSharedNumber(search.get("recentDays"), 1, 30),
     radiusKm: cleanSharedNumber(search.get("radiusKm"), 1, 50),
     maxStops: cleanSharedNumber(search.get("maxStops"), 3, 20),
+    // Raw, not clamped: setBalance defaults out-of-range values rather than
+    // letting balance=99 arrive pre-clamped to "Less driving".
     targets: cleanSharedTargets(search.get("targets"), 1200),
-    balance: cleanSharedNumber(search.get("balance"), 0, 4),
+    balance: search.get("balance"),
     pins: cleanSharedIdList(search.getAll("pin"), 5),
     autoRun: search.get("run") === "1"
   };
@@ -410,7 +412,7 @@ function applySharedSearch(shared) {
   if (shared.maxStops) els.maxStops.value = shared.maxStops;
   if (shared.targets) els.targets.value = shared.targets;
   // "0" is a valid position; only an absent/invalid param falls back to default.
-  setBalance(shared.balance === "" ? DEFAULT_BALANCE : Number(shared.balance), { skipRerank: true });
+  setBalance(shared.balance === null || shared.balance === "" ? DEFAULT_BALANCE : Number(shared.balance), { skipRerank: true });
   state.pendingPinnedIds = shared.pins || [];
   updateInputSummaries();
   setStatus(
@@ -1170,6 +1172,7 @@ function clearResults() {
   state.results = [];
   state.candidatePool = [];
   state.balanceLocked = false;
+  syncBalanceControls();
   state.route = null;
   state.areaCenter = null;
   state.sightings = [];
@@ -2001,6 +2004,10 @@ function renderResultsIfPresent() {
 }
 
 function applyLifeListToCurrentResults() {
+  // Restored trips have no candidate pool — re-scoring their truncated visible
+  // results would silently reorder the saved trip. A fresh search picks the
+  // life list up ("Run search again for full reranking").
+  if (state.balanceLocked) return;
   const pool = state.candidatePool.length ? state.candidatePool : state.results;
   if (!pool.length) return;
   const params = {
@@ -2170,6 +2177,7 @@ function clearSearchArtifacts() {
   state.results = [];
   state.candidatePool = [];
   state.balanceLocked = false;
+  syncBalanceControls();
   state.selectedId = null;
   state.comparisonIds = [];
   state.pinnedIds = [];
@@ -3619,7 +3627,10 @@ async function addAreaNotableObservations(candidates, params) {
       { token: params.token }
     );
   } catch {
-    await fetchNotablesPerCandidate(selectNotableCandidates(candidates, params), params);
+    // Fallback must cover the whole area pool, not the route-mode bound:
+    // every area candidate stays rankable, so partial notable data would
+    // bias re-ranking against the unfetched tail.
+    await fetchNotablesPerCandidate(candidates, params);
     return;
   }
   if (Array.isArray(feed) && feed.length >= feedMaxResults) {
@@ -3708,8 +3719,12 @@ function candidateById(id) {
 }
 
 function setBalance(index, options = {}) {
+  // Out-of-range or non-numeric imported values fall back to the default
+  // rather than clamping: a bogus balance=99 shouldn't read as "Less driving".
   const parsed = Math.round(Number(index));
-  state.balance = Number.isFinite(parsed) ? clamp(parsed, 0, BALANCE_LEVELS.length - 1) : DEFAULT_BALANCE;
+  state.balance = Number.isFinite(parsed) && parsed >= 0 && parsed < BALANCE_LEVELS.length
+    ? parsed
+    : DEFAULT_BALANCE;
   syncBalanceControls();
   if (options.skipRerank || state.balanceLocked || !state.candidatePool.length) return;
   deriveVisibleResults();
@@ -3730,6 +3745,7 @@ function syncBalanceControls() {
     if (!slider) continue;
     slider.value = String(state.balance);
     slider.disabled = state.balanceLocked;
+    slider.setAttribute("aria-valuetext", level.label);
     if (hint) {
       hint.textContent = state.balanceLocked
         ? "Saved trips keep their original ranking."
@@ -4448,7 +4464,7 @@ function updateSelectedCard() {
 }
 
 function toggleComparison(id) {
-  const candidate = state.results.find((item) => item.id === id);
+  const candidate = candidateById(id);
   if (!candidate) return;
   if (state.comparisonIds.includes(id)) {
     state.comparisonIds = state.comparisonIds.filter((item) => item !== id);
@@ -4471,7 +4487,7 @@ function clearComparison() {
 
 function syncComparisonButtons() {
   els.resultsList.querySelectorAll(".stop-card").forEach((card) => {
-    const candidate = state.results.find((item) => item.id === card.dataset.id);
+    const candidate = candidateById(card.dataset.id);
     const button = card.querySelector(".compare-toggle");
     if (!candidate || !button) return;
     const isCompared = state.comparisonIds.includes(candidate.id);
@@ -4484,7 +4500,8 @@ function syncComparisonButtons() {
 }
 
 function renderComparison() {
-  state.comparisonIds = state.comparisonIds.filter((id) => state.results.some((candidate) => candidate.id === id));
+  // Resolve through candidateById so out-of-rank pinned stops stay comparable.
+  state.comparisonIds = state.comparisonIds.filter((id) => candidateById(id));
   if (!state.results.length) {
     els.comparisonPanel.hidden = true;
     els.comparisonContent.innerHTML = "";
@@ -4493,7 +4510,7 @@ function renderComparison() {
 
   els.comparisonPanel.hidden = false;
   const compared = state.comparisonIds
-    .map((id) => state.results.find((candidate) => candidate.id === id))
+    .map((id) => candidateById(id))
     .filter(Boolean);
 
   els.comparisonSummary.textContent = compared.length

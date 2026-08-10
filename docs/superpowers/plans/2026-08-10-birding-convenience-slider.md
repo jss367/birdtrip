@@ -734,7 +734,7 @@ test("pinned stop outside the top results stays visible in its own section", asy
 });
 ```
 
-Find the real pin control selector in the stop-card template (`index.html`, `<template id="resultTemplate">` — grep `resultTemplate`). The Harbor Park choice is verified against the fixture table: it is #3 at default (utility 58.00) and #6 at convMult 0 (birdPoints 39.20, behind L8/L6/L1/L3/L2). If route-mode detour math shifts the ordering, re-derive from the table — utilities in route mode use `addedMinutes`-based practicality, so keep the routing stub's detours uniform to preserve the area-mode ordering, or recompute expectations.
+Find the real pin control selector in the stop-card template (`index.html`, `<template id="resultTemplate">` — grep `resultTemplate`). The Harbor Park choice is verified against the fixture table: it is #3 at default (utility 58.00) and #6 at convMult 0 (birdPoints 39.20, behind L8/L6/L1/L3/L2). If route-mode detour math shifts the ordering, re-derive from the table — utilities in route mode use `addedMinutes`-based practicality, so keep the routing stub's detours proportional (`addedMinutes_i = maxDetour × d_i / 25`, per Step 1) so route practicality reproduces the area conv-points column, or recompute expectations.
 
 Run: FAIL (no out-of-rank section exists).
 

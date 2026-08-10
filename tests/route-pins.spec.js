@@ -13,4 +13,8 @@ test("pinned stop outside the top results stays visible in its own section", asy
   await expect(outOfRank).toHaveCount(1);
   await expect(outOfRank.locator(".stop-name")).toHaveText("Harbor Park");
   await expect(page.locator(".out-of-rank-heading")).toContainText("Pinned — outside current top results");
+  // The out-of-rank card stays fully interactive: Compare must resolve the
+  // candidate through the pool, not the visible results.
+  await outOfRank.locator(".compare-toggle").click();
+  await expect(page.locator("#comparisonContent")).toContainText("Harbor Park");
 });
