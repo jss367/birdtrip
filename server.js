@@ -570,13 +570,14 @@ async function handleApi(req, res, url) {
         return sendError(res, 400, "lat and lng are required");
       }
 
-      const dist = boundedNumber(url.searchParams.get("dist"), 25, 1, 50);
-      const back = boundedNumber(url.searchParams.get("back"), 14, 1, 30);
+      const dist = boundedNumber(url.searchParams.get("dist"), 25, 1, 500);
+      const backValue = url.searchParams.get("back");
+      const back = backValue === null ? null : boundedNumber(backValue, 14, 1, 30);
       const endpoint = new URL("https://api.ebird.org/v2/ref/hotspot/geo");
       endpoint.searchParams.set("lat", String(lat));
       endpoint.searchParams.set("lng", String(lng));
       endpoint.searchParams.set("dist", String(dist));
-      endpoint.searchParams.set("back", String(back));
+      if (back !== null) endpoint.searchParams.set("back", String(back));
       endpoint.searchParams.set("fmt", "json");
 
       const data = await fetchJson(endpoint.toString(), { "x-ebirdapitoken": String(token) });
