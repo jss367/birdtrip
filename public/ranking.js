@@ -170,6 +170,17 @@
     return possible ? Math.round(100 * earned / possible) : 0;
   }
 
+  function personalValueScore(options = {}) {
+    const targetValue = clamp(Number(options.weightedTargets) || 0, 0, 5) / 5;
+    const unseenValue = clamp(Number(options.weightedUnseen) || 0, 0, 8) / 8;
+    const targetsEnabled = Boolean(options.targetsEnabled);
+    const unseenEnabled = Boolean(options.unseenEnabled);
+    if (targetsEnabled && unseenEnabled) return targetValue * 8 + unseenValue * 7;
+    if (targetsEnabled) return targetValue * 15;
+    if (unseenEnabled) return unseenValue * 15;
+    return 0;
+  }
+
   function richnessPrior(numSpeciesAllTime) {
     const richness = Math.max(0, Number(numSpeciesAllTime) || 0);
     return richness ? Math.log1p(richness) / Math.log1p(richness + 500) : 0;
@@ -183,6 +194,7 @@
     normalizedScore,
     observationFreshnessWeight,
     parseObservationDay,
+    personalValueScore,
     richnessPrior,
     sampleRouteForCoverage
   });

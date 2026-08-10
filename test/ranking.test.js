@@ -81,6 +81,23 @@ test("score normalization removes disabled component maxima", () => {
   }), 43);
 });
 
+test("personal scoring gives either enabled input the full component", () => {
+  assert.equal(ranking.personalValueScore({
+    weightedTargets: 5,
+    targetsEnabled: true
+  }), 15);
+  assert.equal(ranking.personalValueScore({
+    weightedUnseen: 8,
+    unseenEnabled: true
+  }), 15);
+  assert.equal(ranking.personalValueScore({
+    weightedTargets: 5,
+    weightedUnseen: 8,
+    targetsEnabled: true,
+    unseenEnabled: true
+  }), 15);
+});
+
 test("all-time richness prior preserves ordering without a hard cap", () => {
   assert.ok(ranking.richnessPrior(1000) < 1);
   assert.ok(ranking.richnessPrior(1000) > ranking.richnessPrior(500));

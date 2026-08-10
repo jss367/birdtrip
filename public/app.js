@@ -3817,7 +3817,9 @@ async function addAreaNotableObservations(candidates, params) {
 }
 
 function scoreCandidates(candidates, params) {
-  const personalEnabled = Boolean(params.targets.length || params.lifeList?.size);
+  const targetsEnabled = Boolean(params.targets.length);
+  const unseenEnabled = Boolean(params.lifeList?.size);
+  const personalEnabled = targetsEnabled || unseenEnabled;
   const enabledMaxima = {
     practicality: 40,
     current: 35,
@@ -3832,9 +3834,12 @@ function scoreCandidates(candidates, params) {
     const currentScore = Math.min(weightedSpecies, 90) / 90 * 28
       + Math.min(weightedActivity, 250) / 250 * 7;
     const stableScore = ranking.richnessPrior(candidate.allTimeSpeciesCount) * 10;
-    const personalScore = personalEnabled
-      ? Math.min(weightedTargets, 5) / 5 * 8 + Math.min(weightedUnseen, 8) / 8 * 7
-      : 0;
+    const personalScore = ranking.personalValueScore({
+      weightedTargets,
+      weightedUnseen,
+      targetsEnabled,
+      unseenEnabled
+    });
     const practicalityScore = params.mode === "area"
       ? Math.max(0, 40 * (1 - candidate.routeDistanceKm / Math.max(params.radiusKm, 1)))
       : params.maxDetour === 0
