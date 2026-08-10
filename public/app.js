@@ -55,6 +55,8 @@ const ACTIVITY_MAX_RESULTS = 1000;
 const MAX_EVIDENCE_HOTSPOTS = 40;
 const MAX_INITIAL_DETOURS = 20;
 const MAX_TOTAL_DETOURS = 40;
+const MAX_ROUTE_TARGETS = 10;
+const MAX_ROUTE_TARGET_LOOKUPS = 20;
 
 const els = {
   resultsActions: document.querySelector("#resultsActions"),
@@ -1319,6 +1321,12 @@ async function runRouteSearch(params) {
   if (!discoveryPlan.coverageComplete) {
     addWarning(`This route needs ${discoveryPlan.requiredSamples} discovery samples for full coverage; Birdtrip checked ${discoveryPlan.samples.length}. Results cover only part of the requested corridor.`);
   }
+  if (!activityPlan.coverageComplete) {
+    const reason = activityPlan.coverageFeasible
+      ? `${activityPlan.requiredSamples} samples are needed for full coverage; Birdtrip checked ${activityPlan.samples.length}`
+      : `eBird's ${activityPlan.queryRadiusKm} km recent-report radius cannot geometrically cover the full ${params.radiusKm} km corridor between samples`;
+    addWarning(`Current-activity coverage is partial: ${reason}. Hotspot discovery is unaffected, but activity and imported-list signals may be incomplete.`);
+  }
   const [discoveredHotspots, activityBySample] = await Promise.all([
     fetchHotspotDirectoryForRoute(
       discoveryPlan.samples,
@@ -1328,6 +1336,17 @@ async function runRouteSearch(params) {
     fetchRecentForSamples(activityPlan.samples, params, activityPlan.queryRadiusKm)
   ]);
   applyActivityPrior(discoveredHotspots, activityBySample, params);
+  const initialShortlist = shortlistHotspots(discoveredHotspots, params, "route");
+  const targetRescues = await rescueRouteTargetHotspots(
+    discoveredHotspots,
+    initialShortlist,
+    activityPlan.samples,
+    params
+  );
+  for (const hotspot of targetRescues) {
+    hotspot.activityTargetCount = Math.max(1, hotspot.activityTargetCount || 0);
+    hotspot.explicitTargetRescue = true;
+  }
   const shortlistedHotspots = shortlistHotspots(discoveredHotspots, params, "route");
   const hotspotEvidence = await fetchRecentForHotspots(shortlistedHotspots, params);
   const candidates = buildCandidatesFromHotspots(
@@ -3454,6 +3473,7 @@ function shortlistHotspots(hotspots, params, mode) {
         : hotspot.routeProgress;
       return normalized >= band / bandCount && normalized <= (band + 1) / bandCount;
     });
+    if (inBand) inBand.geographicRepresentative = true;
     add(inBand);
   }
 
@@ -3514,6 +3534,76 @@ async function rescueTargetHotspots(hotspots, ranked, center, params) {
   return Array.from(rescued.values())
     .sort((a, b) => haversineKm(center, a) - haversineKm(center, b))
     .slice(0, limit);
+}
+
+async function rescueRouteTargetHotspots(hotspots, ranked, samples, params) {
+  if (!params.targets.length || !Array.isArray(hotspots) || !samples.length) return [];
+  const rankedIds = new Set(ranked.map((hotspot) => hotspot.locId));
+  const droppedByLocId = new Map();
+  for (const hotspot of hotspots) {
+    if (!hotspot.locId || rankedIds.has(hotspot.locId)) continue;
+    droppedByLocId.set(hotspot.locId, hotspot);
+  }
+  if (!droppedByLocId.size) return [];
+
+  const uniqueTargets = Array.from(new Set(params.targets));
+  const targets = uniqueTargets.slice(0, MAX_ROUTE_TARGETS);
+  if (uniqueTargets.length > targets.length) {
+    addWarning(`Route target rescue is limited to ${MAX_ROUTE_TARGETS} species; ${uniqueTargets.length - targets.length} additional targets use the general activity prior only.`);
+  }
+  const samplesPerTarget = Math.max(1, Math.floor(MAX_ROUTE_TARGET_LOOKUPS / targets.length));
+  const targetSamples = evenlySpacedItems(samples, samplesPerTarget);
+  const jobs = targets.flatMap((target) => targetSamples.map((sample) => ({ target, sample })));
+  const fullJobCount = targets.length * samples.length;
+  if (jobs.length < fullJobCount) {
+    addWarning(`Target rescue checked ${jobs.length} of ${fullJobCount} target corridor sections because of the ${MAX_ROUTE_TARGET_LOOKUPS}-request ceiling.`);
+  }
+
+  const rescued = new Map();
+  let failed = 0;
+  for (let index = 0; index < jobs.length; index += 2) {
+    const batch = jobs.slice(index, index + 2);
+    setStatus("Checking route targets", `Checking target reports ${index + 1}-${index + batch.length} of ${jobs.length}.`);
+    const results = await Promise.all(batch.map(async ({ target, sample }) => {
+      try {
+        return await apiJson(
+          `/api/ebird/species?lat=${sample.lat}&lng=${sample.lng}&dist=${ACTIVITY_QUERY_RADIUS_KM}&back=${params.recentDays}&maxResults=10000&name=${encodeURIComponent(target)}`,
+          { token: params.token }
+        );
+      } catch (error) {
+        if (error.status !== 404) failed += 1;
+        return null;
+      }
+    }));
+    for (const payload of results) {
+      const observations = Array.isArray(payload?.observations) ? payload.observations : [];
+      if (observations.length >= 10000) {
+        addWarning("A route target lookup reached eBird's 10,000-result limit; some target locations may be missing.");
+      }
+      for (const obs of observations) {
+        const hotspot = obs.locId ? droppedByLocId.get(obs.locId) : null;
+        if (hotspot) rescued.set(hotspot.locId, hotspot);
+      }
+    }
+  }
+  if (failed) {
+    addWarning(`${failed} route target lookups failed; some target locations may be missing from the shortlist.`);
+  }
+  if (rescued.size > MAX_EVIDENCE_HOTSPOTS) {
+    addWarning(`Targets were reported at ${rescued.size} additional route hotspots; only ${MAX_EVIDENCE_HOTSPOTS} can receive detailed evidence.`);
+  }
+  return Array.from(rescued.values())
+    .sort((a, b) => a.routeProgress - b.routeProgress)
+    .slice(0, MAX_EVIDENCE_HOTSPOTS);
+}
+
+function evenlySpacedItems(items, limit) {
+  if (limit <= 0) return [];
+  if (items.length <= limit) return Array.from(items);
+  if (limit <= 1) return [items[Math.floor((items.length - 1) / 2)]];
+  return Array.from({ length: limit }, (_, index) => (
+    items[Math.round(index * (items.length - 1) / (limit - 1))]
+  ));
 }
 
 async function rescueLiferHotspots(hotspots, alreadyChosen, center, params) {
@@ -3634,6 +3724,8 @@ function buildCandidatesFromHotspots(evidence, params, routeIndex, areaCenter = 
       latestObservationDate: hotspot.latestObsDt || "",
       activityPrior: hotspot.activityPrior || 0,
       activityObserved: Boolean(hotspot.activityObserved),
+      explicitTargetRescue: Boolean(hotspot.explicitTargetRescue),
+      geographicRepresentative: Boolean(hotspot.geographicRepresentative),
       discoverySources: ["ebird-hotspot"],
       evidence: {
         recent: {
@@ -3706,10 +3798,11 @@ function orderRoutingCandidates(candidates, params) {
   const targetCount = Math.min(sorted.length, Math.max(params.maxStops, 15), MAX_INITIAL_DETOURS);
   const mainLimit = Math.ceil(targetCount * 0.6);
   const quietLimit = Math.ceil(targetCount * 0.2);
-  const rescueLimit = targetCount - mainLimit - quietLimit;
+  const rescueLimit = Math.max(0, targetCount - mainLimit - quietLimit);
   const ordered = [];
   const ids = new Set();
   const addMany = (items, limit) => {
+    if (limit <= 0) return;
     let added = 0;
     for (const candidate of items) {
       if (ids.has(candidate.id)) continue;
@@ -3725,9 +3818,21 @@ function orderRoutingCandidates(candidates, params) {
       .sort((a, b) => b.allTimeSpeciesCount - a.allTimeSpeciesCount),
     quietLimit
   );
+  const geographicLimit = Math.ceil(rescueLimit / 2);
+  const geographicCandidates = sorted.filter((candidate) => (
+    candidate.geographicRepresentative && !ids.has(candidate.id)
+  ));
+  addMany(evenlySpacedItems(
+    geographicCandidates.sort((a, b) => a.routeProgress - b.routeProgress),
+    geographicLimit
+  ), geographicLimit);
   addMany(
-    sorted.filter((candidate) => candidate.targetMatches.length || candidate.liferSpecies.length),
-    rescueLimit
+    sorted.filter((candidate) => (
+      candidate.explicitTargetRescue
+      || candidate.targetMatches.length
+      || candidate.liferSpecies.length
+    )),
+    rescueLimit - geographicLimit
   );
   addMany(sorted, sorted.length);
   return ordered;
