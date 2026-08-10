@@ -3465,7 +3465,8 @@ function shortlistHotspots(hotspots, params, mode) {
     selected.push(hotspot);
   };
 
-  ranked.filter((hotspot) => hotspot.activityTargetCount).forEach(add);
+  ranked.filter((hotspot) => hotspot.explicitTargetRescue).forEach(add);
+  ranked.filter((hotspot) => hotspot.activityTargetCount && !hotspot.explicitTargetRescue).forEach(add);
   ranked.filter((hotspot) => hotspot.activityUnseenCount).slice(0, params.maxStops).forEach(add);
   ranked.filter((hotspot) => hotspot.importedListProbe).slice(0, params.maxStops).forEach(add);
 
