@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { nearestHotspotRegion, pruneSeasonalityCache } = require("../server.js");
+const { fetchJson, nearestHotspotRegion, pruneSeasonalityCache } = require("../server.js");
 
 test("seasonality uses the nearest hotspot region instead of the modal region", () => {
   const hotspots = [
@@ -41,4 +41,25 @@ test("seasonality cache pruning expires old entries and enforces a size bound", 
   assert.equal(cache.has("fresh"), false);
   assert.equal(cache.size, 100);
   assert.equal(cache.has("region-104"), true);
+});
+
+test("cache-disabled upstream requests do not retain raw responses", async () => {
+  const originalFetch = global.fetch;
+  let calls = 0;
+  global.fetch = async () => {
+    calls += 1;
+    return {
+      ok: true,
+      text: async () => JSON.stringify([{ speciesCode: "test" }])
+    };
+  };
+
+  try {
+    const url = "https://example.test/historic/2025/1/5";
+    await fetchJson(url, {}, { cache: false });
+    await fetchJson(url, {}, { cache: false });
+    assert.equal(calls, 2);
+  } finally {
+    global.fetch = originalFetch;
+  }
 });

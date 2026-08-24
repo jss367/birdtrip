@@ -115,7 +115,8 @@ function boundedNumber(value, fallback, min, max) {
 
 async function fetchJson(url, headers = {}, options = {}) {
   const cacheKey = `${url} ${JSON.stringify(headers)}`;
-  const hit = cached(cacheKey);
+  const shouldCache = options.cache !== false;
+  const hit = shouldCache ? cached(cacheKey) : null;
   if (hit) return hit;
 
   const timeoutMs = Number(options.timeoutMs) || 0;
@@ -160,7 +161,7 @@ async function fetchJson(url, headers = {}, options = {}) {
     throw error;
   }
 
-  return setCached(cacheKey, body);
+  return shouldCache ? setCached(cacheKey, body) : body;
 }
 
 async function postJson(url, payload, headers = {}) {
@@ -588,7 +589,7 @@ async function buildSeasonality(regionCode, token) {
       return fetchJson(
         endpoint.toString(),
         { "x-ebirdapitoken": String(token) },
-        { timeoutMs: UPSTREAM_TIMEOUT_MS }
+        { timeoutMs: UPSTREAM_TIMEOUT_MS, cache: false }
       );
     }));
     settled.forEach((result, index) => {
@@ -932,4 +933,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { nearestHotspotRegion, pruneSeasonalityCache };
+module.exports = { fetchJson, nearestHotspotRegion, pruneSeasonalityCache };
