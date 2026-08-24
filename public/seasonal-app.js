@@ -188,7 +188,7 @@
       const rate = item.presence[month] || 0;
       const height = rate > 0 ? Math.max(8, Math.round(rate * 100)) : 0;
       const peak = seasonMonths.includes(month) ? " is-peak" : "";
-      const tip = `${label} · reported on ${formatPercent(rate)} of sampled days`;
+      const tip = `${label} · reported on ${formatPercent(rate)} of sampled dates`;
       return `<span class="seasonal-month-cell${peak}" data-tip="${escapeHtml(tip)}"><i style="height:${height}%"></i></span>`;
     }).join("");
     return `<div class="seasonal-months" aria-hidden="true">${cells}</div>`;
@@ -202,7 +202,7 @@
           <p class="seasonal-sci">${escapeHtml(item.sciName)}</p>
         </div>
         ${monthStripHtml(item, seasonMonths)}
-        <p class="seasonal-rates">Reported on <b>${formatPercent(item.seasonRate)}</b> of sampled ${escapeHtml(seasonLabel.toLowerCase())} days · ${formatPercent(item.offSeasonRate)} the rest of the year</p>
+        <p class="seasonal-rates">Reported on <b>${formatPercent(item.seasonRate)}</b> of sampled ${escapeHtml(seasonLabel.toLowerCase())} dates · ${formatPercent(item.offSeasonRate)} the rest of the year</p>
       </article>`;
   }
 
@@ -250,7 +250,7 @@
       <div class="seasonal-overview">
         <span>${escapeHtml(place.name)}</span>
         ${lead ? `<h3>${escapeHtml(lead)}</h3>` : "<h3>No season stood out strongly here.</h3>"}
-        <p>Bars show each species' monthly reporting rate, January through December; green months belong to that card's season. Hover a bar for the month's rate.</p>
+        <p>Bars show the share of sampled dates with at least one report, January through December; green months belong to that card's season. This day-level occurrence is not complete-checklist frequency.</p>
       </div>
       <div class="seasonal-grid">${seasonCards}</div>`;
     renderIcons();

@@ -1,11 +1,21 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 
 require("../public/seasonal.js");
 
 const seasonal = globalThis.BirdtripSeasonal;
 
 const FULL_SAMPLING = Array(12).fill(3);
+
+test("seasonal UI describes sampled-date occurrence rather than checklist frequency", () => {
+  const html = fs.readFileSync(path.join(__dirname, "../public/seasonal.html"), "utf8");
+  const app = fs.readFileSync(path.join(__dirname, "../public/seasonal-app.js"), "utf8");
+  assert.match(html, /sampled-date occurrence/i);
+  assert.match(`${html}\n${app}`, /not (?:complete-)?checklist frequency/i);
+  assert.doesNotMatch(`${html}\n${app}`, /reporting rate/i);
+});
 
 function monthsFromRates(rates) {
   return rates.map((rate) => Math.round(rate * 3));
