@@ -478,22 +478,39 @@ function isCountableSpeciesName(comName) {
   return true;
 }
 
-function modalHotspotCode(hotspots, field) {
-  const counts = new Map();
+function hotspotRegionCode(hotspot) {
+  if (!hotspot) return "";
+  return ["subnational2Code", "subnational1Code", "countryCode"]
+    .map((field) => hotspot[field])
+    .find((code) => typeof code === "string" && code) || "";
+}
+
+function coordinateDistanceKm(a, b) {
+  const toRadians = (degrees) => degrees * Math.PI / 180;
+  const lat1 = toRadians(a.lat);
+  const lat2 = toRadians(b.lat);
+  const deltaLat = lat2 - lat1;
+  const deltaLng = toRadians(b.lng - a.lng);
+  const h = Math.sin(deltaLat / 2) ** 2
+    + Math.cos(lat1) * Math.cos(lat2) * Math.sin(deltaLng / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.sqrt(h));
+}
+
+function nearestHotspotRegion(hotspots, lat, lng) {
+  const selected = { lat: Number(lat), lng: Number(lng) };
+  let nearestRegion = "";
+  let nearestDistance = Infinity;
   for (const spot of hotspots) {
-    const code = spot && typeof spot[field] === "string" ? spot[field] : "";
-    if (!code) continue;
-    counts.set(code, (counts.get(code) || 0) + 1);
+    const region = hotspotRegionCode(spot);
+    const spotLat = Number(spot?.lat);
+    const spotLng = Number(spot?.lng);
+    if (!region || !Number.isFinite(spotLat) || !Number.isFinite(spotLng)) continue;
+    const distance = coordinateDistanceKm(selected, { lat: spotLat, lng: spotLng });
+    if (distance >= nearestDistance) continue;
+    nearestRegion = region;
+    nearestDistance = distance;
   }
-  let best = "";
-  let bestCount = 0;
-  for (const [code, count] of counts) {
-    if (count > bestCount) {
-      best = code;
-      bestCount = count;
-    }
-  }
-  return best;
+  return nearestRegion;
 }
 
 async function inferEbirdRegion(lat, lng, token) {
@@ -508,9 +525,7 @@ async function inferEbirdRegion(lat, lng, token) {
     error.status = 404;
     throw error;
   }
-  const region = modalHotspotCode(hotspots, "subnational2Code")
-    || modalHotspotCode(hotspots, "subnational1Code")
-    || modalHotspotCode(hotspots, "countryCode");
+  const region = nearestHotspotRegion(hotspots, lat, lng);
   if (!region) {
     const error = new Error("Could not resolve an eBird region for that location");
     error.status = 502;
@@ -893,6 +908,10 @@ const server = http.createServer((req, res) => {
   serveStatic(req, res, url);
 });
 
-server.listen(PORT, () => {
-  console.log(`Birdtrip running at http://localhost:${PORT}`);
-});
+if (require.main === module) {
+  server.listen(PORT, () => {
+    console.log(`Birdtrip running at http://localhost:${PORT}`);
+  });
+}
+
+module.exports = { nearestHotspotRegion };
