@@ -55,6 +55,30 @@ test("a winter-only bird is a winter specialty and nothing else", () => {
   assert.equal(result.fall.length, 0);
 });
 
+test("Southern Hemisphere seasons use the opposite three-month groups", () => {
+  const southernSeasons = seasonal.seasonsForLatitude(-33.9);
+  assert.deepEqual(southernSeasons.map((season) => season.months), [
+    [5, 6, 7],
+    [8, 9, 10],
+    [11, 0, 1],
+    [2, 3, 4]
+  ]);
+
+  const australWinterBird = {
+    speciesCode: "auswin",
+    comName: "Austral Winter Bird",
+    months: monthsFromRates([0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0])
+  };
+  const result = seasonal.seasonalSpecialties(
+    [australWinterBird],
+    FULL_SAMPLING,
+    { seasons: southernSeasons }
+  );
+
+  assert.equal(result.winter[0].speciesCode, "auswin");
+  assert.equal(result.summer.length, 0);
+});
+
 test("year-round and too-rare birds are excluded", () => {
   const yearRound = {
     speciesCode: "houfin",

@@ -36,7 +36,7 @@ function logApiRequest(req, res, url) {
   res.on("finish", () => {
     const elapsed = Date.now() - started;
     const logUrl = new URL(url);
-    if (logUrl.pathname === "/api/reverse-geocode") {
+    if (logUrl.pathname === "/api/reverse-geocode" || logUrl.pathname === "/api/ebird/seasonality") {
       logUrl.searchParams.delete("lat");
       logUrl.searchParams.delete("lng");
     }
@@ -96,20 +96,38 @@ function boundedNumber(value, fallback, min, max) {
   return Math.max(min, Math.min(max, parsed));
 }
 
-async function fetchJson(url, headers = {}) {
+async function fetchJson(url, headers = {}, options = {}) {
   const cacheKey = `${url} ${JSON.stringify(headers)}`;
   const hit = cached(cacheKey);
   if (hit) return hit;
 
-  const response = await fetch(url, {
-    headers: {
-      "accept": "application/json",
-      "user-agent": "birdtrip/0.1 local personal app",
-      ...headers
+  const timeoutMs = Number(options.timeoutMs) || 0;
+  const controller = timeoutMs > 0 ? new AbortController() : null;
+  const timeout = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  let response;
+  let text;
+  try {
+    response = await fetch(url, {
+      signal: controller?.signal,
+      headers: {
+        "accept": "application/json",
+        "user-agent": "birdtrip/0.1 local personal app",
+        ...headers
+      }
+    });
+    text = await response.text();
+  } catch (error) {
+    if (error.name === "AbortError" && controller?.signal.aborted) {
+      const timeoutError = new Error("Upstream request timed out");
+      timeoutError.status = 504;
+      timeoutError.details = { timeoutMs };
+      throw timeoutError;
     }
-  });
+    throw error;
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 
-  const text = await response.text();
   let body;
   try {
     body = text ? JSON.parse(text) : null;
@@ -534,7 +552,11 @@ async function buildSeasonality(regionCode, token) {
       );
       endpoint.searchParams.set("cat", "species");
       endpoint.searchParams.set("detail", "simple");
-      return fetchJson(endpoint.toString(), { "x-ebirdapitoken": String(token) });
+      return fetchJson(
+        endpoint.toString(),
+        { "x-ebirdapitoken": String(token) },
+        { timeoutMs: UPSTREAM_TIMEOUT_MS }
+      );
     }));
     settled.forEach((result, index) => {
       if (result.status !== "fulfilled" || !Array.isArray(result.value)) return;
@@ -561,7 +583,7 @@ async function buildSeasonality(regionCode, token) {
   }
 
   const totalSampled = sampledDays.reduce((sum, value) => sum + value, 0);
-  if (totalSampled < SEASONALITY_MIN_SAMPLED_DAYS) {
+  if (totalSampled < SEASONALITY_MIN_SAMPLED_DAYS || sampledDays.some((count) => count < 1)) {
     const error = new Error("eBird historic data was unavailable for too many of the sampled days");
     error.status = 502;
     error.details = { regionCode, year, sampledDays };
@@ -571,7 +593,7 @@ async function buildSeasonality(regionCode, token) {
   const value = {
     regionCode,
     year,
-    sampleDaysPerMonth: SEASONALITY_SAMPLE_DAYS.length,
+    requestedSampleDaysPerMonth: SEASONALITY_SAMPLE_DAYS.length,
     sampledDays,
     species: [...species.values()].filter(
       (entry) => entry.months.reduce((sum, count) => sum + count, 0) >= 2
@@ -742,10 +764,17 @@ async function handleApi(req, res, url) {
       const token = req.headers["x-ebird-api-token"] || process.env.EBIRD_API_KEY;
       if (!token) return sendError(res, 401, "An eBird API token is required");
 
-      const lat = boundedNumber(url.searchParams.get("lat"), NaN, -90, 90);
-      const lng = boundedNumber(url.searchParams.get("lng"), NaN, -180, 180);
-      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-        return sendError(res, 400, "lat and lng are required");
+      const latValue = url.searchParams.get("lat");
+      const lngValue = url.searchParams.get("lng");
+      const lat = Number(latValue);
+      const lng = Number(lngValue);
+      if (
+        latValue === null || lngValue === null
+        || latValue.trim() === "" || lngValue.trim() === ""
+        || !Number.isFinite(lat) || !Number.isFinite(lng)
+        || lat < -90 || lat > 90 || lng < -180 || lng > 180
+      ) {
+        return sendError(res, 400, "lat and lng are required and must be within valid ranges");
       }
 
       const regionCode = await inferEbirdRegion(lat, lng, token);

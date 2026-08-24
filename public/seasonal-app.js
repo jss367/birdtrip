@@ -199,8 +199,8 @@
       </article>`;
   }
 
-  function overviewSentence(specialties) {
-    const parts = BS.SEASONS
+  function overviewSentence(specialties, seasons) {
+    const parts = seasons
       .filter((season) => specialties[season.key].length)
       .map((season) => {
         const names = specialties[season.key].slice(0, 2).map((item) => item.comName);
@@ -212,12 +212,18 @@
   }
 
   function renderResults(place, data) {
-    const specialties = BS.seasonalSpecialties(data.species, data.sampledDays);
+    const seasons = BS.seasonsForLatitude(place.lat);
+    const specialties = BS.seasonalSpecialties(data.species, data.sampledDays, { seasons });
+    const minSamples = Math.min(...data.sampledDays);
+    const maxSamples = Math.max(...data.sampledDays);
+    const sampleSummary = minSamples === maxSamples
+      ? `${minSamples} days per month`
+      : `${minSamples}–${maxSamples} days per month`;
     els.resultContext.textContent =
-      `eBird reports from ${data.regionName} · ${data.year}, sampled ${data.sampleDaysPerMonth} days per month`;
+      `eBird reports from ${data.regionName} · ${data.year}, sampled ${sampleSummary}`;
 
-    const lead = overviewSentence(specialties);
-    const seasonCards = BS.SEASONS.map((season) => {
+    const lead = overviewSentence(specialties, seasons);
+    const seasonCards = seasons.map((season) => {
       const items = specialties[season.key];
       const body = items.length
         ? items.map((item) => speciesRowHtml(item, season.months, season.label)).join("")
