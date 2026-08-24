@@ -6,6 +6,7 @@ const PORT = Number(process.env.PORT || 4177);
 const PUBLIC_DIR = path.join(__dirname, "public");
 const CACHE_TTL_MS = 10 * 60 * 1000;
 const SEASONALITY_TTL_MS = 24 * 60 * 60 * 1000;
+const SEASONALITY_CACHE_MAX_ENTRIES = 100;
 const SEASONALITY_SAMPLE_DAYS = [5, 15, 25];
 const SEASONALITY_MIN_SAMPLED_DAYS = 24;
 const SEASONALITY_CHUNK_SIZE = 6;
@@ -69,6 +70,22 @@ function cached(key) {
 function setCached(key, value) {
   cache.set(key, { time: Date.now(), value });
   return value;
+}
+
+function pruneSeasonalityCache(target = seasonalityCache, now = Date.now()) {
+  for (const [key, entry] of target) {
+    if (now - entry.time > SEASONALITY_TTL_MS) target.delete(key);
+  }
+  while (target.size > SEASONALITY_CACHE_MAX_ENTRIES) {
+    target.delete(target.keys().next().value);
+  }
+}
+
+function setCachedSeasonality(key, value) {
+  pruneSeasonalityCache();
+  seasonalityCache.delete(key);
+  seasonalityCache.set(key, { time: Date.now(), value });
+  pruneSeasonalityCache();
 }
 
 function parseCoordPair(value, name) {
@@ -549,6 +566,7 @@ async function regionDisplayName(regionCode, token) {
 async function buildSeasonality(regionCode, token) {
   const year = new Date().getFullYear() - 1;
   const cacheKey = `${regionCode}:${year}`;
+  pruneSeasonalityCache();
   const hit = seasonalityCache.get(cacheKey);
   if (hit && Date.now() - hit.time <= SEASONALITY_TTL_MS) return hit.value;
 
@@ -614,7 +632,7 @@ async function buildSeasonality(regionCode, token) {
       (entry) => entry.months.reduce((sum, count) => sum + count, 0) >= 2
     )
   };
-  seasonalityCache.set(cacheKey, { time: Date.now(), value });
+  setCachedSeasonality(cacheKey, value);
   return value;
 }
 
@@ -914,4 +932,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { nearestHotspotRegion };
+module.exports = { nearestHotspotRegion, pruneSeasonalityCache };

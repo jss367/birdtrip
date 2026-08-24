@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { nearestHotspotRegion } = require("../server.js");
+const { nearestHotspotRegion, pruneSeasonalityCache } = require("../server.js");
 
 test("seasonality uses the nearest hotspot region instead of the modal region", () => {
   const hotspots = [
@@ -22,4 +22,23 @@ test("nearest hotspot falls back to its most specific available region", () => {
   ];
 
   assert.equal(nearestHotspotRegion(hotspots, 32, -117), "US-CA");
+});
+
+test("seasonality cache pruning expires old entries and enforces a size bound", () => {
+  const now = Date.UTC(2026, 7, 24);
+  const day = 24 * 60 * 60 * 1000;
+  const cache = new Map([
+    ["expired", { time: now - day - 1, value: {} }],
+    ["fresh", { time: now, value: {} }]
+  ]);
+  for (let index = 0; index < 105; index += 1) {
+    cache.set(`region-${index}`, { time: now, value: {} });
+  }
+
+  pruneSeasonalityCache(cache, now);
+
+  assert.equal(cache.has("expired"), false);
+  assert.equal(cache.has("fresh"), false);
+  assert.equal(cache.size, 100);
+  assert.equal(cache.has("region-104"), true);
 });

@@ -2,6 +2,7 @@
   const BS = window.BirdtripSeasonal;
   const STORAGE_KEY = "birdtripSeasonalView";
   const PREFS_KEY = "routeBirdingPrefs";
+  const SESSION_TOKEN_KEY = "birdtripEbirdApiToken";
   const SEASON_ICONS = { winter: "snowflake", spring: "flower-2", summer: "sun", fall: "leaf" };
 
   const els = {
@@ -39,6 +40,12 @@
   }
 
   function storedApiToken() {
+    try {
+      const sessionToken = window.sessionStorage.getItem(SESSION_TOKEN_KEY);
+      if (typeof sessionToken === "string" && sessionToken.trim()) return sessionToken.trim();
+    } catch {
+      // Session storage unavailable; a remembered token may still be available.
+    }
     try {
       const prefs = JSON.parse(window.localStorage.getItem(PREFS_KEY) || "{}");
       return typeof prefs.apiToken === "string" ? prefs.apiToken.trim() : "";
