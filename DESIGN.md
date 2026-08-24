@@ -57,8 +57,10 @@ The public endpoints are appropriate for local/personal use and demos. A product
   - Nearby recent notable observations: `/v2/data/obs/geo/recent/notable`
   - Recent observations of a single species: `/v2/data/obs/geo/recent/{speciesCode}`
   - eBird taxonomy (`/v2/ref/taxonomy/ebird`), loaded once and cached in memory for species name → code lookup and autocomplete.
+  - Historic observations for a region on a date: `/v2/data/obs/{regionCode}/historic/{y}/{m}/{d}` (Seasonal Birds page only; three fixed dates per month of the previous calendar year estimate sampled-date occurrence, not complete-checklist frequency; raw responses are not cached, while bounded per-region aggregates are cached in memory for 24 hours).
+  - Region name lookup: `/v2/ref/region/info/{regionCode}` (Seasonal Birds page; the region itself is inferred from the most specific region code on the nearest hotspot).
 
-The app accepts an API token in the UI and stores it in browser local storage. The server can also read `EBIRD_API_KEY` from the environment.
+The app accepts an API token in the UI and keeps it in tab-scoped session storage. It stores the token in browser local storage only when the user opts into remembering it. The server can also read `EBIRD_API_KEY` from the environment.
 
 ## Search Modes
 

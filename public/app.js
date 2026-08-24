@@ -58,6 +58,7 @@ const MAX_TOTAL_DETOURS = 40;
 const MAX_ROUTE_TARGETS = 10;
 const MAX_ROUTE_TARGET_LOOKUPS = 20;
 const MAX_ROUTE_UNSEEN_PROBES = 10;
+const SESSION_TOKEN_KEY = "birdtripEbirdApiToken";
 
 const els = {
   resultsActions: document.querySelector("#resultsActions"),
@@ -255,13 +256,18 @@ function init() {
   els.clearButton.addEventListener("click", clearResults);
   // Revoke or grant token persistence the moment the choice changes,
   // not only on the next search submit.
-  els.rememberToken.addEventListener("change", savePreferences);
+  els.rememberToken.addEventListener("change", () => {
+    savePreferences();
+    saveSessionApiToken();
+  });
   els.apiToken.addEventListener("change", () => {
     if (els.rememberToken.checked) savePreferences();
+    saveSessionApiToken();
     clearPersonalEbirdAccessIssue();
     updateSetupStatus();
   });
   els.apiToken.addEventListener("input", () => {
+    saveSessionApiToken();
     clearPersonalEbirdAccessIssue();
     updateSetupStatus();
   });
@@ -450,6 +456,12 @@ function restorePreferences() {
   // The token is only ever restored when the user previously opted in.
   if (saved.rememberToken === true && typeof saved.apiToken === "string") {
     els.apiToken.value = saved.apiToken;
+  } else {
+    try {
+      els.apiToken.value = sessionStorage.getItem(SESSION_TOKEN_KEY) || "";
+    } catch {
+      // Session storage unavailable; the token remains page-scoped.
+    }
   }
   if (saved.lifeList && typeof saved.lifeList === "object") {
     const species = Array.isArray(saved.lifeList.species) ? saved.lifeList.species : [];
@@ -463,6 +475,16 @@ function restorePreferences() {
     };
   }
   return saved;
+}
+
+function saveSessionApiToken() {
+  try {
+    const token = els.apiToken.value.trim();
+    if (token) sessionStorage.setItem(SESSION_TOKEN_KEY, token);
+    else sessionStorage.removeItem(SESSION_TOKEN_KEY);
+  } catch {
+    // Session storage unavailable; the token still works on this page.
+  }
 }
 
 function savePreferences() {

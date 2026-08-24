@@ -177,7 +177,7 @@ textarea:disabled {
 
 .mode-switch {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 4px;
   padding: 4px;
   border: 1px solid var(--line);
@@ -186,6 +186,7 @@ textarea:disabled {
 }
 
 .mode-switch .mode-switch-item {
+  grid-column: span 2;
   min-width: 0;
   min-height: 38px;
   border: 0;
@@ -201,6 +202,7 @@ textarea:disabled {
 }
 
 .mode-switch a.mode-switch-item {
+  grid-column: span 3;
   text-decoration: none;
   text-align: center;
 }
@@ -2844,6 +2846,7 @@ button.stop-chip {
   }
 
   .mode-switch .mode-switch-item {
+    grid-column: auto;
     gap: 5px;
     padding: 0 6px;
     overflow: hidden;
@@ -2991,6 +2994,7 @@ button.stop-chip {
   }
 
   .mode-switch .mode-switch-item {
+    grid-column: auto;
     justify-content: flex-start;
     padding: 0 18px;
     font-size: 0.82rem;
@@ -3327,5 +3331,259 @@ body.migration-page {
   .migration-results-region {
     border-left: none;
     border-top: 1px solid var(--border, #e5e7eb);
+  }
+}
+
+/* Seasonal birds page */
+.seasonal-shell {
+  max-width: 1160px;
+  margin: 0 auto;
+  padding: 0 18px 48px;
+}
+
+.seasonal-layout {
+  display: grid;
+  gap: 18px;
+}
+
+.seasonal-search-panel {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: var(--soft-shadow);
+  padding: 16px;
+  display: grid;
+  gap: 8px;
+}
+
+.seasonal-search {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.seasonal-search-field {
+  display: grid;
+  gap: 6px;
+}
+
+.seasonal-search-field span {
+  font-size: 0.8rem;
+  font-weight: 800;
+  color: var(--muted-strong);
+}
+
+.seasonal-submit {
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  min-height: 44px;
+  padding: 0 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+  color: white;
+  font-weight: 850;
+  box-shadow: 0 15px 30px rgba(16, 185, 129, 0.24);
+  transition: background 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+}
+
+.seasonal-submit:hover {
+  background: linear-gradient(135deg, #0fba81, #047857);
+  transform: translateY(-1px);
+}
+
+.seasonal-submit:disabled {
+  transform: none;
+}
+
+.seasonal-submit svg {
+  width: 17px;
+  height: 17px;
+}
+
+.seasonal-search-hint {
+  margin: 0;
+}
+
+.seasonal-results {
+  display: grid;
+  gap: 14px;
+  margin-top: 6px;
+}
+
+.seasonal-overview {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(209, 250, 229, 0.9), rgba(219, 234, 254, 0.72)),
+    white;
+  box-shadow: var(--soft-shadow);
+  padding: 15px;
+}
+
+.seasonal-overview span {
+  color: var(--accent-strong);
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.seasonal-overview h3 {
+  margin: 5px 0 0;
+  line-height: 1.35;
+  font-size: 1.02rem;
+}
+
+.seasonal-overview p {
+  margin: 7px 0 0;
+  color: var(--muted-strong);
+  font-size: 0.84rem;
+  line-height: 1.38;
+}
+
+.seasonal-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+
+.seasonal-season {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: var(--soft-shadow);
+  padding: 13px;
+}
+
+.seasonal-season-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid var(--line);
+}
+
+.seasonal-season-header svg {
+  width: 18px;
+  height: 18px;
+  color: var(--accent-strong);
+}
+
+.seasonal-season-header h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.seasonal-season-header span {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.seasonal-species {
+  padding: 11px 0 2px;
+  border-bottom: 1px solid var(--line);
+}
+
+.seasonal-species:last-of-type {
+  border-bottom: 0;
+}
+
+.seasonal-species-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.seasonal-species h4 {
+  margin: 0;
+  font-size: 0.94rem;
+}
+
+.seasonal-sci {
+  margin: 0;
+  color: var(--muted);
+  font-style: italic;
+  font-size: 0.8rem;
+}
+
+.seasonal-rates {
+  margin: 6px 0 8px;
+  color: var(--muted-strong);
+  font-size: 0.82rem;
+}
+
+.seasonal-rates b {
+  color: var(--text);
+}
+
+.seasonal-none {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.seasonal-months {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 36px;
+  margin-top: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.seasonal-month-cell {
+  flex: 1 1 0;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  cursor: default;
+}
+
+.seasonal-month-cell i {
+  display: block;
+  width: 100%;
+  background: #cbd5e1;
+  border-radius: 2px 2px 0 0;
+}
+
+.seasonal-month-cell.is-peak i {
+  background: #059669;
+}
+
+.seasonal-tooltip {
+  position: fixed;
+  z-index: 1000;
+  pointer-events: none;
+  max-width: 240px;
+  padding: 6px 9px;
+  border-radius: 6px;
+  background: #0f172a;
+  color: white;
+  font-size: 0.78rem;
+  box-shadow: var(--shadow);
+}
+
+.seasonal-loading svg {
+  animation: seasonal-spin 1s linear infinite;
+}
+
+@keyframes seasonal-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 640px) {
+  .seasonal-search {
+    grid-template-columns: 1fr;
+    align-items: stretch;
   }
 }
