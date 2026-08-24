@@ -2,11 +2,30 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  acquireSeasonalityBuildSlot,
   buildSeasonality,
   fetchJson,
   nearestHotspotRegion,
   pruneSeasonalityCache
 } = require("../server.js");
+
+test("seasonality build gate limits global build concurrency", async () => {
+  const firstRelease = await acquireSeasonalityBuildSlot();
+  const secondRelease = await acquireSeasonalityBuildSlot();
+  let thirdStarted = false;
+  const third = acquireSeasonalityBuildSlot().then((release) => {
+    thirdStarted = true;
+    return release;
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(thirdStarted, false);
+  firstRelease();
+  const thirdRelease = await third;
+  assert.equal(thirdStarted, true);
+  secondRelease();
+  thirdRelease();
+});
 
 test("seasonality uses the nearest hotspot region instead of the modal region", () => {
   const hotspots = [

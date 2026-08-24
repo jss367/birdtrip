@@ -10,6 +10,8 @@ const SEASONALITY_CACHE_MAX_ENTRIES = 100;
 const SEASONALITY_SAMPLE_DAYS = [5, 15, 25];
 const SEASONALITY_MIN_SAMPLED_DAYS = 24;
 const SEASONALITY_CHUNK_SIZE = 6;
+const SEASONALITY_MAX_CONCURRENT_BUILDS = 2;
+const SEASONALITY_MAX_QUEUED_BUILDS = 20;
 const UPSTREAM_TIMEOUT_MS = 15000;
 const MAP_PROVIDERS = new Set(["osm", "google"]);
 const DEFAULT_MAP_PROVIDER = MAP_PROVIDERS.has(process.env.MAP_PROVIDER)
@@ -20,6 +22,8 @@ const GOOGLE_MAPS_SERVER_KEY = process.env.GOOGLE_MAPS_SERVER_KEY || process.env
 const cache = new Map();
 const seasonalityCache = new Map();
 const seasonalityBuilds = new Map();
+const seasonalityBuildQueue = [];
+let activeSeasonalityBuilds = 0;
 
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
@@ -87,6 +91,25 @@ function setCachedSeasonality(key, value) {
   seasonalityCache.delete(key);
   seasonalityCache.set(key, { time: Date.now(), value });
   pruneSeasonalityCache();
+}
+
+function releaseSeasonalityBuildSlot() {
+  const next = seasonalityBuildQueue.shift();
+  if (next) next(releaseSeasonalityBuildSlot);
+  else activeSeasonalityBuilds -= 1;
+}
+
+function acquireSeasonalityBuildSlot() {
+  if (activeSeasonalityBuilds < SEASONALITY_MAX_CONCURRENT_BUILDS) {
+    activeSeasonalityBuilds += 1;
+    return Promise.resolve(releaseSeasonalityBuildSlot);
+  }
+  if (seasonalityBuildQueue.length >= SEASONALITY_MAX_QUEUED_BUILDS) {
+    const error = new Error("Too many seasonal data requests are already in progress");
+    error.status = 429;
+    return Promise.reject(error);
+  }
+  return new Promise((resolve) => seasonalityBuildQueue.push(resolve));
 }
 
 function parseCoordPair(value, name) {
@@ -538,7 +561,11 @@ async function inferEbirdRegion(lat, lng, token) {
   endpoint.searchParams.set("lng", String(lng));
   endpoint.searchParams.set("dist", "25");
   endpoint.searchParams.set("fmt", "json");
-  const hotspots = await fetchJson(endpoint.toString(), { "x-ebirdapitoken": String(token) });
+  const hotspots = await fetchJson(
+    endpoint.toString(),
+    { "x-ebirdapitoken": String(token) },
+    { timeoutMs: UPSTREAM_TIMEOUT_MS, cache: false }
+  );
   if (!Array.isArray(hotspots) || !hotspots.length) {
     const error = new Error("No eBird hotspots were found near that location");
     error.status = 404;
@@ -557,7 +584,8 @@ async function regionDisplayName(regionCode, token) {
   try {
     const info = await fetchJson(
       `https://api.ebird.org/v2/ref/region/info/${encodeURIComponent(regionCode)}`,
-      { "x-ebirdapitoken": String(token) }
+      { "x-ebirdapitoken": String(token) },
+      { timeoutMs: UPSTREAM_TIMEOUT_MS }
     );
     return info && typeof info.result === "string" && info.result ? info.result : regionCode;
   } catch {
@@ -574,12 +602,21 @@ async function buildSeasonality(regionCode, token) {
 
   const pending = seasonalityBuilds.get(cacheKey);
   if (pending) return pending;
-  const build = buildSeasonalityUncached(regionCode, token, year, cacheKey);
+  const build = runSeasonalityBuild(regionCode, token, year, cacheKey);
   seasonalityBuilds.set(cacheKey, build);
   try {
     return await build;
   } finally {
     if (seasonalityBuilds.get(cacheKey) === build) seasonalityBuilds.delete(cacheKey);
+  }
+}
+
+async function runSeasonalityBuild(regionCode, token, year, cacheKey) {
+  const release = await acquireSeasonalityBuildSlot();
+  try {
+    return await buildSeasonalityUncached(regionCode, token, year, cacheKey);
+  } finally {
+    release();
   }
 }
 
@@ -946,4 +983,10 @@ if (require.main === module) {
   });
 }
 
-module.exports = { buildSeasonality, fetchJson, nearestHotspotRegion, pruneSeasonalityCache };
+module.exports = {
+  acquireSeasonalityBuildSlot,
+  buildSeasonality,
+  fetchJson,
+  nearestHotspotRegion,
+  pruneSeasonalityCache
+};
