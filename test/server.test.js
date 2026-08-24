@@ -1,7 +1,12 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { fetchJson, nearestHotspotRegion, pruneSeasonalityCache } = require("../server.js");
+const {
+  buildSeasonality,
+  fetchJson,
+  nearestHotspotRegion,
+  pruneSeasonalityCache
+} = require("../server.js");
 
 test("seasonality uses the nearest hotspot region instead of the modal region", () => {
   const hotspots = [
@@ -59,6 +64,31 @@ test("cache-disabled upstream requests do not retain raw responses", async () =>
     await fetchJson(url, {}, { cache: false });
     await fetchJson(url, {}, { cache: false });
     assert.equal(calls, 2);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("concurrent cold seasonality requests share one upstream build", async () => {
+  const originalFetch = global.fetch;
+  let calls = 0;
+  global.fetch = async () => {
+    calls += 1;
+    await new Promise((resolve) => setImmediate(resolve));
+    return {
+      ok: true,
+      text: async () => "[]"
+    };
+  };
+
+  try {
+    const region = `TEST-${Date.now()}`;
+    const [first, second] = await Promise.all([
+      buildSeasonality(region, "token-a"),
+      buildSeasonality(region, "token-b")
+    ]);
+    assert.equal(calls, 36);
+    assert.strictEqual(first, second);
   } finally {
     global.fetch = originalFetch;
   }

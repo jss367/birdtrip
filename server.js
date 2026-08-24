@@ -19,6 +19,7 @@ const GOOGLE_MAPS_BROWSER_KEY = process.env.GOOGLE_MAPS_BROWSER_KEY || process.e
 const GOOGLE_MAPS_SERVER_KEY = process.env.GOOGLE_MAPS_SERVER_KEY || process.env.GOOGLE_MAPS_API_KEY || "";
 const cache = new Map();
 const seasonalityCache = new Map();
+const seasonalityBuilds = new Map();
 
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
@@ -571,6 +572,18 @@ async function buildSeasonality(regionCode, token) {
   const hit = seasonalityCache.get(cacheKey);
   if (hit && Date.now() - hit.time <= SEASONALITY_TTL_MS) return hit.value;
 
+  const pending = seasonalityBuilds.get(cacheKey);
+  if (pending) return pending;
+  const build = buildSeasonalityUncached(regionCode, token, year, cacheKey);
+  seasonalityBuilds.set(cacheKey, build);
+  try {
+    return await build;
+  } finally {
+    if (seasonalityBuilds.get(cacheKey) === build) seasonalityBuilds.delete(cacheKey);
+  }
+}
+
+async function buildSeasonalityUncached(regionCode, token, year, cacheKey) {
   const sampleDates = [];
   for (let month = 1; month <= 12; month += 1) {
     for (const day of SEASONALITY_SAMPLE_DAYS) sampleDates.push({ month, day });
@@ -933,4 +946,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { fetchJson, nearestHotspotRegion, pruneSeasonalityCache };
+module.exports = { buildSeasonality, fetchJson, nearestHotspotRegion, pruneSeasonalityCache };
