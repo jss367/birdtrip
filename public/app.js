@@ -1209,6 +1209,7 @@ function useSampleRoute() {
     els.radiusKm.value = "25";
     resetAutocomplete("origin");
     updateInputSummaries();
+    refreshSharedUrlIfPresent();
     return;
   }
   if (state.mode === "area") {
@@ -1229,6 +1230,7 @@ function useSampleRoute() {
   resetAutocomplete("origin");
   resetAutocomplete("destination");
   updateInputSummaries();
+  refreshSharedUrlIfPresent();
 }
 
 function resetAutocomplete(field) {
@@ -2568,6 +2570,7 @@ async function useCurrentLocationForOrigin() {
     hideAutocomplete("origin");
     updateInputSummaries();
     savePreferences();
+    refreshSharedUrlIfPresent();
   } catch (error) {
     const message = describeGeolocationError(error);
     setFieldError("origin", message);
@@ -2994,6 +2997,11 @@ function serializeTargetRows() {
 function syncTargetsFromRows() {
   els.targets.value = serializeTargetRows();
   updateInputSummaries();
+  // Row removal, list paste, and suggestion picks mutate the hidden textarea
+  // programmatically (no form input/change event), so invalidate any loaded
+  // /t/<slug> snapshot URL here. Hydration never calls this — it only renders
+  // rows from the textarea — so an unedited shared trip keeps its short URL.
+  refreshSharedUrlIfPresent();
 }
 
 function renderTargetRows() {
