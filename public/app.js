@@ -3401,14 +3401,7 @@ async function fetchHotspotDirectoryForRoute(samples, routeIndex, params) {
     addWarning(`${failed} of ${samples.length} hotspot-directory requests failed; corridor discovery is partial.`);
   }
 
-  return Array.from(byId.values()).map((hotspot) => {
-    const routeMatch = routeIndex.distanceTo(hotspot);
-    return {
-      ...hotspot,
-      routeDistanceKm: routeMatch.distanceKm,
-      routeProgress: routeMatch.progress
-    };
-  }).filter((hotspot) => hotspot.routeDistanceKm <= params.radiusKm);
+  return ranking.filterHotspotsByCorridor(byId.values(), routeIndex, params.radiusKm);
 }
 
 function applyActivityPrior(hotspots, observationsBySample, params) {
@@ -3822,8 +3815,12 @@ async function evaluateDetours(candidates, origin, destination, baseDurationSeco
         try {
           const viaRoute = await apiJson(routeUrl("/api/route-via", origin, destination, candidate, params.mapProvider));
           candidate.viaRoute = viaRoute;
-          candidate.addedMinutes = Math.max(0, (viaRoute.durationSeconds - baseDurationSeconds) / 60);
-          candidate.addedMiles = Math.max(0, miles(viaRoute.distanceMeters - state.route.distanceMeters));
+          const impact = ranking.detourImpact(viaRoute, {
+            durationSeconds: baseDurationSeconds,
+            distanceMeters: state.route.distanceMeters
+          });
+          candidate.addedMinutes = impact.addedMinutes;
+          candidate.addedMiles = impact.addedMiles;
           return candidate;
         } catch (error) {
           candidate.routeError = error.message;
@@ -3979,42 +3976,30 @@ async function addAreaNotableObservations(candidates, params) {
 function scoreCandidates(candidates, params) {
   const targetsEnabled = Boolean(params.targets.length);
   const unseenEnabled = Boolean(params.lifeList?.size);
-  const personalEnabled = targetsEnabled || unseenEnabled;
-  const enabledMaxima = {
-    practicality: 40,
-    current: 35,
-    stable: 10,
-    ...(personalEnabled ? { personal: 15 } : {})
-  };
   for (const candidate of candidates) {
     const weightedSpecies = weightedUniqueSpecies(candidate.observations);
     const weightedActivity = weightedObservationTotal(candidate.observations);
     const weightedTargets = weightedTargetTotal(candidate.observations, params.targets);
     const weightedUnseen = weightedUnseenTotal(candidate.observations, params.lifeList);
-    const currentScore = Math.min(weightedSpecies, 90) / 90 * 28
-      + Math.min(weightedActivity, 250) / 250 * 7;
-    const stableScore = ranking.richnessPrior(candidate.allTimeSpeciesCount) * 10;
-    const personalScore = ranking.personalValueScore({
+    const result = ranking.calculateCandidateScore({
+      mode: params.mode,
+      weightedSpecies,
+      weightedActivity,
+      allTimeSpeciesCount: candidate.allTimeSpeciesCount,
       weightedTargets,
       weightedUnseen,
       targetsEnabled,
-      unseenEnabled
+      unseenEnabled,
+      routeDistanceKm: candidate.routeDistanceKm,
+      radiusKm: params.radiusKm,
+      addedMinutes: candidate.addedMinutes,
+      maxDetour: params.maxDetour
     });
-    const practicalityScore = params.mode === "area"
-      ? Math.max(0, 40 * (1 - candidate.routeDistanceKm / Math.max(params.radiusKm, 1)))
-      : params.maxDetour === 0
-        ? 40
-        : Math.max(0, 40 * (1 - candidate.addedMinutes / Math.max(params.maxDetour, 1)));
     candidate.scoredWithLifeList = Boolean(params.lifeList?.size);
     candidate.scoringVersion = SCORING_VERSION;
-    candidate.enabledScoreParts = Object.keys(enabledMaxima);
-    candidate.scoreParts = {
-      current: currentScore,
-      stable: stableScore,
-      personal: personalScore,
-      practicality: practicalityScore
-    };
-    candidate.score = ranking.normalizedScore(candidate.scoreParts, enabledMaxima);
+    candidate.enabledScoreParts = result.enabledScoreParts;
+    candidate.scoreParts = result.scoreParts;
+    candidate.score = result.score;
   }
 }
 
