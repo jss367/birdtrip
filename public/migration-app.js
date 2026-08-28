@@ -429,8 +429,12 @@
       // a failed search would leave state.data/state.place pointing at the old
       // location, and changing the bird group would re-render its results under
       // the new query (the group handler bails out while state.data is null).
+      // Clearing state.query and re-persisting also drops the old ?q= from the
+      // share URL, so a failed search can't hand out a link to the stale place.
       state.place = null;
       state.data = null;
+      state.query = "";
+      persist();
       els.resultContext.textContent = "";
       setStatus("Finding location…");
       let place = ac.resolved && ac.resolved.name === query ? ac.resolved : null;

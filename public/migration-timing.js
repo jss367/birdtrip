@@ -25,7 +25,7 @@
     Object.freeze({
       key: "waterfowl",
       label: "Waterfowl",
-      pattern: /\b(?:duck|goose|swan|teal|wigeon|scaup|merganser|bufflehead|goldeneye|pintail|gadwall|shoveler|canvasback|redhead|scoter|eider|brant|mallard)\b/i,
+      pattern: /\b(?:duck|shelduck|goose|swan|teal|wigeon|scaup|merganser|bufflehead|goldeneye|pintail|gadwall|shoveler|canvasback|redhead|scoter|eider|brant|mallard)\b/i,
       description: "Ducks, geese, and swans."
     }),
     Object.freeze({

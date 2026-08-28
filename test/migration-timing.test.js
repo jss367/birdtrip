@@ -32,6 +32,7 @@ test("groups are matched by family words in the common name", () => {
   assert.equal(timing.classifyGroup("Yellow-breasted Chat"), "warblers");
   assert.equal(timing.classifyGroup("Blue-winged Teal"), "waterfowl");
   assert.equal(timing.classifyGroup("Black-bellied Whistling-Duck"), "waterfowl");
+  assert.equal(timing.classifyGroup("Common Shelduck"), "waterfowl");
   assert.equal(timing.classifyGroup("Semipalmated Sandpiper"), "shorebirds");
   assert.equal(timing.classifyGroup("Red Knot"), "shorebirds");
   assert.equal(timing.classifyGroup("Sharp-shinned Hawk"), "raptors");
