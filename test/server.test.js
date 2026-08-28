@@ -4,8 +4,10 @@ const assert = require("node:assert/strict");
 const {
   acquireSeasonalityBuildSlot,
   buildSeasonality,
+  consumeRateLimit,
   fetchJson,
   nearestHotspotRegion,
+  pruneResponseCache,
   pruneSeasonalityCache
 } = require("../server.js");
 
@@ -86,6 +88,62 @@ test("cache-disabled upstream requests do not retain raw responses", async () =>
   } finally {
     global.fetch = originalFetch;
   }
+});
+
+test("concurrent cacheable upstream requests share one fetch and cache null responses", async () => {
+  const originalFetch = global.fetch;
+  let calls = 0;
+  global.fetch = async () => {
+    calls += 1;
+    await new Promise((resolve) => setImmediate(resolve));
+    return {
+      ok: true,
+      text: async () => "null"
+    };
+  };
+
+  try {
+    const url = `https://example.test/coalesced-${Date.now()}`;
+    const [first, second] = await Promise.all([fetchJson(url), fetchJson(url)]);
+    const third = await fetchJson(url);
+    assert.equal(first, null);
+    assert.equal(second, null);
+    assert.equal(third, null);
+    assert.equal(calls, 1);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("response cache pruning removes expired and least-recent entries", () => {
+  const cache = new Map([
+    ["expired", { expiresAt: 999, value: 1 }],
+    ["oldest", { expiresAt: 2000, value: 2 }],
+    ["newest", { expiresAt: 2000, value: 3 }]
+  ]);
+
+  pruneResponseCache(cache, 1000, 1);
+
+  assert.deepEqual([...cache.keys()], ["newest"]);
+});
+
+test("rate limiter rejects excess requests and resets after its window", () => {
+  const buckets = new Map();
+  const options = { buckets, max: 2, windowMs: 1000, now: 5000 };
+
+  assert.deepEqual(consumeRateLimit("client", options), {
+    allowed: true,
+    limit: 2,
+    remaining: 1,
+    resetAt: 6000,
+    retryAfterSeconds: 1
+  });
+  assert.equal(consumeRateLimit("client", options).allowed, true);
+  assert.equal(consumeRateLimit("client", options).allowed, false);
+
+  const reset = consumeRateLimit("client", { ...options, now: 6000 });
+  assert.equal(reset.allowed, true);
+  assert.equal(reset.remaining, 1);
 });
 
 test("concurrent cold seasonality requests share one upstream build", async () => {
