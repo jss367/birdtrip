@@ -525,12 +525,47 @@ function savePreferences() {
 }
 
 const PROFILE_UPSERT_DEBOUNCE_MS = 750;
+// Marks that this browser has already reconciled its anonymous data with a
+// given account, so later sessions hydrate from the account instead of
+// re-running the merge (which would resurrect data deleted on other devices).
+const SYNCED_USER_KEY = "routeBirdingSyncedUser";
 let profileUpsertTimer = 0;
 let profileUpsertFailed = false;
 
 // Set by hydrate/merge to suppress the write-through that would otherwise
 // echo just-fetched account data back to the account.
 let suppressProfileUpsert = false;
+
+// Last known server-side profile (set on hydrate/merge, advanced on each
+// successful upsert). Used to send only the columns that actually changed,
+// so a stale browser can't clobber columns another device updated.
+let lastSyncedProfile = null;
+
+// JSON.stringify with object keys sorted recursively. Needed because jsonb
+// columns come back from Postgres with keys reordered, so a plain stringify
+// would flag identical values as changed.
+function stableStringify(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const body = Object.keys(value).sort()
+      .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
+      .join(",");
+    return `{${body}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function normalizeProfileColumns(profile) {
+  return {
+    life_list: (profile.life_list && typeof profile.life_list === "object") ? profile.life_list : {},
+    targets: typeof profile.targets === "string" ? profile.targets : "",
+    ebird_token: typeof profile.ebird_token === "string" && profile.ebird_token.length
+      ? profile.ebird_token : null,
+    preferences: (profile.preferences && typeof profile.preferences === "object") ? profile.preferences : {}
+  };
+}
 
 function buildProfilePatch() {
   const lifeListEmpty = state.lifeList.species.size === 0;
@@ -558,9 +593,24 @@ function queueProfileUpsert() {
   if (profileUpsertTimer) clearTimeout(profileUpsertTimer);
   profileUpsertTimer = setTimeout(async () => {
     profileUpsertTimer = 0;
+    const full = buildProfilePatch();
+    // Send only columns that changed since the last known server state so a
+    // stale browser can't overwrite columns another device updated. Without a
+    // baseline (e.g. the profile fetch failed at sign-in) fall back to the
+    // full patch rather than dropping the write.
+    let patch = full;
+    if (lastSyncedProfile) {
+      patch = {};
+      for (const column of Object.keys(full)) {
+        if (stableStringify(full[column]) !== stableStringify(lastSyncedProfile[column])) {
+          patch[column] = full[column];
+        }
+      }
+      if (!Object.keys(patch).length) return;
+    }
     let result = null;
     try {
-      result = await window.birdtripAuth.upsertProfile(buildProfilePatch());
+      result = await window.birdtripAuth.upsertProfile(patch);
     } catch {
       // upsertProfile catches internally; this guards anything unexpected so
       // the failure warning below still fires instead of an unhandled rejection.
@@ -572,7 +622,8 @@ function queueProfileUpsert() {
         renderWarnings();
         profileUpsertFailed = true;
       }
-    } else if (profileUpsertFailed) {
+    } else {
+      lastSyncedProfile = { ...(lastSyncedProfile || full), ...patch };
       profileUpsertFailed = false;
     }
   }, PROFILE_UPSERT_DEBOUNCE_MS);
@@ -586,6 +637,14 @@ let mergeAndHydrateInFlight = false;
 // token to whoever uses the app next. Non-sensitive search preferences
 // (map provider, radius, recent days, etc.) survive.
 function clearStateOnSignOut() {
+  lastSyncedProfile = null;
+  // Forget the reconciliation marker: data added anonymously after an explicit
+  // sign-out should go through the merge flow on the next sign-in.
+  try {
+    localStorage.removeItem(SYNCED_USER_KEY);
+  } catch {
+    // Storage unavailable; worst case the next sign-in skips the merge dialog.
+  }
   state.lifeList = {
     source: "",
     fileName: "",
@@ -626,6 +685,25 @@ async function runMergeAndHydrate() {
     if (!account) {
       addWarning("Couldn't load your account data - using browser state for now.");
       renderWarnings();
+      return;
+    }
+
+    lastSyncedProfile = normalizeProfileColumns(account);
+
+    // The anonymous-data merge only makes sense the first time this browser
+    // meets this account. On later sessions (restored session, page reload)
+    // the account is canonical: hydrate from it, including cleared fields, so
+    // deletions made on another device aren't resurrected from localStorage.
+    let alreadySynced = false;
+    try {
+      alreadySynced = localStorage.getItem(SYNCED_USER_KEY) === userIdAtStart;
+    } catch {
+      // Storage unavailable; fall back to the merge flow.
+    }
+    if (alreadySynced) {
+      hydrateFromAccount(account);
+      suppressProfileUpsert = true;
+      try { savePreferences(); } finally { suppressProfileUpsert = false; }
       return;
     }
 
@@ -709,6 +787,11 @@ async function runMergeAndHydrate() {
 
     applyMergeDecisions(account, decisions);
 
+    try {
+      localStorage.setItem(SYNCED_USER_KEY, userIdAtStart);
+    } catch {
+      // Storage unavailable; the merge flow will simply run again next session.
+    }
     suppressProfileUpsert = true;
     try { savePreferences(); } finally { suppressProfileUpsert = false; }
     // Write the merged state back to the account (covers keep-local and union cases).
@@ -809,6 +892,42 @@ function showMergeDialog(conflicts) {
     confirm.addEventListener("click", onConfirm);
     document.addEventListener("keydown", onKey);
   });
+}
+
+// Applies the account as the canonical source of truth, including clears:
+// unlike applyAccountProfile (which only applies non-empty values during the
+// first-sign-in merge), an empty account field here empties the local one.
+function hydrateFromAccount(account) {
+  const hasLifeList = account.life_list && typeof account.life_list === "object"
+    && Array.isArray(account.life_list.species) && account.life_list.species.length;
+  if (hasLifeList) {
+    applyAccountProfile(account, { lifeList: true });
+  } else {
+    state.lifeList = {
+      source: "",
+      fileName: "",
+      importedAt: "",
+      species: new Set(),
+      displayNames: []
+    };
+    updateLifeListStatus();
+  }
+
+  els.targets.value = typeof account.targets === "string" ? account.targets : "";
+
+  if (typeof account.ebird_token === "string" && account.ebird_token.length) {
+    els.apiToken.value = account.ebird_token;
+    els.rememberToken.checked = true;
+  } else if (els.rememberToken.checked) {
+    // The local token claimed account persistence but the account no longer
+    // has one (cleared elsewhere) - drop it. A session-only token
+    // (rememberToken unchecked) was never account state, so it survives.
+    els.apiToken.value = "";
+    els.rememberToken.checked = false;
+  }
+  updateSetupStatus();
+
+  applyAccountProfile(account, { preferences: true });
 }
 
 function applyAccountProfile(profile, which) {
