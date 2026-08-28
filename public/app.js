@@ -1828,9 +1828,14 @@ function readParams() {
 }
 
 function applyPendingSharedPins() {
-  if (!state.pendingPinnedIds.length || !state.results.length) return;
-  const resultIds = new Set(state.results.map((candidate) => candidate.id));
-  const pinnedIds = state.pendingPinnedIds.filter((id) => resultIds.has(id)).slice(0, 5);
+  // Shared URLs can carry a pin that sits outside the top N at the shared
+  // balance. Resolve pins against the full scored pool, not the truncated
+  // visible results, so such stops land in the out-of-rank pinned section
+  // instead of being silently dropped.
+  const source = state.candidatePool.length ? state.candidatePool : state.results;
+  if (!state.pendingPinnedIds.length || !source.length) return;
+  const candidateIds = new Set(source.map((candidate) => candidate.id));
+  const pinnedIds = state.pendingPinnedIds.filter((id) => candidateIds.has(id)).slice(0, 5);
   state.pendingPinnedIds = [];
   if (!pinnedIds.length || state.mode === "area") return;
   state.pinnedIds = pinnedIds;
@@ -4150,10 +4155,11 @@ function candidateById(id) {
 }
 
 function setBalance(index, options = {}) {
-  // Out-of-range or non-numeric imported values fall back to the default
-  // rather than clamping: a bogus balance=99 shouldn't read as "Less driving".
-  const parsed = Math.round(Number(index));
-  state.balance = Number.isFinite(parsed) && parsed >= 0 && parsed < BALANCE_LEVELS.length
+  // Non-integer or out-of-range imported values fall back to the default
+  // rather than clamping or rounding: a bogus balance=99 shouldn't read as
+  // "Less driving" and balance=0.6 shouldn't read as "Leaning birding".
+  const parsed = Number(index);
+  state.balance = Number.isInteger(parsed) && parsed >= 0 && parsed < BALANCE_LEVELS.length
     ? parsed
     : DEFAULT_BALANCE;
   syncBalanceControls();
@@ -4162,6 +4168,7 @@ function setBalance(index, options = {}) {
   renderResults();
   renderMarkers();
   renderReport();
+  updateVisibleDetails();
   refreshSharedUrlIfPresent();
 }
 
@@ -5074,7 +5081,9 @@ function compactScorePart(label, value, max) {
 
 function updateVisibleDetails() {
   if (els.detailsPanel.hidden || !state.selectedId) return;
-  const candidate = state.results.find((item) => item.id === state.selectedId);
+  // Resolve through the pool: re-ranking can push the selected stop out of the
+  // visible top N while its detail panel stays open.
+  const candidate = candidateById(state.selectedId);
   if (candidate) renderDetails(candidate);
 }
 

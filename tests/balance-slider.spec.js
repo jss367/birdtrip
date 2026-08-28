@@ -90,6 +90,28 @@ test("out-of-range shared balance falls back to the default", async ({ page }) =
   await expect(page.locator("#balanceHint")).toContainText("Recommended");
 });
 
+test("fractional shared balance falls back to the default", async ({ page }) => {
+  await stubApis(page);
+  // 0.6 must not round to "Leaning birding" - only in-range integers are valid.
+  await page.goto("/?bt=1&mode=area&origin=Test+Center%2C+Barcelona&maxStops=5&balance=0.6");
+  await expect(page.locator("#balanceSlider")).toHaveValue("2");
+  await expect(page.locator("#balanceHint")).toContainText("Recommended");
+});
+
+test("an open detail panel refreshes when the balance changes", async ({ page }) => {
+  await runAreaSearch(page);
+  await page.locator('.stop-card:has-text("City Park Alpha") .stop-main').click();
+  const subtitle = page.locator(".detail-subtitle");
+  await expect(subtitle).toBeVisible();
+  const before = (await subtitle.textContent()).match(/^\d+/)[0];
+  await setSlider(page, "#balanceSliderResults", 0);
+  const pillScore = await page
+    .locator('.stop-card:has-text("City Park Alpha") .score-pill b')
+    .textContent();
+  expect(pillScore).not.toBe(before);
+  await expect(subtitle).toContainText(`${pillScore} score`);
+});
+
 test("shared URL restores the balance position", async ({ page }) => {
   await stubApis(page);
   await page.goto("/?bt=1&mode=area&origin=Test+Center%2C+Barcelona&maxStops=5&balance=0&run=1");

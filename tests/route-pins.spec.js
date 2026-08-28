@@ -18,3 +18,18 @@ test("pinned stop outside the top results stays visible in its own section", asy
   await outOfRank.locator(".compare-toggle").click();
   await expect(page.locator("#comparisonContent")).toContainText("Harbor Park");
 });
+
+test("shared URL keeps a pin that is out-of-rank at the shared balance", async ({ page }) => {
+  await runRouteSearch(page, { maxStops: 5 });
+  await page.locator('.stop-card:has-text("Harbor Park") .stop-pin').click();
+  await setSlider(page, "#balanceSliderResults", 0);
+  // The share URL now records balance=0 plus the pin; at that balance Harbor
+  // Park sits outside the top 5, so the recipient's pin must resolve against
+  // the candidate pool and land in the out-of-rank section, not vanish.
+  const shared = await page.evaluate(() => window.buildShareUrl({ autoRun: true }));
+  await page.goto(shared);
+  const outOfRank = page.locator(".stop-card.is-out-of-rank");
+  await expect(outOfRank).toHaveCount(1, { timeout: 15000 });
+  await expect(outOfRank.locator(".stop-name")).toHaveText("Harbor Park");
+  await expect(page.locator("#balanceSliderResults")).toHaveValue("0");
+});
