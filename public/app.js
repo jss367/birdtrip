@@ -2776,6 +2776,9 @@ function selectAutocompleteItem(field, index) {
   if (inputEl === els.origin || inputEl === els.destination) {
     savePreferences();
   }
+  // Accepting a suggestion assigns the value programmatically (no input
+  // event), so invalidate any loaded /t/<slug> snapshot URL here too.
+  refreshSharedUrlIfPresent();
 }
 
 function handleAutocompleteOutsideClick(event) {
@@ -2950,6 +2953,8 @@ function selectSpeciesItem(index) {
   clearSpeciesError();
   hideSpeciesAutocomplete();
   savePreferences();
+  // Same as location autocomplete: programmatic assignment fires no event.
+  refreshSharedUrlIfPresent();
 }
 
 function hideSpeciesAutocomplete() {

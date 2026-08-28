@@ -231,7 +231,7 @@ The client is vanilla JavaScript so this tool remains easy to inspect and run. R
 
 - No server-side persistence of user identity or credentials. The only stored data is opt-in shared trips: anonymous search-input snapshots keyed by unguessable slugs, deleted after 90 days without an open.
 - eBird token can be stored locally in the browser at the user's choice.
-- Uploaded or entered target lists never leave the local app except as query-driving context for local scoring.
+- Uploaded or entered target lists stay in the local app except as query-driving context for local scoring — unless the user creates a share link, which stores the target list with the other search inputs in the trip snapshot.
 
 ## Future Work
 
