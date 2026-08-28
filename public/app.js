@@ -1329,7 +1329,10 @@ async function loadAppConfig() {
       console.warn("Auth init failed:", err && err.message);
     }
     if (typeof window.birdtripAuth.onChange === "function") {
-      let previousUserId = window.birdtripAuth.user ? window.birdtripAuth.user.id : null;
+      // Start from null: onChange fires immediately with the current user, so a
+      // session restored during init() (before this listener existed) still
+      // triggers the initial merge/hydrate for returning signed-in users.
+      let previousUserId = null;
       window.birdtripAuth.onChange(async (user) => {
         const nextUserId = user ? user.id : null;
         if (nextUserId === previousUserId) return;
