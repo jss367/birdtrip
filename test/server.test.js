@@ -1,5 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 
 const {
   acquireSeasonalityBuildSlot,
@@ -11,6 +13,8 @@ const {
   pruneResponseCache,
   pruneSeasonalityCache
 } = require("../server.js");
+
+const appSource = fs.readFileSync(path.join(__dirname, "../public/app.js"), "utf8");
 
 test("seasonality build gate limits global build concurrency", async () => {
   const firstRelease = await acquireSeasonalityBuildSlot();
@@ -206,6 +210,11 @@ test("rate limiter rejects excess requests and resets after its window", () => {
   const reset = consumeRateLimit("client", { ...options, now: 6000 });
   assert.equal(reset.allowed, true);
   assert.equal(reset.remaining, 1);
+});
+
+test("client keeps local rate limits out of the eBird credential flow", () => {
+  assert.match(appSource, /payload\.code !== "RATE_LIMITED"/);
+  assert.match(appSource, /error\.code = payload\.code/);
 });
 
 test("trusted proxy hop count selects the client before the known proxy chain", () => {

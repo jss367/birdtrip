@@ -2312,13 +2312,18 @@ async function apiJson(url, options = {}) {
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    if (String(url).startsWith("/api/ebird/") && [401, 403, 429].includes(response.status)) {
+    if (
+      String(url).startsWith("/api/ebird/")
+      && [401, 403, 429].includes(response.status)
+      && payload.code !== "RATE_LIMITED"
+    ) {
       revealEbirdTokenForError(response.status, options.token ? "personal" : "shared", { prompt: !options.background });
     }
     const base = payload.error || response.statusText || "Request failed";
     const detail = detailText(payload.details);
     const error = new Error(detail ? `${base} — ${detail}` : base);
     error.status = response.status;
+    error.code = payload.code;
     error.details = payload.details;
     throw error;
   }

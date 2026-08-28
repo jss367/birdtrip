@@ -79,8 +79,12 @@ function sendJson(res, status, payload) {
   res.end(JSON.stringify(payload));
 }
 
-function sendError(res, status, message, details) {
-  sendJson(res, status, { error: message, details });
+function sendError(res, status, message, details, code) {
+  sendJson(res, status, {
+    error: message,
+    ...(code ? { code } : {}),
+    details
+  });
 }
 
 function pruneResponseCache(target = cache, now = Date.now(), maxEntries = CACHE_MAX_ENTRIES) {
@@ -212,7 +216,7 @@ function applyApiRateLimit(req, res) {
   res.setHeader("retry-after", String(result.retryAfterSeconds));
   sendError(res, 429, "Too many API requests", {
     retryAfterSeconds: result.retryAfterSeconds
-  });
+  }, "RATE_LIMITED");
   return false;
 }
 
