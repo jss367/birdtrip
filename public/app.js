@@ -1487,6 +1487,13 @@ async function runRouteSearch(params) {
   // for every member. evaluateDetours already drops over-budget candidates;
   // the filter is belt-and-suspenders.
   const eligible = practical.filter((candidate) => candidate.addedMinutes <= params.maxDetour);
+  // Notable reports do not feed the score, so candidates can be fully scored
+  // now that detour impact is known. Rank at the default balance before
+  // selectNotableCandidates truncates, so the pool keeps the strongest
+  // candidates rather than whichever ones happened to be evaluated first.
+  scoreCandidates(eligible, params);
+  applyBalance(eligible, DEFAULT_BALANCE);
+  eligible.sort(compareByRankUtility);
   const pool = ranking.selectNotableCandidates(eligible, params);
   setStatus("Adding notable birds", "Checking nearby notable reports for the strongest practical candidates.");
   await fetchNotablesPerCandidate(pool, params);
@@ -3919,11 +3926,18 @@ async function evaluateDetours(candidates, origin, destination, baseDurationSeco
   const practical = [];
   const ordered = orderRoutingCandidates(candidates, params);
   const initialCount = Math.min(ordered.length, Math.max(params.maxStops, 15), MAX_INITIAL_DETOURS);
+  // The re-ranking pool wants max(2 × maxStops, 12) practical members so
+  // balance changes can promote candidates from outside the top maxStops.
+  // Keep evaluating past the first round until that target is met, still
+  // capped by MAX_TOTAL_DETOURS to bound route-API usage — at high maxStops
+  // the pool may stay smaller than the target.
+  const poolTarget = Math.max(params.maxStops * 2, 12);
   let attempted = 0;
   let failed = 0;
 
-  const evaluateRange = async (start, end) => {
+  const evaluateRange = async (start, end, target = Infinity) => {
     for (let index = start; index < end; index += 3) {
+      if (practical.length >= target) break;
       const batch = ordered.slice(index, Math.min(index + 3, end));
       setStatus("Checking detours", `Evaluating route impact ${index + 1}-${index + batch.length} of up to ${Math.min(ordered.length, MAX_TOTAL_DETOURS)}.`);
       const results = await Promise.all(batch.map(async (candidate) => {
@@ -3949,10 +3963,10 @@ async function evaluateDetours(candidates, origin, destination, baseDurationSeco
   };
 
   await evaluateRange(0, initialCount);
-  if (practical.length < params.maxStops && attempted < Math.min(ordered.length, MAX_TOTAL_DETOURS)) {
+  if (practical.length < poolTarget && attempted < Math.min(ordered.length, MAX_TOTAL_DETOURS)) {
     const refillEnd = Math.min(ordered.length, MAX_TOTAL_DETOURS);
     setStatus("Checking more detours", `The first round found ${practical.length} stops within budget; checking additional candidates.`);
-    await evaluateRange(attempted, refillEnd);
+    await evaluateRange(attempted, refillEnd, poolTarget);
   }
   if (failed) {
     addWarning(`${failed} of ${attempted} detour estimates failed and those stops were skipped.`);

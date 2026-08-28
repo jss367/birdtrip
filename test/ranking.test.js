@@ -263,6 +263,19 @@ test("notable pool bounds organic rescue extras but keeps all explicit rescues",
   assert.equal(new Set(ids).size, pool.length);
 });
 
+test("notable pool truncates in the caller's order, so callers must pre-rank", () => {
+  const candidates = [];
+  for (let i = 0; i < 20; i += 1) candidates.push({ id: `ranked-${i}`, targetMatches: [], liferSpecies: [] });
+
+  const pool = ranking.selectNotableCandidates(candidates, { maxStops: 3 });
+
+  // Cap is max(2 * maxStops, 12) = 12: exactly the first 12 of the input.
+  assert.deepEqual(
+    pool.map((candidate) => candidate.id),
+    candidates.slice(0, 12).map((candidate) => candidate.id)
+  );
+});
+
 test("notable pool does not duplicate rescued candidates already in the top slice", () => {
   const candidates = [
     { id: "top-rescue", explicitTargetRescue: true, targetMatches: [], liferSpecies: [] }
