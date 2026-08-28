@@ -35,6 +35,11 @@ test("groups are matched by family words in the common name", () => {
   assert.equal(timing.classifyGroup("Semipalmated Sandpiper"), "shorebirds");
   assert.equal(timing.classifyGroup("Red Knot"), "shorebirds");
   assert.equal(timing.classifyGroup("Sharp-shinned Hawk"), "raptors");
+  // Compound names lack a word boundary before "hawk"/"falcon", so the
+  // pattern lists them explicitly.
+  assert.equal(timing.classifyGroup("Eurasian Sparrowhawk"), "raptors");
+  assert.equal(timing.classifyGroup("Northern Goshawk"), "raptors");
+  assert.equal(timing.classifyGroup("Gyrfalcon"), "raptors");
   assert.equal(timing.classifyGroup("Ruby-throated Hummingbird"), "hummingbirds");
   // "Nighthawk" is one word, so the raptor pattern must not match inside it.
   assert.equal(timing.classifyGroup("Common Nighthawk"), null);

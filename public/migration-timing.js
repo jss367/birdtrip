@@ -37,7 +37,7 @@
     Object.freeze({
       key: "raptors",
       label: "Raptors",
-      pattern: /\b(?:hawk|goshawk|eagle|falcon|kestrel|merlin|harrier|kite|osprey|vulture|caracara)\b/i,
+      pattern: /\b(?:hawk|sparrowhawk|goshawk|eagle|falcon|gyrfalcon|kestrel|merlin|harrier|kite|osprey|vulture|caracara)\b/i,
       description: "Hawks, eagles, falcons, kites, and vultures."
     }),
     Object.freeze({
