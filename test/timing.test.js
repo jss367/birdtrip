@@ -141,3 +141,44 @@ test("arrival assessment handles darkness, dusk specialists, and raptor middays"
   });
   assert.equal(polarNight.quality, "dark");
 });
+
+test("dusk-window dawn bonus only applies near sunrise, not deep night", () => {
+  const sunriseMs = Date.UTC(2026, 5, 1, 12);
+  const sunsetMs = sunriseMs + 14 * HOUR_MS;
+
+  const owlPreDawn = timing.assessArrival({
+    arrivalMs: sunriseMs - HOUR_MS,
+    sunriseMs,
+    sunsetMs,
+    window: "dusk"
+  });
+  assert.equal(owlPreDawn.quality, "prime");
+
+  const owlDeepNight = timing.assessArrival({
+    arrivalMs: sunriseMs - 4 * HOUR_MS,
+    sunriseMs,
+    sunsetMs,
+    window: "dusk"
+  });
+  assert.equal(owlDeepNight.quality, "good");
+  assert.match(owlDeepNight.note, /night hours/i);
+});
+
+test("polar daylight is poor for dusk specialists but good otherwise", () => {
+  const arrivalMs = Date.UTC(2026, 5, 21, 12);
+
+  const owlMidnightSun = timing.assessArrival({
+    arrivalMs,
+    polar: "day",
+    window: "dusk"
+  });
+  assert.equal(owlMidnightSun.quality, "poor");
+  assert.match(owlMidnightSun.note, /no dusk or night/i);
+
+  const marshMidnightSun = timing.assessArrival({
+    arrivalMs,
+    polar: "day",
+    window: "dawn"
+  });
+  assert.equal(marshMidnightSun.quality, "good");
+});

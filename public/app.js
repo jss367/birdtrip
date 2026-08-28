@@ -2110,6 +2110,7 @@ function setResultOrder(order) {
   els.orderByArrival.setAttribute("aria-pressed", String(byArrival));
   if (state.results.length) {
     renderResults();
+    renderMarkers();
     if (window.lucide) window.lucide.createIcons();
   }
 }
@@ -4723,9 +4724,7 @@ function renderResults() {
   const orderableByArrival = !isArea && state.results.some((candidate) => Number.isFinite(candidate.routeProgress));
   els.orderToggle.hidden = !orderableByArrival;
   const byArrival = orderableByArrival && state.resultOrder === "arrival";
-  const displayResults = byArrival
-    ? [...state.results].sort((a, b) => (Number.isFinite(a.routeProgress) ? a.routeProgress : 1) - (Number.isFinite(b.routeProgress) ? b.routeProgress : 1))
-    : state.results;
+  const displayResults = displayOrderedResults();
   displayResults.forEach((candidate, index) => {
     const node = els.resultTemplate.content.cloneNode(true);
     const card = node.querySelector(".stop-card");
@@ -4831,9 +4830,19 @@ function setMetricTooltip(element, text) {
   element.tabIndex = 0;
 }
 
+// Single source of truth for result ordering so card ordinals and map marker
+// numbers always agree, whichever order toggle is active.
+function displayOrderedResults() {
+  const byArrival = state.params?.mode !== "area"
+    && state.resultOrder === "arrival"
+    && state.results.some((candidate) => Number.isFinite(candidate.routeProgress));
+  if (!byArrival) return state.results;
+  return [...state.results].sort((a, b) => (Number.isFinite(a.routeProgress) ? a.routeProgress : 1) - (Number.isFinite(b.routeProgress) ? b.routeProgress : 1));
+}
+
 function renderMarkers() {
   if (!state.mapAdapter) return;
-  state.mapAdapter.setMarkers(state.results, state.selectedId, selectCandidate);
+  state.mapAdapter.setMarkers(displayOrderedResults(), state.selectedId, selectCandidate);
 }
 
 function selectCandidate(id) {

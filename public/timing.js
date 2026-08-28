@@ -130,7 +130,9 @@
         : { quality: "dark", note: "continuous polar darkness at this latitude right now" };
     }
     if (options.polar === "day") {
-      return { quality: "good", note: "continuous daylight at this latitude right now" };
+      return timeWindow === "dusk"
+        ? { quality: "poor", note: "continuous polar daylight leaves no dusk or night window" }
+        : { quality: "good", note: "continuous daylight at this latitude right now" };
     }
     const sunriseMs = Number(options.sunriseMs);
     const sunsetMs = Number(options.sunsetMs);
@@ -140,7 +142,7 @@
 
     if (timeWindow === "dusk") {
       const nearSunset = Math.abs(arrivalMs - sunsetMs) / HOUR_MS <= 1.5;
-      const nearDawn = hoursAfterSunrise <= 0.5;
+      const nearDawn = hoursAfterSunrise >= -1.5 && hoursAfterSunrise <= 0.5;
       if (nearSunset || nearDawn) return { quality: "prime", note: "prime window for nocturnal birds" };
       if (hoursAfterSunrise < 0 || hoursBeforeSunset < 0) {
         return { quality: "good", note: "night hours can work for nocturnal birds" };
