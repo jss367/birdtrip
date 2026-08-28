@@ -425,6 +425,13 @@
     if (ac.controller) ac.controller.abort();
     closeSuggestions();
     try {
+      // A new search invalidates the previous location's results. Without this,
+      // a failed search would leave state.data/state.place pointing at the old
+      // location, and changing the bird group would re-render its results under
+      // the new query (the group handler bails out while state.data is null).
+      state.place = null;
+      state.data = null;
+      els.resultContext.textContent = "";
       setStatus("Finding location…");
       let place = ac.resolved && ac.resolved.name === query ? ac.resolved : null;
       if (!place) {
