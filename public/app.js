@@ -1819,10 +1819,7 @@ function readParams() {
     species: state.species && normalizeName(state.species.comName) === normalizeName(els.speciesQuery.value)
       ? state.species
       : null,
-    targets: els.targets.value
-      .split(/\n|,/)
-      .map((target) => normalizeName(target))
-      .filter(Boolean),
+    targets: parseTargetsInput(),
     lifeList: new Set(state.lifeList.species)
   };
 }
@@ -2082,11 +2079,15 @@ function updateInputSummaries() {
   renderInsights();
 }
 
+// Deduped: the same species entered twice must count as one target everywhere
+// downstream (targetSlots normalization, targetMatches, route target rescue).
 function parseTargetsInput() {
-  return els.targets.value
-    .split(/\n|,/)
-    .map((target) => normalizeName(target))
-    .filter(Boolean);
+  return Array.from(new Set(
+    els.targets.value
+      .split(/\n|,/)
+      .map((target) => normalizeName(target))
+      .filter(Boolean)
+  ));
 }
 
 async function handleLifeListFile(event) {
@@ -4773,8 +4774,8 @@ function buildStopCard(candidate, index, { outOfRank, scale }) {
     ebird.setAttribute("aria-label", `${candidate.name} on eBird`);
     const mainButton = node.querySelector(".stop-main");
     mainButton.setAttribute("aria-label", outOfRank
-      ? `View ${candidate.name}, pinned outside current top results, score ${candidate.score} of 100`
-      : `View ${candidate.name}, rank ${index + 1} of ${state.results.length}, score ${candidate.score} of 100`);
+      ? `View ${candidate.name}, pinned outside current top results, score ${candidate.score} of ${scale.max}`
+      : `View ${candidate.name}, rank ${index + 1} of ${state.results.length}, score ${candidate.score} of ${scale.max}`);
     mainButton.addEventListener("click", () => selectCandidate(candidate.id));
     setupCandidateSpeciesPreviews(card);
   }
@@ -5047,8 +5048,12 @@ function compareFreshnessCell(candidate) {
 
 function compareScoreCell(candidate) {
   const isArea = state.params?.mode === "area";
+  // Legacy-scored candidates (restored trips) keep their saved score, so label
+  // it with its own legacy maximum instead of pretending it is out of 100.
+  const scale = scoreScale([candidate]);
   return `
-    <b>${candidate.score} of 100</b>
+    <b>${candidate.score} of ${scale.max}</b>
+    ${scale.legacy ? "<small>legacy scoring model</small>" : ""}
     <div class="comparison-score">
       ${scoreComponents(candidate, isArea).map((part) => compactScorePart(part.label, part.value, part.max)).join("")}
     </div>

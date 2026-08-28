@@ -40,3 +40,19 @@ test("single-target search earns full target points", async ({ page }) => {
   const tooltips = await page.locator(".score-pill").evaluateAll((els) => els.map((e) => e.title));
   expect(tooltips.some((t) => /Personal value 15(\.0)?\/15/.test(t))).toBe(true);
 });
+
+test("duplicate target entries do not dilute target credit", async ({ page }) => {
+  await runAreaSearch(page, {
+    beforeSubmit: async () => {
+      // The same species twice must normalize to one target slot, not two:
+      // otherwise the sole distinct target only earns half its personal value.
+      await page.locator("#targetRows input").first().fill("Far Rich Reserve Species 1");
+      await page.keyboard.press("Enter");
+      await page.locator("#targetRows input").nth(1).fill("Far Rich Reserve Species 1");
+      await page.keyboard.press("Enter");
+    }
+  });
+  await expect(page.locator("#targetCount")).toHaveText("1");
+  const tooltips = await page.locator(".score-pill").evaluateAll((els) => els.map((e) => e.title));
+  expect(tooltips.some((t) => /Personal value 15(\.0)?\/15/.test(t))).toBe(true);
+});

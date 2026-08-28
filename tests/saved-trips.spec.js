@@ -29,3 +29,32 @@ test("restored trips keep stored scores and an inert slider", async ({ page }) =
   expect(await visibleOrder(page)).toEqual(orderBefore);
   await expect(page.locator("#balanceSliderResults")).toBeDisabled();
 });
+
+test("legacy-scored restored stops keep their legacy scale in the comparison table", async ({ page }) => {
+  await runAreaSearch(page);
+  await page.fill("#tripName", "Legacy Trip");
+  await page.click("#saveTripButton");
+  // Rewrite the saved trip as a legacy (pre-versioning) save: hydration then
+  // assigns scoringVersion 1, whose scale is the 115-point legacy maximum
+  // (133 with lifers), not 100.
+  await page.evaluate(() => {
+    const payload = JSON.parse(localStorage.getItem("birdtripSavedTrips"));
+    for (const trip of payload.trips) {
+      for (const stop of trip.state.results) {
+        delete stop.scoringVersion;
+        delete stop.scoredWithLifeList;
+        delete stop.birdMax;
+      }
+    }
+    localStorage.setItem("birdtripSavedTrips", JSON.stringify(payload));
+  });
+  await page.reload();
+  await stubApis(page);
+  await page.click("#loadTripButton");
+  await expect(page.locator(".stop-card")).toHaveCount(5);
+  await page.locator(".stop-card").first().locator(".compare-toggle").click();
+  const comparison = page.locator("#comparisonContent");
+  await expect(comparison).toContainText("of 115");
+  await expect(comparison).toContainText("legacy scoring model");
+  await expect(comparison).not.toContainText("of 100");
+});
