@@ -1616,6 +1616,60 @@ button.budget-unlock:focus-visible {
   gap: 7px;
 }
 
+.navigation-export {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  border: 1px solid var(--accent-border);
+  border-radius: 8px;
+  background: var(--accent-soft);
+  padding: 10px;
+}
+
+.navigation-export[hidden] {
+  display: none;
+}
+
+.navigation-export strong,
+.navigation-export small {
+  display: block;
+}
+
+.navigation-export strong {
+  color: var(--accent-strong);
+  font-size: 0.84rem;
+}
+
+.navigation-export small {
+  margin-top: 2px;
+  color: var(--muted-strong);
+  font-size: 0.76rem;
+}
+
+.navigation-export-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 7px;
+}
+
+.navigation-export-actions .ghost-button {
+  min-height: 34px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.navigation-export-actions .ghost-button[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.navigation-export-actions svg {
+  width: 15px;
+  height: 15px;
+}
+
 .itinerary-empty {
   border: 1px dashed var(--line-strong);
   border-radius: 8px;
@@ -2917,6 +2971,16 @@ button.stop-chip {
 
   .itinerary-stats {
     grid-template-columns: 1fr;
+  }
+
+  .navigation-export,
+  .navigation-export-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .navigation-export-actions .ghost-button {
+    justify-content: center;
   }
 
   .itinerary-stop {

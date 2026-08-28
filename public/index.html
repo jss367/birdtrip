@@ -388,6 +388,22 @@
             <div><small>Total added</small><b id="itineraryAddedTime">-</b></div>
             <div><small>Total drive</small><b id="itineraryTotalDrive">-</b></div>
           </div>
+          <div id="navigationExport" class="navigation-export" hidden>
+            <div>
+              <strong>Export to navigation</strong>
+              <small id="navigationExportSummary">Uses your pinned stops in order.</small>
+            </div>
+            <div class="navigation-export-actions">
+              <a id="googleMapsRouteLink" class="ghost-button" target="_blank" rel="noreferrer">
+                <i data-lucide="navigation"></i>
+                Open in Google Maps
+              </a>
+              <button type="button" id="downloadGpxButton" class="ghost-button">
+                <i data-lucide="download"></i>
+                Download GPX
+              </button>
+            </div>
+          </div>
           <div id="itineraryList" class="itinerary-list"></div>
         </section>
         <section id="comparisonPanel" class="comparison-panel" hidden>
@@ -496,6 +512,7 @@
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
   <script src="./ranking.js"></script>
+  <script src="./navigation-export.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>
