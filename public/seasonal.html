@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Enter a location and see which birds peak in each season there, from a year of eBird reports.">
+  <meta name="theme-color" content="#10b981">
+  <link rel="canonical" href="https://birdtrip.org/seasonal.html">
+  <meta property="og:site_name" content="Birdtrip">
+  <meta property="og:title" content="Birdtrip Seasonal Birds">
+  <meta property="og:description" content="Enter a location and see which birds peak in each season there, from a year of eBird reports.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://birdtrip.org/seasonal.html">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Birdtrip Seasonal Birds">
+  <meta name="twitter:description" content="Enter a location and see which birds peak in each season there, from a year of eBird reports.">
+  <title>Birdtrip Seasonal Birds</title>
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body class="seasonal-page">
+  <div class="seasonal-shell">
+    <header class="app-header seasonal-header">
+      <a class="app-brand migration-brand-link" href="./">
+        <div class="brand-mark" aria-hidden="true"><i data-lucide="binoculars"></i></div>
+        <div>
+          <h1>Birdtrip</h1>
+          <p>Seasonal Birds</p>
+        </div>
+      </a>
+      <div class="header-actions">
+        <span id="pageStatus" class="migration-page-status" role="status" aria-live="polite"></span>
+        <button type="button" id="shareButton" class="ghost-button">
+          <i data-lucide="share-2"></i>
+          Share
+        </button>
+      </div>
+    </header>
+
+    <main class="seasonal-layout">
+      <section class="seasonal-search-panel">
+        <form id="seasonalForm" class="seasonal-search">
+          <label class="seasonal-search-field">
+            <span>Location</span>
+            <div class="autocomplete">
+              <input id="seasonalLocation" name="seasonalLocation" autocomplete="off" autocapitalize="words"
+                spellcheck="false" placeholder="e.g. San Diego" required
+                role="combobox" aria-autocomplete="list" aria-expanded="false"
+                aria-controls="seasonalSuggestions" aria-haspopup="listbox">
+              <ul class="autocomplete-list" id="seasonalSuggestions" role="listbox" hidden></ul>
+            </div>
+          </label>
+          <button type="submit" id="seasonalSubmit" class="seasonal-submit">
+            <i data-lucide="calendar-range"></i>
+            Find seasonal birds
+          </button>
+        </form>
+        <p class="field-hint seasonal-search-hint">
+          Birds are ranked by how strongly their sampled-date occurrence peaks in each season compared with the rest of the year. This is not checklist frequency.
+        </p>
+      </section>
+
+      <section class="seasonal-results-region">
+        <div class="results-header">
+          <div>
+            <h2>Seasonal specialties</h2>
+            <p id="resultContext">Species reported on a larger share of sampled dates in one season.</p>
+          </div>
+        </div>
+        <div id="seasonalResults" class="seasonal-results">
+          <div class="empty-state">
+            <i data-lucide="calendar-range"></i>
+            <p>Enter a city or place to see which birds peak there in each season.</p>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="seasonalTooltip" class="seasonal-tooltip" hidden></div>
+
+  <script src="https://unpkg.com/lucide@1.33.0/dist/umd/lucide.min.js"
+    integrity="sha384-tCQ4YYVYKuOFYH+pnSIPOS3PaT3+5AmX2okMauzDJlLLxkQfJfSwmgpZPceZWs1F"
+    crossorigin="anonymous"></script>
+  <script src="./seasonal.js"></script>
+  <script src="./seasonal-app.js"></script>
+</body>
+</html>

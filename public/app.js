@@ -16,8 +16,14 @@ const state = {
   origin: null,
   destination: null,
   areaCenter: null,
+  species: null,
+  sightings: [],
+  sightingLocations: [],
+  selectedSightingId: null,
+  ebirdAccessIssue: null,
   provider: "osm",
   userSelectedProvider: false,
+  ebirdModalPrompted: false,
   lifeList: {
     source: "",
     fileName: "",
@@ -39,11 +45,28 @@ const state = {
   configReady: null
 };
 
+const ranking = window.BirdtripRanking;
+const SCORING_VERSION = 2;
+const DISCOVERY_QUERY_RADIUS_KM = 200;
+const ACTIVITY_QUERY_RADIUS_KM = 50;
+const MAX_DISCOVERY_SAMPLES = 16;
+const MAX_ACTIVITY_SAMPLES = 14;
+const ACTIVITY_MAX_RESULTS = 1000;
+const MAX_EVIDENCE_HOTSPOTS = 40;
+const MAX_INITIAL_DETOURS = 20;
+const MAX_TOTAL_DETOURS = 40;
+const MAX_ROUTE_TARGETS = 10;
+const MAX_ROUTE_TARGET_LOOKUPS = 20;
+const MAX_ROUTE_UNSEEN_PROBES = 10;
+const SESSION_TOKEN_KEY = "birdtripEbirdApiToken";
+
 const els = {
-  quickStartButton: document.querySelector("#quickStartButton"),
+  resultsActions: document.querySelector("#resultsActions"),
   shareTripButton: document.querySelector("#shareTripButton"),
   downloadReportButton: document.querySelector("#downloadReportButton"),
   settingsButton: document.querySelector("#settingsButton"),
+  settingsModal: document.querySelector("#settingsModal"),
+  closeSettingsButton: document.querySelector("#closeSettingsButton"),
   setupStatus: document.querySelector("#setupStatus"),
   form: document.querySelector("#searchForm"),
   modeButtons: document.querySelectorAll(".mode-switch button[data-mode]"),
@@ -54,17 +77,24 @@ const els = {
   destinationField: document.querySelector("#destinationField"),
   origin: document.querySelector("#origin"),
   destination: document.querySelector("#destination"),
+  speciesField: document.querySelector("#speciesField"),
+  speciesQuery: document.querySelector("#speciesQuery"),
+  speciesSuggestions: document.querySelector("#speciesSuggestions"),
+  speciesHint: document.querySelector("#speciesHint"),
+  speciesError: document.querySelector("#speciesError"),
   mapProvider: document.querySelector("#mapProvider"),
   mapProviderHint: document.querySelector("#mapProviderHint"),
+  maxDetourField: document.querySelector("#maxDetourField"),
   maxDetour: document.querySelector("#maxDetour"),
-  maxDetourLabel: document.querySelector("#maxDetourLabel"),
-  maxDetourUnit: document.querySelector("#maxDetourUnit"),
   recentDays: document.querySelector("#recentDays"),
   radiusKm: document.querySelector("#radiusKm"),
+  radiusKmLabel: document.querySelector("#radiusKmLabel"),
   maxStops: document.querySelector("#maxStops"),
+  ebirdAccessStatus: document.querySelector("#ebirdAccessStatus"),
   apiToken: document.querySelector("#apiToken"),
   rememberToken: document.querySelector("#rememberToken"),
   targets: document.querySelector("#targets"),
+  targetRows: document.querySelector("#targetRows"),
   lifeListInput: document.querySelector("#lifeListInput"),
   lifeListStatus: document.querySelector("#lifeListStatus"),
   clearLifeListButton: document.querySelector("#clearLifeListButton"),
@@ -126,12 +156,12 @@ const els = {
   detailsPanel: document.querySelector("#detailsPanel"),
   detailsContent: document.querySelector("#detailsContent"),
   closeDetails: document.querySelector("#closeDetails"),
-  quickStartModal: document.querySelector("#quickStartModal"),
-  closeQuickStart: document.querySelector("#closeQuickStart"),
-  modalSampleButton: document.querySelector("#modalSampleButton"),
-  modalExploreButton: document.querySelector("#modalExploreButton"),
   submitLabel: document.querySelector("#submitLabel"),
+  mapRegion: document.querySelector(".map-region"),
   mapAreaLegend: document.querySelector("#mapAreaLegend"),
+  mapGlass: document.querySelector("#mapGlass"),
+  resultsTitle: document.querySelector("#resultsTitle"),
+  resultLegend: document.querySelector("#resultLegend"),
   originSuggestions: document.querySelector("#originSuggestions"),
   destinationSuggestions: document.querySelector("#destinationSuggestions"),
   useCurrentLocationButton: document.querySelector("#useCurrentLocationButton"),
@@ -143,20 +173,67 @@ const autocomplete = {
   destination: { listEl: null, timer: 0, controller: null, items: [], activeIndex: -1, resolved: null, lastQuery: "" }
 };
 
-const PREF_FIELDS = ["origin", "destination", "mapProvider", "maxDetour", "recentDays", "radiusKm", "maxStops", "targets"];
+const speciesAutocomplete = { timer: 0, controller: null, items: [], activeIndex: -1, lastQuery: "" };
+
+const PREF_FIELDS = [
+  "origin",
+  "destination",
+  "mapProvider",
+  "maxDetour",
+  "recentDays",
+  "radiusKm",
+  "maxStops",
+  "targets",
+  "speciesQuery"
+];
 // Fields that have their own column in the profiles row and explicit merge
 // handling; must NOT be re-applied by the silent preferences merge or we'd
 // clobber the user's conflict choice.
 const ACCOUNT_OWNED_FIELDS = new Set(["targets"]);
+
+function normalizeMode(mode) {
+  return mode === "area" || mode === "species" ? mode : "route";
+}
 const SAVED_TRIPS_KEY = "birdtripSavedTrips";
 const CONFIG_WAIT_TIMEOUT_MS = 6000;
 const SHARE_URL_VERSION = "1";
 
+const MIGRATION_PAGE_GROUPS = ["all", "warblers", "waterfowl", "shorebirds", "raptors", "hummingbirds"];
+
+function redirectLegacyMigrationLink() {
+  const search = new URLSearchParams(window.location.search);
+  if (search.get("bt") !== SHARE_URL_VERSION || search.get("mode") !== "migration") return false;
+  const url = new URL("./migration.html", window.location.href);
+  const group = search.get("migrationGroup");
+  if (MIGRATION_PAGE_GROUPS.includes(group)) url.searchParams.set("group", group);
+  const month = legacyMigrationMonth(search);
+  if (month !== "") url.searchParams.set("month", month);
+  window.location.replace(url);
+  return true;
+}
+
+function legacyMigrationMonth(search) {
+  // Intentional copy of cleanSharedNumber: the redirect must stay self-contained.
+  const num = (value, min, max) => {
+    if (value === null) return "";
+    const number = clamp(Number(value), min, max);
+    return Number.isFinite(number) ? String(number) : "";
+  };
+  const month = num(search.get("migrationMonth"), 0, 11);
+  if (month !== "") return month;
+  const legacySeason = search.get("migrationSeason");
+  const legacyWeek = num(search.get("migrationWeek"), 0, 8);
+  if (legacySeason === "fall") return legacyWeek === "" ? "8" : String(clamp(7 + Math.round(Number(legacyWeek) / 4), 7, 10));
+  if (legacySeason === "spring") return legacyWeek === "" ? "3" : String(clamp(1 + Math.round(Number(legacyWeek) / 3), 1, 4));
+  return "";
+}
+
 function init() {
+  if (redirectLegacyMigrationLink()) return;
   const sharedSearch = readSharedSearchFromUrl();
   const saved = restorePreferences();
   state.savedTrips = readSavedTrips();
-  state.mode = sharedSearch?.mode || (saved.searchMode === "area" ? "area" : "route");
+  state.mode = normalizeMode(sharedSearch?.mode || saved.searchMode);
   const preferredProvider = sharedSearch?.mapProvider || (typeof saved.mapProvider === "string" ? providerFromInput() : null);
   state.provider = preferredProvider || "osm";
   setupProviderControl();
@@ -183,46 +260,40 @@ function init() {
   els.clearButton.addEventListener("click", clearResults);
   // Revoke or grant token persistence the moment the choice changes,
   // not only on the next search submit.
-  els.rememberToken.addEventListener("change", savePreferences);
+  els.rememberToken.addEventListener("change", () => {
+    savePreferences();
+    saveSessionApiToken();
+  });
   els.apiToken.addEventListener("change", () => {
     if (els.rememberToken.checked) savePreferences();
+    saveSessionApiToken();
+    clearPersonalEbirdAccessIssue();
     updateSetupStatus();
   });
-  els.apiToken.addEventListener("input", updateSetupStatus);
+  els.apiToken.addEventListener("input", () => {
+    saveSessionApiToken();
+    clearPersonalEbirdAccessIssue();
+    updateSetupStatus();
+  });
   els.mapProvider.addEventListener("change", () => {
     state.userSelectedProvider = true;
     setMapProvider(providerFromInput());
   });
-  els.targets.addEventListener("input", updateInputSummaries);
   els.lifeListInput.addEventListener("change", handleLifeListFile);
   els.clearLifeListButton.addEventListener("click", clearLifeList);
   els.maxDetour.addEventListener("input", updateInputSummaries);
-  els.quickStartButton.addEventListener("click", openQuickStart);
   els.shareTripButton.addEventListener("click", shareCurrentTrip);
   els.downloadReportButton.addEventListener("click", downloadHtmlReport);
-  els.settingsButton.addEventListener("click", () => {
-    els.maxDetour.scrollIntoView({ block: "center", behavior: "smooth" });
-    els.maxDetour.focus();
-  });
-  els.closeQuickStart.addEventListener("click", closeQuickStart);
-  els.quickStartModal.addEventListener("click", (event) => {
-    if (event.target === els.quickStartModal) closeQuickStart();
-  });
-  els.modalSampleButton.addEventListener("click", () => {
-    useSampleRoute();
-    closeQuickStart();
-    els.origin.focus();
-  });
-  els.modalExploreButton.addEventListener("click", () => {
-    const needsToken = !shouldAttemptEbirdSearch();
-    setStatus(
-      needsToken ? "Explore without setup" : "Ready",
-      needsToken
-        ? "Enter a route to preview distance and drive time. Add an eBird token when you want live bird rankings."
-        : "Enter a route to load recent sightings and notable reports."
-    );
-    closeQuickStart();
-    els.origin.focus();
+  els.settingsButton.addEventListener("click", () => openSettingsModal());
+  els.closeSettingsButton.addEventListener("click", () => els.settingsModal.close());
+  els.settingsModal.addEventListener("click", (event) => {
+    // Clicks on the dialog's own padding and grid gaps also target the dialog,
+    // so only treat clicks outside its rectangle as backdrop clicks.
+    if (event.target !== els.settingsModal) return;
+    const rect = els.settingsModal.getBoundingClientRect();
+    const insidePanel = event.clientX >= rect.left && event.clientX <= rect.right &&
+      event.clientY >= rect.top && event.clientY <= rect.bottom;
+    if (!insidePanel) els.settingsModal.close();
   });
   els.printButton.addEventListener("click", () => {
     renderReport();
@@ -252,12 +323,18 @@ function init() {
 
   setupLocationAutocomplete("origin");
   setupLocationAutocomplete("destination");
+  setupSpeciesAutocomplete();
   document.addEventListener("click", handleAutocompleteOutsideClick);
   els.useCurrentLocationButton.addEventListener("click", useCurrentLocationForOrigin);
 
   renderItineraryBuilder();
   renderComparison();
   if (window.lucide) window.lucide.createIcons();
+}
+
+function openSettingsModal(options = {}) {
+  if (!els.settingsModal.open) els.settingsModal.showModal();
+  if (options.focusToken) els.apiToken.focus();
 }
 
 async function initializeStartupMap(preferredProvider, sharedSearch) {
@@ -297,11 +374,12 @@ function readSharedSearchFromUrl() {
   const search = new URLSearchParams(window.location.search);
   if (search.get("bt") !== SHARE_URL_VERSION) return null;
 
-  const mode = search.get("mode") === "area" ? "area" : "route";
+  const mode = normalizeMode(search.get("mode"));
   const shared = {
     mode,
     origin: cleanSharedText(search.get("origin"), 160),
     destination: cleanSharedText(search.get("destination"), 160),
+    species: cleanSharedText(search.get("species"), 80),
     mapProvider: search.get("mapProvider") === "google" ? "google" : "osm",
     maxDetour: cleanSharedNumber(search.get("maxDetour"), 0, 240),
     recentDays: cleanSharedNumber(search.get("recentDays"), 1, 30),
@@ -317,10 +395,14 @@ function readSharedSearchFromUrl() {
 function applySharedSearch(shared) {
   setSearchMode(shared.mode, { persist: false });
   if (shared.origin) els.origin.value = shared.origin;
-  if (shared.mode === "area") {
+  if (shared.mode !== "route") {
     els.destination.value = "";
   } else if (shared.destination) {
     els.destination.value = shared.destination;
+  }
+  if (shared.mode === "species" && shared.species) {
+    els.speciesQuery.value = shared.species;
+    state.species = null;
   }
   if (shared.mapProvider) els.mapProvider.value = shared.mapProvider;
   if (shared.maxDetour) els.maxDetour.value = shared.maxDetour;
@@ -378,6 +460,12 @@ function restorePreferences() {
   // The token is only ever restored when the user previously opted in.
   if (saved.rememberToken === true && typeof saved.apiToken === "string") {
     els.apiToken.value = saved.apiToken;
+  } else {
+    try {
+      els.apiToken.value = sessionStorage.getItem(SESSION_TOKEN_KEY) || "";
+    } catch {
+      // Session storage unavailable; the token remains page-scoped.
+    }
   }
   if (saved.lifeList && typeof saved.lifeList === "object") {
     const species = Array.isArray(saved.lifeList.species) ? saved.lifeList.species : [];
@@ -391,6 +479,16 @@ function restorePreferences() {
     };
   }
   return saved;
+}
+
+function saveSessionApiToken() {
+  try {
+    const token = els.apiToken.value.trim();
+    if (token) sessionStorage.setItem(SESSION_TOKEN_KEY, token);
+    else sessionStorage.removeItem(SESSION_TOKEN_KEY);
+  } catch {
+    // Session storage unavailable; the token still works on this page.
+  }
 }
 
 function savePreferences() {
@@ -739,8 +837,10 @@ function applyAccountProfile(profile, which) {
 function setSearchMode(mode, options = {}) {
   const { persist = true } = options;
   const previousMode = state.mode;
-  state.mode = mode === "area" ? "area" : "route";
+  state.mode = normalizeMode(mode);
   const isArea = state.mode === "area";
+  const isSpecies = state.mode === "species";
+  const isAreaLike = isArea || isSpecies;
   els.form.dataset.mode = state.mode;
 
   els.modeButtons.forEach((button) => {
@@ -749,25 +849,33 @@ function setSearchMode(mode, options = {}) {
     button.setAttribute("aria-pressed", String(isActive));
   });
 
-  els.locationGroupTitle.textContent = isArea ? "Area" : "Route";
-  els.originLabelText.textContent = isArea ? "Location" : "Origin";
-  els.origin.placeholder = isArea ? "City, park, hotel, or address" : "";
-  els.destinationField.hidden = isArea;
-  els.destination.required = !isArea;
-  els.maxDetourLabel.textContent = isArea ? "Area limit" : "Max added";
-  els.maxDetourUnit.textContent = isArea ? "off" : "min";
-  els.maxDetour.disabled = isArea;
-  els.submitLabel.textContent = isArea ? "Search Area" : "Find Stops";
-  els.routeDistanceLabel.textContent = isArea ? "Area Radius" : "Route Miles";
-  els.maxAddedLabel.textContent = isArea ? "Area Mode" : "Added Time Budget";
-  els.mapAreaLegend.textContent = isArea ? "Search area" : "Route corridor";
-  els.sampleButton.title = isArea ? "Use sample area" : "Use sample route";
-  els.progressMessage.textContent = isArea && els.progressTitle.textContent === "Ready"
-    ? "Enter a city, park, or lodging location and run a search."
-    : els.progressMessage.textContent;
+  els.locationGroupTitle.textContent = isSpecies ? "Species" : isArea ? "Area" : "Route";
+  els.originLabelText.textContent = isAreaLike ? "Location" : "Origin";
+  els.origin.placeholder = isAreaLike ? "City, park, hotel, or address" : "";
+  els.speciesField.hidden = !isSpecies;
+  els.destinationField.hidden = isAreaLike;
+  els.destination.required = !isAreaLike;
+  els.maxDetourField.hidden = state.mode !== "route";
+  els.maxDetour.disabled = isAreaLike;
+  els.radiusKmLabel.textContent = isSpecies ? "Search radius" : isArea ? "Area radius" : "Corridor radius";
+  els.submitLabel.textContent = isSpecies ? "Map Sightings" : isArea ? "Search Area" : "Find Stops";
+  els.routeDistanceLabel.textContent = isSpecies ? "Search Radius" : isArea ? "Area Radius" : "Route Miles";
+  els.maxAddedLabel.textContent = isSpecies ? "Species Mode" : isArea ? "Area Mode" : "Added Time Budget";
+  els.mapAreaLegend.textContent = isAreaLike ? "Search area" : "Route corridor";
+  els.sampleButton.title = isSpecies ? "Use sample species search" : isArea ? "Use sample area" : "Use sample route";
+  els.resultsTitle.textContent = isSpecies ? "Recent Sightings" : "Ranked Stops";
+  els.comparisonPanel.hidden = state.comparisonIds.length === 0;
+  updateMapLegend();
+  if (els.progressTitle.textContent === "Ready") {
+    if (isSpecies) {
+      els.progressMessage.textContent = "Pick a species and a location, then map every recent sighting.";
+    } else if (isArea) {
+      els.progressMessage.textContent = "Enter a city, park, or lodging location and run a search.";
+    }
+  }
 
   clearFieldErrors();
-  if (persist && previousMode !== state.mode && (state.route || state.areaCenter || state.results.length)) {
+  if (persist && previousMode !== state.mode && (state.route || state.areaCenter || state.results.length || state.sightings.length)) {
     clearResults();
   }
   updateInputSummaries();
@@ -941,6 +1049,7 @@ function readTripSettings() {
       radiusKm: Number.isFinite(state.params.radiusKm) ? String(state.params.radiusKm) : els.radiusKm.value,
       maxStops: Number.isFinite(state.params.maxStops) ? String(state.params.maxStops) : els.maxStops.value,
       targets: Array.isArray(state.params.targets) ? state.params.targets.join("\n") : els.targets.value,
+      speciesQuery: typeof state.params.speciesQuery === "string" ? state.params.speciesQuery : els.speciesQuery.value,
       searchMode: typeof state.params.mode === "string" ? state.params.mode : state.mode
     };
   }
@@ -959,6 +1068,7 @@ function applyTripSettings(settings) {
   if (typeof settings.searchMode === "string") {
     setSearchMode(settings.searchMode, { persist: false });
   }
+  updateInputSummaries();
 }
 
 function serializeTripState() {
@@ -971,11 +1081,23 @@ function serializeTripState() {
     params: state.params ? { ...state.params, token: "" } : null,
     origin: state.origin,
     destination: state.destination,
-    areaCenter: state.areaCenter
+    areaCenter: state.areaCenter,
+    species: state.species,
+    sightings: state.sightings,
+    sightingLocations: state.sightingLocations,
+    selectedSightingId: state.selectedSightingId
   };
 }
 
 function serializeCandidate(candidate) {
+  const evidence = isObjectRecord(candidate.evidence)
+    ? {
+        ...candidate.evidence,
+        recent: isObjectRecord(candidate.evidence.recent)
+          ? { ...candidate.evidence.recent, observations: undefined }
+          : candidate.evidence.recent
+      }
+    : candidate.evidence;
   return {
     id: candidate.id,
     locId: candidate.locId,
@@ -991,7 +1113,16 @@ function serializeCandidate(candidate) {
     viaRoute: candidate.viaRoute,
     addedMinutes: candidate.addedMinutes,
     addedMiles: candidate.addedMiles,
+    allTimeSpeciesCount: candidate.allTimeSpeciesCount,
+    latestObservationDate: candidate.latestObservationDate,
+    activityPrior: candidate.activityPrior,
+    activityObserved: candidate.activityObserved,
+    discoverySources: candidate.discoverySources,
+    evidence,
     scoreParts: candidate.scoreParts,
+    scoringVersion: candidate.scoringVersion,
+    enabledScoreParts: candidate.enabledScoreParts,
+    scoredWithLifeList: candidate.scoredWithLifeList,
     score: candidate.score
   };
 }
@@ -1011,6 +1142,12 @@ function restoreTripState(trip) {
   state.origin = savedState.origin || state.route?.origin || null;
   state.destination = savedState.destination || state.route?.destination || null;
   state.areaCenter = savedState.areaCenter || null;
+  state.species = isObjectRecord(savedState.species) ? savedState.species : null;
+  state.sightings = Array.isArray(savedState.sightings) ? savedState.sightings.filter(isObjectRecord) : [];
+  state.sightingLocations = Array.isArray(savedState.sightingLocations)
+    ? savedState.sightingLocations.filter(isObjectRecord)
+    : [];
+  state.selectedSightingId = savedState.selectedSightingId || null;
   state.comparisonIds = [];
   state.pinnedIds = [];
   state.pendingPinnedIds = [];
@@ -1031,7 +1168,10 @@ function restoreTripState(trip) {
     els.routeDistance.textContent = "-";
   }
 
-  if (state.results.length) {
+  if (state.params?.mode === "species") {
+    if (els.speciesQuery) els.speciesQuery.value = state.species?.comName || state.params.speciesQuery || els.speciesQuery.value;
+    renderSightings(state.species, state.areaCenter, state.params);
+  } else if (state.results.length) {
     renderResults();
     renderMarkers();
   } else {
@@ -1072,6 +1212,24 @@ function hydrateCandidate(candidate) {
     seen.add(obsKey);
   }
 
+  const evidence = isObjectRecord(candidate.evidence)
+    ? {
+        ...candidate.evidence,
+        recent: isObjectRecord(candidate.evidence.recent)
+          ? {
+              ...candidate.evidence.recent,
+              observations: Array.isArray(candidate.evidence.recent.observations)
+                ? candidate.evidence.recent.observations.filter(isObjectRecord)
+                : observations
+            }
+          : { status: "legacy", observations }
+      }
+    : {
+        recent: { status: "legacy", observations },
+        seasonal: { status: "unavailable" },
+        notableNearby: { status: "legacy", observations: notable }
+      };
+
   return {
     ...candidate,
     observations,
@@ -1090,6 +1248,12 @@ function hydrateCandidate(candidate) {
       targets: 0,
       practicality: 0
     },
+    // Left undefined for trips saved before this was recorded, so scoreScale can
+    // tell "scored without a life list" apart from "we don't know".
+    scoredWithLifeList: typeof candidate.scoredWithLifeList === "boolean" ? candidate.scoredWithLifeList : undefined,
+    scoringVersion: Number.isFinite(candidate.scoringVersion) ? candidate.scoringVersion : 1,
+    enabledScoreParts: Array.isArray(candidate.enabledScoreParts) ? candidate.enabledScoreParts : [],
+    evidence,
     score: Number.isFinite(candidate.score) ? candidate.score : 0
   };
 }
@@ -1129,6 +1293,7 @@ async function loadAppConfig() {
   try {
     const config = await apiJson("/api/config");
     const ebirdServerConfigured = Boolean(config.ebirdConfigured || config.ebird?.serverConfigured);
+    state.ebirdAccessIssue = null;
     state.config = {
       ...state.config,
       ...config,
@@ -1259,6 +1424,7 @@ async function initializeMap(provider, options = {}) {
   const areaRadiusKm = preserveData ? state.params?.radiusKm : null;
   const results = preserveData ? state.results : [];
   const selectedId = preserveData ? state.selectedId : null;
+  const sightingLocations = preserveData && Array.isArray(state.sightingLocations) ? state.sightingLocations : [];
 
   if (state.mapAdapter) {
     state.mapAdapter.destroy();
@@ -1279,6 +1445,9 @@ async function initializeMap(provider, options = {}) {
   if (results.length) {
     state.selectedId = selectedId;
     renderMarkers();
+  }
+  if (sightingLocations.length) {
+    renderSightingMarkers();
   }
 }
 
@@ -1306,6 +1475,16 @@ function loadGoogleMapsScript(key) {
 }
 
 function useSampleRoute() {
+  if (state.mode === "species") {
+    els.origin.value = "Papago Park, Phoenix, AZ";
+    els.speciesQuery.value = "Rosy-faced Lovebird";
+    state.species = null;
+    els.recentDays.value = "14";
+    els.radiusKm.value = "25";
+    resetAutocomplete("origin");
+    updateInputSummaries();
+    return;
+  }
   if (state.mode === "area") {
     els.origin.value = "Papago Park, Phoenix, AZ";
     els.recentDays.value = "14";
@@ -1348,6 +1527,9 @@ function clearResults() {
   state.results = [];
   state.route = null;
   state.areaCenter = null;
+  state.sightings = [];
+  state.sightingLocations = [];
+  state.selectedSightingId = null;
   state.selectedId = null;
   state.comparisonIds = [];
   state.pinnedIds = [];
@@ -1362,7 +1544,9 @@ function clearResults() {
   els.report.innerHTML = "";
   els.resultsList.className = "results-list empty";
   els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="binoculars"></i><p>Results will appear here after the first search.</p></div>';
-  els.resultContext.textContent = state.mode === "area" ? "No area searched yet." : "No route searched yet.";
+  els.resultContext.textContent = state.mode === "species"
+    ? "No species mapped yet."
+    : state.mode === "area" ? "No area searched yet." : "No route searched yet.";
   els.routeDistance.textContent = "-";
   els.notableCount.textContent = "-";
   els.hotspotCount.textContent = "-";
@@ -1374,9 +1558,11 @@ function clearResults() {
   renderComparison();
   renderItineraryBuilder();
   els.detailsPanel.hidden = true;
-  setStatus("Ready", state.mode === "area"
-    ? "Enter a city, park, or lodging location and run a search."
-    : "Enter a route and run a search.");
+  setStatus("Ready", state.mode === "species"
+    ? "Pick a species and a location, then map every recent sighting."
+    : state.mode === "area"
+      ? "Enter a city, park, or lodging location and run a search."
+      : "Enter a route and run a search.");
   clearSharedUrl();
   if (window.lucide) window.lucide.createIcons();
 }
@@ -1384,14 +1570,21 @@ function clearResults() {
 async function runSearch(options = {}) {
   const { persistPreferences = true } = options;
   if (persistPreferences) savePreferences();
+  state.ebirdModalPrompted = false;
   setBusy(true);
 
   try {
     await waitForAppConfig();
+    if (state.ebirdAccessIssue && hasEbirdAccess()) {
+      state.ebirdAccessIssue = null;
+      updateSetupStatus();
+    }
     const params = readParams();
     clearSearchArtifacts();
     state.params = params;
-    if (params.mode === "area") {
+    if (params.mode === "species") {
+      await runSpeciesSearch(params);
+    } else if (params.mode === "area") {
       await runAreaSearch(params);
     } else {
       await runRouteSearch(params);
@@ -1471,27 +1664,74 @@ async function runRouteSearch(params) {
   updateRouteSummary(route);
 
   if (!shouldAttemptEbirdSearch()) {
-    setStatus("Token needed", "Route loaded. Add an eBird token or configure EBIRD_API_KEY to rank live birding stops.");
+    setStatus("eBird access needed", "Route loaded. Add a personal eBird token in Settings (the gear icon) to rank live birding stops.");
     els.resultContext.textContent = "Route loaded, but live bird data needs eBird access.";
     els.resultsList.className = "results-list empty";
-    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add an eBird token or configure EBIRD_API_KEY to rank live birding stops.</p></div>';
+    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add a personal eBird token in Settings (the gear icon) to rank live birding stops.</p></div>';
     if (window.lucide) window.lucide.createIcons();
     return;
   }
 
-  setStatus("Scanning route", "Sampling points along the drive and requesting recent eBird observations.");
-  const samples = sampleRoute(route.geometry.coordinates, route.distanceMeters, 14);
-  const observationsBySample = await fetchRecentForSamples(samples, params);
-  const candidates = buildCandidates(observationsBySample, samples, params);
+  setStatus("Discovering stops", "Finding known eBird hotspots across the complete route corridor.");
+  const discoveryPlan = ranking.sampleRouteForCoverage(route.geometry.coordinates, {
+    corridorRadiusKm: params.radiusKm,
+    queryRadiusKm: DISCOVERY_QUERY_RADIUS_KM,
+    maxSamples: MAX_DISCOVERY_SAMPLES
+  });
+  const activityPlan = ranking.sampleRouteForCoverage(route.geometry.coordinates, {
+    corridorRadiusKm: params.radiusKm,
+    queryRadiusKm: ACTIVITY_QUERY_RADIUS_KM,
+    maxSamples: MAX_ACTIVITY_SAMPLES
+  });
+  const routeIndex = ranking.createRouteIndex(route.geometry.coordinates);
+  if (!discoveryPlan.coverageComplete) {
+    addWarning(`This route needs ${discoveryPlan.requiredSamples} discovery samples for full coverage; Birdtrip checked ${discoveryPlan.samples.length}. Results cover only part of the requested corridor.`);
+  }
+  if (!activityPlan.coverageComplete) {
+    const reason = activityPlan.coverageFeasible
+      ? `${activityPlan.requiredSamples} samples are needed for full coverage; Birdtrip checked ${activityPlan.samples.length}`
+      : `eBird's ${activityPlan.queryRadiusKm} km recent-report radius cannot geometrically cover the full ${params.radiusKm} km corridor between samples`;
+    addWarning(`Current-activity coverage is partial: ${reason}. Hotspot discovery is unaffected, but activity and imported-list signals may be incomplete.`);
+  }
+  const [discoveredHotspots, activityBySample] = await Promise.all([
+    fetchHotspotDirectoryForRoute(
+      discoveryPlan.samples,
+      routeIndex,
+      params
+    ),
+    fetchRecentForSamples(activityPlan.samples, params, activityPlan.queryRadiusKm)
+  ]);
+  applyActivityPrior(discoveredHotspots, activityBySample, params);
+  const initialShortlist = shortlistHotspots(discoveredHotspots, params, "route");
+  const targetRescues = await rescueRouteTargetHotspots(
+    discoveredHotspots,
+    initialShortlist,
+    activityPlan.samples,
+    params
+  );
+  for (const hotspot of targetRescues) {
+    hotspot.activityTargetCount = Math.max(1, hotspot.activityTargetCount || 0);
+    hotspot.explicitTargetRescue = true;
+  }
+  const targetAwareShortlist = shortlistHotspots(discoveredHotspots, params, "route");
+  const unseenProbes = reserveRouteUnseenEvidence(discoveredHotspots, targetAwareShortlist, params);
+  for (const hotspot of unseenProbes) hotspot.importedListProbe = true;
+  const shortlistedHotspots = shortlistHotspots(discoveredHotspots, params, "route");
+  const hotspotEvidence = await fetchRecentForHotspots(shortlistedHotspots, params);
+  const candidates = buildCandidatesFromHotspots(
+    hotspotEvidence,
+    params,
+    routeIndex
+  );
 
   if (!candidates.length) {
-    setStatus("No candidates", "No hotspot observations were found. Try a wider radius or longer recent window.");
+    setStatus("No candidates", "No known eBird hotspots were found in the covered route corridor. Try a wider radius.");
     els.resultContext.textContent = "No birding locations matched the current route settings.";
     renderWarnings();
     return;
   }
 
-  setStatus("Checking detours", `Evaluating route impact for ${Math.min(candidates.length, params.maxStops * 3)} candidate stops.`);
+  setStatus("Checking detours", `Evaluating route impact for the strongest ${Math.min(candidates.length, Math.max(params.maxStops, 15))} candidates first.`);
   const practical = await evaluateDetours(candidates, origin, destination, route.durationSeconds, params);
 
   if (!practical.length) {
@@ -1501,14 +1741,14 @@ async function runRouteSearch(params) {
     return;
   }
 
-  setStatus("Adding notable birds", "Checking recent notable reports for the strongest candidates.");
-  await addNotableObservations(practical, params);
   scoreCandidates(practical, params);
 
   state.results = practical
     .filter((candidate) => candidate.addedMinutes <= params.maxDetour)
     .sort((a, b) => b.score - a.score)
     .slice(0, params.maxStops);
+  setStatus("Adding notable birds", "Checking nearby notable reports for the strongest practical candidates.");
+  await addNotableObservations(state.results, params);
 
   renderResults();
   renderMarkers();
@@ -1528,21 +1768,47 @@ async function runAreaSearch(params) {
   updateAreaSummary(params.radiusKm);
 
   if (!shouldAttemptEbirdSearch()) {
-    setStatus("Token needed", "Area loaded. Add an eBird token or configure EBIRD_API_KEY to rank live birding stops.");
+    setStatus("eBird access needed", "Area loaded. Add a personal eBird token in Settings (the gear icon) to rank live birding stops.");
     els.resultContext.textContent = "Area loaded, but live bird data needs eBird access.";
     els.resultsList.className = "results-list empty";
-    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add an eBird token or configure EBIRD_API_KEY to rank live birding stops.</p></div>';
+    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add a personal eBird token in Settings (the gear icon) to rank live birding stops.</p></div>';
     if (window.lucide) window.lucide.createIcons();
     return;
   }
 
-  setStatus("Scanning area", "Requesting recent eBird observations near the selected location.");
+  setStatus("Discovering stops", "Finding known eBird hotspots near the selected location.");
   const samples = [{ lat: center.lat, lng: center.lng, index: 0 }];
-  const observationsBySample = await fetchRecentForSamples(samples, params);
-  const candidates = buildCandidates(observationsBySample, samples, params);
+  const [hotspots, activityBySample] = await Promise.all([
+    apiJson(
+      `/api/ebird/hotspots?lat=${center.lat}&lng=${center.lng}&dist=${params.radiusKm}`,
+      { token: params.token }
+    ),
+    fetchRecentForSamples(samples, params)
+  ]);
+  applyActivityPrior(hotspots, activityBySample, params);
+  const rankedHotspots = rankAreaHotspots(hotspots, center, params);
+  const targetHotspots = await rescueTargetHotspots(hotspots, rankedHotspots, center, params);
+  const liferHotspots = await rescueLiferHotspots(hotspots, rankedHotspots.concat(targetHotspots), center, params);
+  targetHotspots.forEach((hotspot) => { hotspot.activityTargetCount = Math.max(1, hotspot.activityTargetCount || 0); });
+  liferHotspots.forEach((hotspot) => { hotspot.activityUnseenCount = Math.max(1, hotspot.activityUnseenCount || 0); });
+  const mergedAreaHotspots = mergeUniqueHotspots(rankedHotspots, targetHotspots, liferHotspots).map((hotspot) => ({
+    ...hotspot,
+    distanceKm: Number.isFinite(hotspot.distanceKm) ? hotspot.distanceKm : haversineKm(center, hotspot),
+    routeDistanceKm: Number.isFinite(hotspot.routeDistanceKm) ? hotspot.routeDistanceKm : haversineKm(center, hotspot),
+    areaAngle: Number.isFinite(hotspot.areaAngle)
+      ? hotspot.areaAngle
+      : Math.atan2(hotspot.lat - center.lat, hotspot.lng - center.lng)
+  }));
+  const selectedHotspots = shortlistHotspots(
+    mergedAreaHotspots,
+    params,
+    "area"
+  );
+  const hotspotEvidence = await fetchRecentForHotspots(selectedHotspots, params);
+  const candidates = buildCandidatesFromHotspots(hotspotEvidence, params, null, center);
 
   if (!candidates.length) {
-    setStatus("No candidates", "No hotspot observations were found. Try a wider radius or longer recent window.");
+    setStatus("No candidates", "No known eBird hotspots were found in this area. Try a wider radius.");
     els.resultContext.textContent = "No birding locations matched the current area settings.";
     renderWarnings();
     return;
@@ -1554,19 +1820,250 @@ async function runAreaSearch(params) {
     addedMiles: 0
   }));
 
-  setStatus("Adding notable birds", "Checking recent notable reports for the strongest area matches.");
-  await addNotableObservations(practical, params);
   scoreCandidates(practical, params);
 
   state.results = practical
     .sort((a, b) => b.score - a.score)
     .slice(0, params.maxStops);
+  setStatus("Adding notable birds", "Checking recent notable reports for the strongest area matches.");
+  await addNotableObservations(state.results, params);
 
   renderResults();
   renderMarkers();
   renderReport();
   renderWarnings();
   setStatus("Complete", `Found ${state.results.length} stops within ${params.radiusKm} km.`);
+}
+
+async function runSpeciesSearch(params) {
+  if (!params.speciesQuery) {
+    setSpeciesError("Enter a species to map its recent sightings.");
+    setStatus("Species needed", "Type a species name (for example, Vermilion Flycatcher).");
+    els.resultsList.className = "results-list empty";
+    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="bird"></i><p>Choose a species to map its recent sightings.</p></div>';
+    if (window.lucide) window.lucide.createIcons();
+    return;
+  }
+  clearSpeciesError();
+
+  setStatus("Geocoding", "Resolving search location.");
+  const center = await geocodeField("origin", params.origin, params.mapProvider);
+  state.origin = center;
+  state.areaCenter = center;
+  const speciesLabel = params.species?.comName || params.speciesQuery;
+  state.routeName = `${speciesLabel} near ${shortName(center.name) || params.origin}`;
+  if (!els.tripName.value.trim()) els.tripName.value = state.routeName;
+  renderArea(center, params.radiusKm);
+  updateAreaSummary(params.radiusKm);
+
+  if (!shouldAttemptEbirdSearch()) {
+    setStatus("eBird access needed", "Location loaded. Add a personal eBird token in Settings (the gear icon) to map species sightings.");
+    els.resultContext.textContent = "Location loaded, but live bird data needs eBird access.";
+    els.resultsList.className = "results-list empty";
+    els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="feather"></i><p>Add a personal eBird token in Settings (the gear icon) to map species sightings.</p></div>';
+    if (window.lucide) window.lucide.createIcons();
+    return;
+  }
+
+  setStatus("Mapping sightings", `Requesting recent ${speciesLabel} sightings within ${params.radiusKm} km.`);
+  const url = new URL("/api/ebird/species", window.location.origin);
+  url.searchParams.set("lat", String(center.lat));
+  url.searchParams.set("lng", String(center.lng));
+  url.searchParams.set("dist", String(params.radiusKm));
+  url.searchParams.set("back", String(params.recentDays));
+  url.searchParams.set("maxResults", "1000");
+  if (params.species?.speciesCode) {
+    url.searchParams.set("speciesCode", params.species.speciesCode);
+  } else {
+    url.searchParams.set("name", params.speciesQuery);
+  }
+
+  let payload;
+  try {
+    payload = await apiJson(`${url.pathname}${url.search}`, { token: params.token });
+  } catch (error) {
+    const suggestions = error.details?.suggestions;
+    if (error.status === 404 && Array.isArray(suggestions) && suggestions.length) {
+      const names = suggestions.map((item) => item.comName).slice(0, 5).join(", ");
+      setSpeciesError(`No exact match. Try: ${names}`);
+      setStatus("Species not found", `No eBird species matched "${params.speciesQuery}". Did you mean: ${names}?`);
+      els.resultsList.className = "results-list empty";
+      els.resultsList.innerHTML = `<div class="empty-state"><i data-lucide="search-x"></i><p>No species matched "${escapeHtml(params.speciesQuery)}". Did you mean ${escapeHtml(names)}?</p></div>`;
+      if (window.lucide) window.lucide.createIcons();
+      return;
+    }
+    throw error;
+  }
+
+  const resolvedSpecies = payload.species || params.species || null;
+  if (resolvedSpecies) {
+    state.species = resolvedSpecies;
+    els.speciesQuery.value = resolvedSpecies.comName;
+    state.routeName = `${resolvedSpecies.comName} near ${shortName(center.name) || params.origin}`;
+    if (!els.tripName.value.trim()) els.tripName.value = state.routeName;
+  }
+
+  const observations = Array.isArray(payload.observations) ? payload.observations : [];
+  state.sightings = observations;
+  state.sightingLocations = groupSightings(observations);
+  state.selectedSightingId = null;
+
+  renderSightings(resolvedSpecies, center, params);
+  renderWarnings();
+  const label = resolvedSpecies?.comName || params.speciesQuery;
+  setStatus(
+    "Complete",
+    state.sightingLocations.length
+      ? `Mapped ${state.sightingLocations.length} ${pluralize("location", state.sightingLocations.length)} with recent ${label} sightings (latest observation per location).`
+      : `No recent ${label} sightings within ${params.radiusKm} km. Try a wider radius or longer recent window.`
+  );
+}
+
+function updateMapLegend() {
+  if (!els.mapGlass) return;
+  els.mapGlass.innerHTML = `
+    <span><b class="legend-dot target"></b> Target species</span>
+    <span><b class="legend-dot lifer"></b> Unseen recent report</span>
+    <span><b class="legend-dot notable"></b> Notable birds</span>
+    <span><b class="legend-dot hotspot"></b> Ranked hotspot</span>
+    <span><b class="legend-dot pinned"></b> Pinned stop</span>
+    <span><b class="legend-dot sighting"></b> Species sighting</span>
+    <span><b class="legend-line route"></b> <span id="mapAreaLegend">${state.mode === "area" || state.mode === "species" ? "Search area" : "Route corridor"}</span></span>
+  `;
+  els.mapAreaLegend = document.querySelector("#mapAreaLegend");
+}
+
+function groupSightings(observations) {
+  const byKey = new Map();
+  observations.forEach((obs) => {
+    const lat = Number(obs.lat);
+    const lng = Number(obs.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+    const key = obs.locId || `${lat.toFixed(4)},${lng.toFixed(4)}`;
+    let loc = byKey.get(key);
+    if (!loc) {
+      loc = {
+        id: key,
+        locId: obs.locId || "",
+        lat,
+        lng,
+        name: obs.locName || "Unnamed location",
+        observations: [],
+        count: 0,
+        maxCount: 0,
+        latest: "",
+        __sighting: true
+      };
+      byKey.set(key, loc);
+    }
+    loc.observations.push(obs);
+    loc.count += 1;
+    const howMany = Number(obs.howMany);
+    if (Number.isFinite(howMany)) loc.maxCount = Math.max(loc.maxCount, howMany);
+    const obsDt = String(obs.obsDt || "");
+    if (!loc.latest || obsDt > loc.latest) loc.latest = obsDt;
+  });
+  return Array.from(byKey.values()).sort((a, b) => {
+    if (a.latest !== b.latest) return a.latest > b.latest ? -1 : 1;
+    return b.count - a.count;
+  });
+}
+
+function renderSightings(species, center, params) {
+  const locations = state.sightingLocations;
+  const speciesLabel = species?.comName || params.speciesQuery;
+
+  els.candidateCount.textContent = String(locations.length);
+  els.notableCount.textContent = "-";
+  els.hotspotCount.textContent = "-";
+  els.liferCount.textContent = "-";
+  els.targetCount.textContent = String(locations.length);
+  els.resultContext.textContent = locations.length
+    ? `${speciesLabel}: ${locations.length} ${pluralize("location", locations.length)} with recent sightings within ${params.radiusKm} km (latest observation per location).`
+    : `No recent ${speciesLabel} sightings within ${params.radiusKm} km.`;
+
+  renderInsights();
+  renderRouteTradeoff();
+  renderComparison();
+  renderItineraryBuilder();
+  renderSightingMarkers();
+
+  els.resultsList.className = "results-list";
+  els.resultsList.innerHTML = "";
+  if (!locations.length) {
+    els.resultsList.className = "results-list empty";
+    els.resultsList.innerHTML = `<div class="empty-state"><i data-lucide="search-x"></i><p>No recent ${escapeHtml(speciesLabel)} sightings here. Try a wider radius or longer recent window.</p></div>`;
+    if (window.lucide) window.lucide.createIcons();
+    return;
+  }
+
+  locations.forEach((loc, index) => {
+    const card = document.createElement("div");
+    card.className = "sighting-card";
+    card.dataset.id = loc.id;
+    card.setAttribute("role", "button");
+    card.tabIndex = 0;
+    if (loc.id === state.selectedSightingId) card.classList.add("is-selected");
+    const metaText = loc.maxCount ? `Latest observation · ${loc.maxCount} ${pluralize("bird", loc.maxCount)} counted` : "Latest observation";
+    card.innerHTML = `
+      <span class="sighting-rank">${index + 1}</span>
+      <span class="sighting-copy">
+        <strong class="sighting-loc"></strong>
+        <small class="sighting-meta"></small>
+      </span>
+      <span class="sighting-when">
+        <b></b>
+        <small></small>
+      </span>`;
+    card.querySelector(".sighting-loc").textContent = loc.name;
+    card.querySelector(".sighting-meta").textContent = metaText;
+    card.querySelector(".sighting-when b").textContent = formatFreshness(loc.latest);
+    card.querySelector(".sighting-when small").textContent = loc.latest || "";
+    card.addEventListener("click", () => selectSighting(loc.id));
+    card.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        selectSighting(loc.id);
+      }
+    });
+    els.resultsList.appendChild(card);
+  });
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function renderSightingMarkers() {
+  if (!state.mapAdapter) return;
+  state.mapAdapter.setMarkers(state.sightingLocations, state.selectedSightingId, selectSighting);
+}
+
+function selectSighting(id) {
+  const loc = state.sightingLocations.find((item) => item.id === id);
+  if (!loc) return;
+  state.selectedSightingId = id;
+  let selectedCard = null;
+  els.resultsList.querySelectorAll(".sighting-card").forEach((card) => {
+    const isSelected = card.dataset.id === id;
+    card.classList.toggle("is-selected", isSelected);
+    if (isSelected) selectedCard = card;
+  });
+  renderSightingMarkers();
+  if (state.mapAdapter) state.mapAdapter.flyTo(loc, 12);
+  if (selectedCard) selectedCard.scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+
+function setSpeciesError(message) {
+  if (!els.speciesError) return;
+  els.speciesError.textContent = message;
+  els.speciesError.hidden = false;
+  els.speciesError.setAttribute("role", "alert");
+  els.speciesQuery.setAttribute("aria-invalid", "true");
+}
+
+function clearSpeciesError() {
+  if (!els.speciesError) return;
+  els.speciesError.textContent = "";
+  els.speciesError.hidden = true;
+  els.speciesQuery.removeAttribute("aria-invalid");
 }
 
 function readParams() {
@@ -1580,6 +2077,10 @@ function readParams() {
     maxStops: clamp(Number(els.maxStops.value || 10), 3, 20),
     mapProvider: state.provider,
     token: els.apiToken.value.trim(),
+    speciesQuery: els.speciesQuery.value.trim(),
+    species: state.species && normalizeName(state.species.comName) === normalizeName(els.speciesQuery.value)
+      ? state.species
+      : null,
     targets: els.targets.value
       .split(/\n|,/)
       .map((target) => normalizeName(target))
@@ -1663,7 +2164,10 @@ function buildShareUrl(options = {}) {
   url.searchParams.set("bt", SHARE_URL_VERSION);
   url.searchParams.set("mode", state.mode);
   url.searchParams.set("origin", els.origin.value.trim());
-  if (state.mode !== "area") url.searchParams.set("destination", els.destination.value.trim());
+  if (state.mode === "route") url.searchParams.set("destination", els.destination.value.trim());
+  if (state.mode === "species" && els.speciesQuery.value.trim()) {
+    url.searchParams.set("species", els.speciesQuery.value.trim());
+  }
   url.searchParams.set("mapProvider", providerFromInput());
   url.searchParams.set("maxDetour", String(clamp(Number(els.maxDetour.value || 60), 0, 240)));
   url.searchParams.set("recentDays", String(clamp(Number(els.recentDays.value || 14), 1, 30)));
@@ -1676,7 +2180,10 @@ function buildShareUrl(options = {}) {
 }
 
 function hasRunnableSearchInputs() {
-  return els.origin.value.trim().length >= 2 && (state.mode === "area" || els.destination.value.trim().length >= 2);
+  if (els.origin.value.trim().length < 2) return false;
+  if (state.mode === "species") return els.speciesQuery.value.trim().length >= 2;
+  if (state.mode === "area") return true;
+  return els.destination.value.trim().length >= 2;
 }
 
 async function copyTextToClipboard(text) {
@@ -1697,30 +2204,113 @@ async function copyTextToClipboard(text) {
   if (!copied) throw new Error("Clipboard copy failed");
 }
 
-function openQuickStart() {
-  els.quickStartModal.hidden = false;
-  if (window.lucide) window.lucide.createIcons();
-  els.closeQuickStart.focus();
-}
-
-function closeQuickStart() {
-  els.quickStartModal.hidden = true;
-  els.quickStartButton.focus();
+function updateResultsActions() {
+  els.resultsActions.hidden = !hasReportableSearch();
 }
 
 function updateSetupStatus() {
   const hasAccess = hasEbirdAccess();
+  const hasPersonalToken = Boolean(els.apiToken.value.trim());
+  const hasServerAccess = Boolean(
+    state.config.ebirdConfigured === true || state.config.ebird?.serverConfigured === true
+  );
   const isChecking = state.config.ebirdConfigured === null && !els.apiToken.value.trim();
+  const activeAccessIssue = state.ebirdAccessIssue && (
+    state.ebirdAccessIssue.source === "personal" || !hasPersonalToken
+  )
+    ? state.ebirdAccessIssue
+    : null;
+  const hasWorkingAccess = hasAccess && !activeAccessIssue;
   els.setupStatus.classList.toggle("setup-checking", isChecking);
-  els.setupStatus.classList.toggle("setup-ready", hasAccess);
-  els.setupStatus.classList.toggle("setup-needed", !isChecking && !hasAccess);
+  els.setupStatus.classList.toggle("setup-ready", hasWorkingAccess);
+  els.setupStatus.classList.toggle("setup-needed", !isChecking && !hasWorkingAccess);
   els.setupStatus.innerHTML = isChecking
     ? '<i data-lucide="loader-circle"></i>Checking Setup'
-    : hasAccess
+    : hasWorkingAccess
       ? '<i data-lucide="check-circle-2"></i>Ready to Search'
       : '<i data-lucide="circle-alert"></i>Setup Required';
+  if (els.ebirdAccessStatus) {
+    const accessState = isChecking
+      ? {
+          className: "is-checking",
+          icon: "loader-circle",
+          title: "Checking eBird access",
+          detail: "Confirming live bird data availability."
+        }
+      : activeAccessIssue
+        ? ebirdAccessIssueStatus(activeAccessIssue.status, hasPersonalToken)
+        : hasPersonalToken
+          ? {
+              className: "is-personal",
+              icon: "key-round",
+              title: "Using your personal eBird token",
+              detail: hasServerAccess
+                ? "Your token overrides Birdtrip's shared access."
+                : "Your token enables live sightings in this browser."
+            }
+          : hasServerAccess
+            ? {
+                className: "is-ready",
+                icon: "check-circle-2",
+                title: "Live eBird data included",
+                detail: "Birdtrip's shared access is ready—no token needed."
+              }
+            : {
+                className: "is-needed",
+                icon: "circle-alert",
+                title: "Personal eBird token needed",
+                detail: "Add a token below to load live sightings."
+              };
+    els.ebirdAccessStatus.className = `ebird-access-status ${accessState.className}`;
+    els.ebirdAccessStatus.innerHTML = `
+      <i data-lucide="${accessState.icon}"></i>
+      <div>
+        <strong>${accessState.title}</strong>
+        <small>${accessState.detail}</small>
+      </div>
+    `;
+  }
   renderInsights();
   if (window.lucide) window.lucide.createIcons();
+}
+
+function ebirdAccessIssueStatus(status, hasPersonalToken) {
+  if (status === 429) {
+    return {
+      className: "is-needed",
+      icon: "clock-3",
+      title: "eBird access is temporarily limited",
+      detail: hasPersonalToken
+        ? "Retry later or check the token you supplied."
+        : "Retry later or use a personal token."
+    };
+  }
+  return {
+    className: "is-needed",
+    icon: "circle-alert",
+    title: hasPersonalToken ? "Personal eBird token not accepted" : "Shared eBird access is unavailable",
+    detail: hasPersonalToken
+      ? "Check your token below and try again."
+      : "Add a personal token below and try again."
+  };
+}
+
+function clearPersonalEbirdAccessIssue() {
+  if (state.ebirdAccessIssue?.source === "personal") {
+    state.ebirdAccessIssue = null;
+  }
+}
+
+// A single search fans out into many eBird requests that can all fail with the
+// same auth error, so prompt with the modal once per run — repeat failures only
+// refresh the status copy. Background lookups (taxonomy autocomplete) never
+// prompt and never consume the search's one prompt.
+function revealEbirdTokenForError(status, source, options = {}) {
+  state.ebirdAccessIssue = { status, source };
+  updateSetupStatus();
+  if (options.prompt === false || state.ebirdModalPrompted) return;
+  state.ebirdModalPrompted = true;
+  openSettingsModal({ focusToken: true });
 }
 
 function hasEbirdAccess() {
@@ -1736,11 +2326,14 @@ function shouldAttemptEbirdSearch() {
 }
 
 function updateInputSummaries() {
+  renderTargetRows();
   const targets = parseTargetsInput();
   els.targetCount.textContent = String(targets.length);
-  els.maxAdded.textContent = state.mode === "area"
-    ? "Area"
-    : `${clamp(Number(els.maxDetour.value || 60), 0, 240)}m`;
+  els.maxAdded.textContent = state.mode === "species"
+    ? "Species"
+    : state.mode === "area"
+      ? "Area"
+      : `${clamp(Number(els.maxDetour.value || 60), 0, 240)}m`;
   updateLifeListStatus();
   renderInsights();
 }
@@ -1792,13 +2385,13 @@ function clearLifeList() {
   savePreferences();
   updateInputSummaries();
   renderResultsIfPresent();
-  setStatus("Life list cleared", "Imported species will no longer affect lifer ranking.");
+  setStatus("Life list cleared", "Imported-list matches will no longer affect ranking.");
 }
 
 function updateLifeListStatus() {
   const count = state.lifeList.displayNames.length || state.lifeList.species.size;
   if (!count) {
-    els.lifeListStatus.textContent = "Import an eBird or iNaturalist CSV to boost likely lifers.";
+    els.lifeListStatus.textContent = "Import an eBird or iNaturalist CSV to highlight recently reported species not on your list.";
     els.clearLifeListButton.disabled = true;
     return;
   }
@@ -1835,7 +2428,8 @@ function applyLifeListToCurrentResults() {
       ? Array.from(candidate.species.values()).filter((obs) => !isSeenObservation(obs, params.lifeList))
       : [];
   }
-  scoreCandidates(state.results, params);
+  const currentCandidates = state.results.filter((candidate) => candidate.scoringVersion === SCORING_VERSION);
+  if (currentCandidates.length) scoreCandidates(currentCandidates, params);
   state.results.sort((a, b) => b.score - a.score);
 }
 
@@ -1997,13 +2591,16 @@ function clearSearchArtifacts() {
   state.origin = null;
   state.destination = null;
   state.areaCenter = null;
+  state.sightings = [];
+  state.sightingLocations = [];
+  state.selectedSightingId = null;
   clearFieldErrors();
   clearWarning();
   els.report.innerHTML = "";
   els.detailsPanel.hidden = true;
   if (state.mapAdapter) state.mapAdapter.clear();
   els.resultsList.className = "results-list empty";
-  els.resultsList.innerHTML = `<div class="empty-state"><i data-lucide="loader"></i><p>${state.mode === "area" ? "Searching area..." : "Searching route corridor..."}</p></div>`;
+  els.resultsList.innerHTML = `<div class="empty-state"><i data-lucide="loader"></i><p>${state.mode === "species" ? "Mapping sightings..." : state.mode === "area" ? "Searching area..." : "Searching route corridor..."}</p></div>`;
   els.notableCount.textContent = "-";
   els.hotspotCount.textContent = "-";
   els.candidateCount.textContent = "-";
@@ -2018,12 +2615,9 @@ function clearSearchArtifacts() {
 function setBusy(isBusy) {
   const controls = [
     ...els.form.querySelectorAll("button, input, select, textarea"),
-    els.quickStartButton,
     els.shareTripButton,
     els.downloadReportButton,
     els.settingsButton,
-    els.modalSampleButton,
-    els.modalExploreButton,
     els.tripName,
     els.savedTripSelect,
     els.saveTripButton,
@@ -2034,13 +2628,16 @@ function setBusy(isBusy) {
   ];
 
   controls.forEach((control) => {
-    if (control === els.maxDetour && state.mode === "area") {
+    if (control === els.maxDetour && state.mode !== "route") {
       control.disabled = true;
       return;
     }
     control.disabled = isBusy;
   });
-  if (!isBusy) updateSavedTripControls();
+  if (!isBusy) {
+    updateSavedTripControls();
+    updateResultsActions();
+  }
 }
 
 function setStatus(title, message) {
@@ -2058,6 +2655,9 @@ async function apiJson(url, options = {}) {
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
+    if (String(url).startsWith("/api/ebird/") && [401, 403, 429].includes(response.status)) {
+      revealEbirdTokenForError(response.status, options.token ? "personal" : "shared", { prompt: !options.background });
+    }
     const base = payload.error || response.statusText || "Request failed";
     const detail = detailText(payload.details);
     const error = new Error(detail ? `${base} — ${detail}` : base);
@@ -2401,10 +3001,599 @@ function handleAutocompleteOutsideClick(event) {
     if (ctx.listEl.contains(event.target)) continue;
     hideAutocomplete(field);
   }
+  if (els.speciesSuggestions && !els.speciesSuggestions.hidden
+    && event.target !== els.speciesQuery
+    && !els.speciesSuggestions.contains(event.target)) {
+    hideSpeciesAutocomplete();
+  }
+}
+
+function setupSpeciesAutocomplete() {
+  const inputEl = els.speciesQuery;
+  const listEl = els.speciesSuggestions;
+  if (!inputEl || !listEl) return;
+  const ctx = speciesAutocomplete;
+
+  inputEl.addEventListener("input", () => {
+    state.species = null;
+    clearSpeciesError();
+    const value = inputEl.value.trim();
+    if (ctx.timer) clearTimeout(ctx.timer);
+    if (ctx.controller) {
+      ctx.controller.abort();
+      ctx.controller = null;
+    }
+    if (value.length < 2) {
+      hideSpeciesAutocomplete();
+      return;
+    }
+    if (value === ctx.lastQuery && ctx.items.length) {
+      listEl.hidden = false;
+      inputEl.setAttribute("aria-expanded", "true");
+      return;
+    }
+    ctx.timer = setTimeout(() => fetchSpeciesAutocomplete(value), 220);
+  });
+
+  inputEl.addEventListener("keydown", (event) => {
+    if (listEl.hidden || !ctx.items.length) {
+      if (event.key === "ArrowDown" && inputEl.value.trim().length >= 2) {
+        event.preventDefault();
+        fetchSpeciesAutocomplete(inputEl.value.trim());
+      }
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      moveSpeciesSelection(1);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      moveSpeciesSelection(-1);
+    } else if (event.key === "Enter") {
+      if (ctx.activeIndex >= 0) {
+        event.preventDefault();
+        selectSpeciesItem(ctx.activeIndex);
+      }
+    } else if (event.key === "Escape") {
+      hideSpeciesAutocomplete();
+    }
+  });
+
+  inputEl.addEventListener("blur", () => {
+    setTimeout(() => hideSpeciesAutocomplete(), 120);
+  });
+
+  inputEl.addEventListener("focus", () => {
+    if (ctx.items.length && inputEl.value.trim() === ctx.lastQuery) {
+      listEl.hidden = false;
+      inputEl.setAttribute("aria-expanded", "true");
+    }
+  });
+}
+
+async function fetchSpeciesAutocomplete(query) {
+  const ctx = speciesAutocomplete;
+  const listEl = els.speciesSuggestions;
+  if (ctx.controller) ctx.controller.abort();
+  const controller = new AbortController();
+  ctx.controller = controller;
+  listEl.innerHTML = '<li class="is-loading">Searching…</li>';
+  listEl.hidden = false;
+  els.speciesQuery.setAttribute("aria-expanded", "true");
+  try {
+    const matches = await apiJson(
+      `/api/ebird/taxonomy/search?q=${encodeURIComponent(query)}`,
+      { signal: controller.signal, token: els.apiToken.value.trim(), background: true }
+    );
+    if (ctx.controller !== controller) return;
+    ctx.lastQuery = query;
+    ctx.items = Array.isArray(matches) ? matches : [];
+    ctx.activeIndex = -1;
+    renderSpeciesItems();
+  } catch (error) {
+    if (error.name === "AbortError") return;
+    if (ctx.controller !== controller) return;
+    ctx.items = [];
+    ctx.activeIndex = -1;
+    listEl.innerHTML = '<li class="is-empty">No matches.</li>';
+    listEl.hidden = false;
+  } finally {
+    if (ctx.controller === controller) ctx.controller = null;
+  }
+}
+
+function renderSpeciesItems() {
+  const ctx = speciesAutocomplete;
+  const listEl = els.speciesSuggestions;
+  listEl.innerHTML = "";
+  if (!ctx.items.length) {
+    listEl.innerHTML = '<li class="is-empty">No matches.</li>';
+    listEl.hidden = false;
+    return;
+  }
+  ctx.items.forEach((item, index) => {
+    const li = document.createElement("li");
+    li.setAttribute("role", "option");
+    li.id = `speciesAutocompleteOption${index}`;
+    li.setAttribute("aria-selected", "false");
+    li.dataset.index = String(index);
+    li.innerHTML = `<i data-lucide="bird"></i><span class="ac-name"></span>`;
+    const text = item.sciName ? `${item.comName} · ${item.sciName}` : item.comName;
+    li.querySelector(".ac-name").textContent = text;
+    li.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      selectSpeciesItem(index);
+    });
+    li.addEventListener("mouseenter", () => setSpeciesActive(index));
+    listEl.appendChild(li);
+  });
+  if (window.lucide) window.lucide.createIcons();
+  listEl.hidden = false;
+  els.speciesQuery.setAttribute("aria-expanded", "true");
+}
+
+function moveSpeciesSelection(delta) {
+  const ctx = speciesAutocomplete;
+  if (!ctx.items.length) return;
+  const next = ctx.activeIndex + delta;
+  setSpeciesActive((next + ctx.items.length) % ctx.items.length);
+}
+
+function setSpeciesActive(index) {
+  const ctx = speciesAutocomplete;
+  const listEl = els.speciesSuggestions;
+  ctx.activeIndex = index;
+  Array.from(listEl.children).forEach((li, i) => {
+    const isActive = i === index;
+    li.classList.toggle("is-active", isActive);
+    li.setAttribute("aria-selected", String(isActive));
+    if (isActive && li.id) {
+      els.speciesQuery.setAttribute("aria-activedescendant", li.id);
+      li.scrollIntoView({ block: "nearest" });
+    }
+  });
+}
+
+function selectSpeciesItem(index) {
+  const ctx = speciesAutocomplete;
+  const item = ctx.items[index];
+  if (!item) return;
+  els.speciesQuery.value = item.comName;
+  state.species = { speciesCode: item.speciesCode, comName: item.comName, sciName: item.sciName };
+  ctx.lastQuery = item.comName;
+  clearSpeciesError();
+  hideSpeciesAutocomplete();
+  savePreferences();
+}
+
+function hideSpeciesAutocomplete() {
+  const listEl = els.speciesSuggestions;
+  if (listEl) listEl.hidden = true;
+  if (els.speciesQuery) {
+    els.speciesQuery.setAttribute("aria-expanded", "false");
+    els.speciesQuery.removeAttribute("aria-activedescendant");
+  }
+  speciesAutocomplete.activeIndex = -1;
+}
+
+// --- Target species rows ---
+
+const targetRowsState = {
+  // Unbounded by design: one small server-capped array per distinct query.
+  taxonomy: new Map(), // normalized name -> Promise<matches[]|null>
+  contexts: new WeakMap() // row element -> { acTimer, valToken, items, activeIndex }
+};
+
+function targetRowContext(row) {
+  let ctx = targetRowsState.contexts.get(row);
+  if (!ctx) {
+    ctx = { acTimer: 0, valToken: 0, items: [], activeIndex: -1 };
+    targetRowsState.contexts.set(row, ctx);
+  }
+  return ctx;
+}
+
+function cleanTargetName(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function targetRowInputs() {
+  return Array.from(els.targetRows.querySelectorAll(".target-row input"));
+}
+
+function serializeTargetRows() {
+  return targetRowInputs()
+    .map((input) => cleanTargetName(input.value))
+    .filter(Boolean)
+    .join("\n");
+}
+
+function syncTargetsFromRows() {
+  els.targets.value = serializeTargetRows();
+  updateInputSummaries();
+}
+
+function renderTargetRows() {
+  if (!els.targetRows || !els.targets) return;
+  const names = els.targets.value.split(/\n|,/).map(cleanTargetName).filter(Boolean);
+  if (els.targetRows.childElementCount && serializeTargetRows() === names.join("\n")) return;
+  els.targetRows.innerHTML = "";
+  for (const name of names) els.targetRows.appendChild(createTargetRow(name));
+  els.targetRows.appendChild(createTargetRow(""));
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function createTargetRow(name) {
+  const row = document.createElement("div");
+  row.className = "target-row";
+  row.dataset.state = "empty";
+
+  const wrap = document.createElement("div");
+  wrap.className = "autocomplete";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = name;
+  input.placeholder = "Add a species";
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  input.setAttribute("role", "combobox");
+  input.setAttribute("aria-autocomplete", "list");
+  input.setAttribute("aria-expanded", "false");
+  input.setAttribute("aria-label", "Target species");
+  const status = document.createElement("span");
+  status.className = "target-status";
+  status.setAttribute("aria-hidden", "true");
+  status.hidden = true;
+  const list = document.createElement("ul");
+  list.className = "autocomplete-list";
+  list.setAttribute("role", "listbox");
+  list.hidden = true;
+  wrap.append(input, status, list);
+
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "target-remove";
+  remove.setAttribute("aria-label", "Remove target species");
+  remove.innerHTML = '<i data-lucide="x"></i>';
+
+  const hint = document.createElement("small");
+  hint.className = "target-hint";
+  hint.hidden = true;
+
+  row.append(wrap, remove, hint);
+
+  input.addEventListener("input", () => handleTargetRowInput(row));
+  input.addEventListener("keydown", (event) => handleTargetRowKeydown(row, event));
+  input.addEventListener("blur", () => handleTargetRowBlur(row));
+  input.addEventListener("paste", (event) => handleTargetRowPaste(row, event));
+  remove.addEventListener("click", () => removeTargetRow(row));
+
+  if (name) scheduleTargetRowValidation(row);
+  return row;
+}
+
+function ensureTargetAddRow() {
+  const inputs = targetRowInputs();
+  const last = inputs[inputs.length - 1];
+  if (!last || cleanTargetName(last.value)) {
+    const row = createTargetRow("");
+    els.targetRows.appendChild(row);
+    if (window.lucide) window.lucide.createIcons();
+  }
+}
+
+function removeTargetRow(row) {
+  row.remove();
+  syncTargetsFromRows();
+  ensureTargetAddRow();
+}
+
+function commitTargetRow(row) {
+  const input = row.querySelector("input");
+  if (!cleanTargetName(input.value)) return;
+  hideTargetRowAutocomplete(row);
+  ensureTargetAddRow();
+  const inputs = targetRowInputs();
+  const next = inputs[inputs.indexOf(input) + 1];
+  if (next) next.focus();
+}
+
+function handleTargetRowInput(row) {
+  const ctx = targetRowContext(row);
+  const input = row.querySelector("input");
+  if (input.value.includes(",")) {
+    hideTargetRowAutocomplete(row);
+    splitTargetRowValue(row);
+    return;
+  }
+  syncTargetsFromRows();
+  scheduleTargetRowValidation(row);
+  const value = cleanTargetName(input.value);
+  if (ctx.acTimer) clearTimeout(ctx.acTimer);
+  if (value.length < 2) {
+    hideTargetRowAutocomplete(row);
+    return;
+  }
+  ctx.acTimer = setTimeout(() => fetchTargetRowAutocomplete(row, value), 220);
+}
+
+function handleTargetRowKeydown(row, event) {
+  const ctx = targetRowContext(row);
+  const listEl = row.querySelector(".autocomplete-list");
+  if (!listEl.hidden && ctx.items.length) {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      moveTargetRowSelection(row, 1);
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      moveTargetRowSelection(row, -1);
+      return;
+    }
+    if (event.key === "Escape") {
+      hideTargetRowAutocomplete(row);
+      return;
+    }
+    if (event.key === "Enter" && ctx.activeIndex >= 0) {
+      event.preventDefault();
+      selectTargetRowItem(row, ctx.activeIndex);
+      commitTargetRow(row);
+      return;
+    }
+  }
+  if (event.key === "Enter") {
+    event.preventDefault();
+    commitTargetRow(row);
+  }
+}
+
+function handleTargetRowBlur(row) {
+  setTimeout(() => {
+    hideTargetRowAutocomplete(row);
+    const input = row.querySelector("input");
+    if (!input || document.activeElement === input) return;
+    if (!cleanTargetName(input.value) && row !== els.targetRows.lastElementChild) {
+      removeTargetRow(row);
+    } else {
+      ensureTargetAddRow();
+    }
+  }, 120);
+}
+
+function handleTargetRowPaste(row, event) {
+  const text = event.clipboardData?.getData("text") || "";
+  if (!/[\n,]/.test(text)) return;
+  event.preventDefault();
+  const input = row.querySelector("input");
+  // Newlines are stripped when assigned to an input's value; commas survive
+  // and split identically.
+  input.value = text.replace(/\r\n?|\n/g, ",");
+  splitTargetRowValue(row);
+}
+
+function splitTargetRowValue(row) {
+  const input = row.querySelector("input");
+  const names = input.value.split(/\n|,/).map(cleanTargetName).filter(Boolean);
+  input.value = names[0] || "";
+  let anchor = row;
+  for (const name of names.slice(1)) {
+    const newRow = createTargetRow(name);
+    anchor.after(newRow);
+    anchor = newRow;
+  }
+  scheduleTargetRowValidation(row);
+  syncTargetsFromRows();
+  if (window.lucide) window.lucide.createIcons();
+  if (cleanTargetName(anchor.querySelector("input").value)) {
+    commitTargetRow(anchor);
+  } else {
+    ensureTargetAddRow();
+  }
+}
+
+function hideTargetRowAutocomplete(row) {
+  const ctx = targetRowContext(row);
+  if (ctx.acTimer) {
+    clearTimeout(ctx.acTimer);
+    ctx.acTimer = 0;
+  }
+  const listEl = row.querySelector(".autocomplete-list");
+  const input = row.querySelector("input");
+  if (listEl) listEl.hidden = true;
+  if (input) input.setAttribute("aria-expanded", "false");
+  ctx.activeIndex = -1;
+}
+
+async function fetchTargetRowAutocomplete(row, query) {
+  const ctx = targetRowContext(row);
+  const input = row.querySelector("input");
+  const listEl = row.querySelector(".autocomplete-list");
+  listEl.innerHTML = '<li class="is-loading">Searching…</li>';
+  listEl.hidden = false;
+  input.setAttribute("aria-expanded", "true");
+  const items = await targetTaxonomyLookup(query);
+  if (cleanTargetName(input.value) !== query || listEl.hidden) return;
+  if (!items || !items.length) {
+    ctx.items = [];
+    // Hide rather than show "No matches." — the dropdown would cover the
+    // did-you-mean hint rendered directly below the input.
+    hideTargetRowAutocomplete(row);
+    return;
+  }
+  ctx.items = items;
+  ctx.activeIndex = -1;
+  listEl.innerHTML = "";
+  items.forEach((item, index) => {
+    const li = document.createElement("li");
+    li.setAttribute("role", "option");
+    li.setAttribute("aria-selected", "false");
+    li.dataset.index = String(index);
+    li.innerHTML = '<i data-lucide="bird"></i><span class="ac-name"></span>';
+    li.querySelector(".ac-name").textContent = item.sciName
+      ? `${item.comName} · ${item.sciName}`
+      : item.comName;
+    li.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      selectTargetRowItem(row, index);
+    });
+    li.addEventListener("mouseenter", () => setTargetRowActive(row, index));
+    listEl.appendChild(li);
+  });
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function moveTargetRowSelection(row, delta) {
+  const ctx = targetRowContext(row);
+  if (!ctx.items.length) return;
+  setTargetRowActive(row, (ctx.activeIndex + delta + ctx.items.length) % ctx.items.length);
+}
+
+function setTargetRowActive(row, index) {
+  const ctx = targetRowContext(row);
+  const listEl = row.querySelector(".autocomplete-list");
+  ctx.activeIndex = index;
+  Array.from(listEl.children).forEach((li, i) => {
+    const isActive = i === index;
+    li.classList.toggle("is-active", isActive);
+    li.setAttribute("aria-selected", String(isActive));
+    if (isActive) li.scrollIntoView({ block: "nearest" });
+  });
+}
+
+function selectTargetRowItem(row, index) {
+  const ctx = targetRowContext(row);
+  const item = ctx.items[index];
+  if (!item) return;
+  const input = row.querySelector("input");
+  input.value = item.comName;
+  ctx.valToken += 1;
+  hideTargetRowAutocomplete(row);
+  syncTargetsFromRows();
+  setTargetRowStatus(row, "valid", null);
+}
+
+function targetTaxonomyLookup(name) {
+  const key = normalizeName(name);
+  if (!key) return Promise.resolve([]);
+  if (!targetRowsState.taxonomy.has(key)) {
+    const promise = apiJson(
+      `/api/ebird/taxonomy/search?q=${encodeURIComponent(name)}`,
+      { token: els.apiToken.value.trim(), background: true }
+    )
+      .then((matches) => {
+        if (!Array.isArray(matches)) {
+          targetRowsState.taxonomy.delete(key);
+          return null;
+        }
+        return matches;
+      })
+      .catch(() => {
+        targetRowsState.taxonomy.delete(key);
+        return null;
+      });
+    targetRowsState.taxonomy.set(key, promise);
+  }
+  return targetRowsState.taxonomy.get(key);
+}
+
+function scheduleTargetRowValidation(row) {
+  const ctx = targetRowContext(row);
+  const input = row.querySelector("input");
+  const name = cleanTargetName(input.value);
+  const token = ++ctx.valToken;
+  if (!name) {
+    setTargetRowStatus(row, "empty", null);
+    return;
+  }
+  setTargetRowStatus(row, "pending", null);
+  setTimeout(() => {
+    if (ctx.valToken !== token) return;
+    validateTargetRow(row, name, token);
+  }, 300);
+}
+
+async function validateTargetRow(row, name, token) {
+  const ctx = targetRowContext(row);
+  const input = row.querySelector("input");
+  const items = await targetTaxonomyLookup(name);
+  if (ctx.valToken !== token || cleanTargetName(input.value) !== name) return;
+  if (!items) {
+    setTargetRowStatus(row, "unchecked", null);
+    return;
+  }
+  const key = normalizeName(name);
+  const exact = items.find((item) => normalizeName(item.comName) === key);
+  let suggestion = exact ? null : items[0] || null;
+  if (!exact && !suggestion) {
+    suggestion = await findTargetSuggestion(name);
+    if (ctx.valToken !== token || cleanTargetName(input.value) !== name) return;
+  }
+  setTargetRowStatus(row, exact ? "valid" : "unknown", suggestion);
+}
+
+// The server search is prefix/substring-only, so a typo near the end of a name
+// ("Scarlet Tanger") returns nothing. Retry with shorter prefixes to find a
+// did-you-mean candidate.
+async function findTargetSuggestion(name) {
+  for (let cut = name.length - 1; cut >= 3 && cut >= name.length - 6; cut -= 1) {
+    const items = await targetTaxonomyLookup(name.slice(0, cut));
+    if (items && items.length) return items[0];
+  }
+  return null;
+}
+
+function setTargetRowStatus(row, rowState, suggestion) {
+  row.dataset.state = rowState;
+  const status = row.querySelector(".target-status");
+  const hint = row.querySelector(".target-hint");
+  if (rowState === "valid") {
+    status.innerHTML = '<i data-lucide="check"></i>';
+    status.hidden = false;
+  } else if (rowState === "unknown") {
+    status.innerHTML = '<i data-lucide="triangle-alert"></i>';
+    status.hidden = false;
+  } else {
+    status.innerHTML = "";
+    status.hidden = true;
+  }
+  hint.textContent = "";
+  if (rowState === "unknown" && suggestion?.comName) {
+    hint.append("Not in the eBird taxonomy. Did you mean ");
+    const fixButton = document.createElement("button");
+    fixButton.type = "button";
+    fixButton.className = "target-suggestion";
+    fixButton.textContent = suggestion.comName;
+    fixButton.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      applyTargetSuggestion(row, suggestion);
+    });
+    // Keyboard activation; can't double-fire after mousedown because applying detaches the button.
+    fixButton.addEventListener("click", () => applyTargetSuggestion(row, suggestion));
+    hint.append(fixButton, "?");
+    hint.hidden = false;
+  } else if (rowState === "unknown") {
+    hint.textContent = "Not found in the eBird taxonomy. It will still be searched as typed.";
+    hint.hidden = false;
+  } else {
+    hint.hidden = true;
+  }
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function applyTargetSuggestion(row, item) {
+  const ctx = targetRowContext(row);
+  const input = row.querySelector("input");
+  input.value = item.comName;
+  ctx.valToken += 1;
+  hideTargetRowAutocomplete(row);
+  syncTargetsFromRows();
+  setTargetRowStatus(row, "valid", null);
+  ensureTargetAddRow();
 }
 
 function fieldLabel(field) {
-  if (field === "origin" && state.mode === "area") return "Location";
+  if (field === "origin" && state.mode !== "route") return "Location";
   return field === "origin" ? "Origin" : "Destination";
 }
 
@@ -2422,6 +3611,7 @@ function setFieldError(field, message) {
 }
 
 function clearFieldErrors() {
+  clearSpeciesError();
   for (const field of ["origin", "destination"]) {
     const errorEl = els[`${field}Error`];
     const inputEl = els[field];
@@ -2495,36 +3685,7 @@ function updateAreaSummary(radiusKm) {
   renderInsights();
 }
 
-function sampleRoute(coordinates, routeMeters, maxSamples) {
-  if (coordinates.length <= maxSamples) {
-    return coordinates.map(([lng, lat], index) => ({ lng, lat, index }));
-  }
-
-  const segments = [];
-  let cumulative = 0;
-  for (let i = 1; i < coordinates.length; i += 1) {
-    const [lng1, lat1] = coordinates[i - 1];
-    const [lng2, lat2] = coordinates[i];
-    const distance = haversineKm({ lat: lat1, lng: lng1 }, { lat: lat2, lng: lng2 }) * 1000;
-    cumulative += distance;
-    segments.push({ start: coordinates[i - 1], end: coordinates[i], distance, cumulative });
-  }
-
-  const samples = [];
-  const usable = Math.max(2, maxSamples);
-  for (let i = 0; i < usable; i += 1) {
-    const target = (routeMeters * i) / (usable - 1);
-    const segment = segments.find((item) => item.cumulative >= target) || segments[segments.length - 1];
-    const previous = segment.cumulative - segment.distance;
-    const ratio = segment.distance ? (target - previous) / segment.distance : 0;
-    const lng = segment.start[0] + (segment.end[0] - segment.start[0]) * ratio;
-    const lat = segment.start[1] + (segment.end[1] - segment.start[1]) * ratio;
-    samples.push({ lng, lat, index: i });
-  }
-  return samples;
-}
-
-async function fetchRecentForSamples(samples, params) {
+async function fetchRecentForSamples(samples, params, queryRadiusKm = params.radiusKm) {
   const chunks = [];
   for (let i = 0; i < samples.length; i += 4) chunks.push(samples.slice(i, i + 4));
 
@@ -2532,9 +3693,13 @@ async function fetchRecentForSamples(samples, params) {
   for (let i = 0; i < chunks.length; i += 1) {
     setStatus(params.mode === "area" ? "Scanning area" : "Scanning route", `Requesting recent observations ${i * 4 + 1}-${Math.min((i + 1) * 4, samples.length)} of ${samples.length}.`);
     const batch = await Promise.all(chunks[i].map((sample) => {
-      const url = `/api/ebird/recent?lat=${sample.lat}&lng=${sample.lng}&dist=${params.radiusKm}&back=${params.recentDays}&maxResults=500`;
+      const url = `/api/ebird/recent?lat=${sample.lat}&lng=${sample.lng}&dist=${queryRadiusKm}&back=${params.recentDays}&maxResults=${ACTIVITY_MAX_RESULTS}`;
       return apiJson(url, { token: params.token })
-        .then((observations) => ({ sample, observations }))
+        .then((observations) => ({
+          sample,
+          observations: Array.isArray(observations) ? observations : [],
+          truncated: Array.isArray(observations) && observations.length >= ACTIVITY_MAX_RESULTS
+        }))
         .catch((error) => ({ sample, observations: [], error }));
     }));
     all.push(...batch);
@@ -2543,196 +3708,702 @@ async function fetchRecentForSamples(samples, params) {
   if (failed) {
     addWarning(`${failed} of ${all.length} recent-observation requests failed; ranking uses the data that loaded.`);
   }
+  const truncated = all.filter((entry) => entry.truncated).length;
+  if (truncated) {
+    addWarning(`${truncated} recent-activity ${pluralize("sample", truncated)} reached eBird's ${ACTIVITY_MAX_RESULTS}-result limit; that activity prior was downweighted.`);
+  }
   return all;
 }
 
-function buildCandidates(observationsBySample, samples, params) {
-  const byKey = new Map();
+async function fetchHotspotDirectoryForRoute(samples, routeIndex, params) {
+  const chunks = [];
+  for (let i = 0; i < samples.length; i += 4) chunks.push(samples.slice(i, i + 4));
+  const byId = new Map();
+  let failed = 0;
 
-  for (const { sample, observations } of observationsBySample) {
-    for (const obs of observations) {
-      if (!Number.isFinite(obs.lat) || !Number.isFinite(obs.lng)) continue;
-      const key = obs.locId || `${obs.lat.toFixed(3)},${obs.lng.toFixed(3)}`;
-      if (!byKey.has(key)) {
-        byKey.set(key, {
-          id: key,
-          locId: obs.locId || "",
-          name: obs.locName || "Unnamed birding location",
-          lat: obs.lat,
-          lng: obs.lng,
-          observations: [],
-          seen: new Set(),
-          species: new Map(),
-          notable: [],
-          nearestSample: sample,
-          routeDistanceKm: Infinity,
-          targetMatches: [],
-          liferSpecies: []
-        });
-      }
-      const candidate = byKey.get(key);
-      const obsKey = obs.subId && obs.speciesCode
-        ? `${obs.subId}|${obs.speciesCode}`
-        : `${normalizeName(obs.comName || obs.sciName)}|${obs.obsDt || ""}|${obs.howMany ?? ""}`;
-      if (candidate.seen.has(obsKey)) continue;
-      candidate.seen.add(obsKey);
-      candidate.observations.push(obs);
-      const speciesKey = normalizeName(obs.comName || obs.sciName || "Unknown species");
-      if (speciesKey && !candidate.species.has(speciesKey)) {
-        candidate.species.set(speciesKey, obs);
+  for (let i = 0; i < chunks.length; i += 1) {
+    setStatus("Discovering stops", `Checking corridor sections ${i * 4 + 1}-${Math.min((i + 1) * 4, samples.length)} of ${samples.length}.`);
+    const batch = await Promise.all(chunks[i].map((sample) => (
+      apiJson(
+        `/api/ebird/hotspots?lat=${sample.lat}&lng=${sample.lng}&dist=${DISCOVERY_QUERY_RADIUS_KM}`,
+        { token: params.token }
+      ).catch(() => {
+        failed += 1;
+        return [];
+      })
+    )));
+    for (const hotspots of batch) {
+      for (const hotspot of Array.isArray(hotspots) ? hotspots : []) {
+        if (!hotspot.locId || !Number.isFinite(hotspot.lat) || !Number.isFinite(hotspot.lng)) continue;
+        byId.set(hotspot.locId, hotspot);
       }
     }
   }
 
-  const candidates = Array.from(byKey.values());
-  for (const candidate of candidates) {
-    for (const sample of samples) {
-      const distance = haversineKm(candidate, sample);
-      if (distance < candidate.routeDistanceKm) {
-        candidate.routeDistanceKm = distance;
-        candidate.nearestSample = sample;
-      }
-    }
-    candidate.targetMatches = params.targets
-      .map((target) => candidate.species.get(target))
-      .filter(Boolean);
-    candidate.liferSpecies = params.lifeList?.size
-      ? Array.from(candidate.species.values()).filter((obs) => !isSeenObservation(obs, params.lifeList))
-      : [];
+  if (failed) {
+    addWarning(`${failed} of ${samples.length} hotspot-directory requests failed; corridor discovery is partial.`);
   }
 
-  return candidates
-    .filter((candidate) => candidate.species.size > 0)
-    .sort((a, b) => preliminaryScore(b) - preliminaryScore(a))
-    .slice(0, Math.max(params.maxStops * 3, params.maxStops));
+  return Array.from(byId.values()).map((hotspot) => {
+    const routeMatch = routeIndex.distanceTo(hotspot);
+    return {
+      ...hotspot,
+      routeDistanceKm: routeMatch.distanceKm,
+      routeProgress: routeMatch.progress
+    };
+  }).filter((hotspot) => hotspot.routeDistanceKm <= params.radiusKm);
 }
 
-function preliminaryScore(candidate) {
-  return candidate.species.size * 4
-    + candidate.observations.length
-    + candidate.targetMatches.length * 8
-    + candidate.liferSpecies.length * 6
-    + Math.max(0, 20 - candidate.routeDistanceKm);
+function applyActivityPrior(hotspots, observationsBySample, params) {
+  const byLocation = new Map();
+  for (const entry of observationsBySample) {
+    const sampleFactor = entry.truncated ? 0.5 : 1;
+    for (const obs of entry.observations || []) {
+      if (!obs.locId) continue;
+      if (!byLocation.has(obs.locId)) {
+        byLocation.set(obs.locId, { species: new Map(), targets: new Set(), unseen: new Set() });
+      }
+      const activity = byLocation.get(obs.locId);
+      const speciesName = normalizeName(obs.comName || obs.sciName);
+      if (!speciesName) continue;
+      const weight = observationFreshnessWeight(obs.obsDt) * sampleFactor;
+      activity.species.set(speciesName, Math.max(activity.species.get(speciesName) || 0, weight));
+      if (params.targets.includes(speciesName)) activity.targets.add(speciesName);
+      if (params.lifeList?.size && !isSeenObservation(obs, params.lifeList)) activity.unseen.add(speciesName);
+    }
+  }
+
+  const observedPriors = Array.from(byLocation.values())
+    .map((activity) => Array.from(activity.species.values()).reduce((sum, weight) => sum + weight, 0))
+    .sort((a, b) => a - b);
+  const middle = Math.floor(observedPriors.length / 2);
+  const neutralActivityPrior = observedPriors.length % 2
+    ? observedPriors[middle]
+    : (observedPriors[middle - 1] + observedPriors[middle]) / 2 || 0;
+
+  for (const hotspot of Array.isArray(hotspots) ? hotspots : []) {
+    const activity = byLocation.get(hotspot.locId);
+    hotspot.activityObserved = Boolean(activity);
+    hotspot.activityPrior = activity
+      ? Array.from(activity.species.values()).reduce((sum, weight) => sum + weight, 0)
+      : neutralActivityPrior;
+    hotspot.activityTargetCount = activity?.targets.size || 0;
+    hotspot.activityUnseenCount = activity?.unseen.size || 0;
+  }
+}
+
+function rankAreaHotspots(hotspots, center, params) {
+  if (!Array.isArray(hotspots)) return [];
+  const limit = clamp(params.maxStops * 3, 30, 40);
+  const prepared = hotspots
+    .filter((hotspot) => hotspot.locId && Number.isFinite(hotspot.lat) && Number.isFinite(hotspot.lng))
+    .map((hotspot) => ({
+      ...hotspot,
+      distanceKm: haversineKm(center, hotspot),
+      routeDistanceKm: haversineKm(center, hotspot),
+      areaAngle: Math.atan2(hotspot.lat - center.lat, hotspot.lng - center.lng)
+    }));
+  return shortlistHotspots(prepared, { ...params, shortlistLimit: limit }, "area");
+}
+
+function hotspotFetchPriority(hotspot, params) {
+  const richness = ranking.richnessPrior(hotspot.numSpeciesAllTime);
+  const distance = Number.isFinite(hotspot.routeDistanceKm) ? hotspot.routeDistanceKm : hotspot.distanceKm;
+  const proximity = Math.max(0, 1 - distance / Math.max(params.radiusKm, 1));
+  const activity = Math.min(Math.max(0, hotspot.activityPrior || 0), 40) / 40;
+  const targetRescue = hotspot.activityTargetCount ? 0.3 : 0;
+  const unseenRescue = hotspot.activityUnseenCount ? 0.15 : 0;
+  return richness * 0.4 + proximity * 0.25 + activity * 0.35 + targetRescue + unseenRescue;
+}
+
+function shortlistHotspots(hotspots, params, mode) {
+  const limit = Math.min(MAX_EVIDENCE_HOTSPOTS, params.shortlistLimit || MAX_EVIDENCE_HOTSPOTS);
+  const ranked = Array.from(hotspots || [])
+    .filter((hotspot) => hotspot.locId)
+    .map((hotspot) => ({ ...hotspot, fetchPriority: hotspotFetchPriority(hotspot, params) }))
+    .sort((a, b) => b.fetchPriority - a.fetchPriority);
+  const selected = [];
+  const selectedIds = new Set();
+  const add = (hotspot) => {
+    if (!hotspot || selectedIds.has(hotspot.locId) || selected.length >= limit) return;
+    selectedIds.add(hotspot.locId);
+    selected.push(hotspot);
+  };
+
+  ranked.filter((hotspot) => hotspot.explicitTargetRescue).forEach(add);
+  ranked.filter((hotspot) => hotspot.activityTargetCount && !hotspot.explicitTargetRescue).forEach(add);
+  ranked.filter((hotspot) => hotspot.activityUnseenCount).slice(0, params.maxStops).forEach(add);
+  ranked.filter((hotspot) => hotspot.importedListProbe).slice(0, params.maxStops).forEach(add);
+
+  const bandCount = Math.min(10, Math.max(4, params.maxStops));
+  for (let band = 0; band < bandCount; band += 1) {
+    const inBand = ranked.find((hotspot) => {
+      if (selectedIds.has(hotspot.locId)) return false;
+      const normalized = mode === "area"
+        ? (hotspot.areaAngle + Math.PI) / (2 * Math.PI)
+        : hotspot.routeProgress;
+      return normalized >= band / bandCount && normalized <= (band + 1) / bandCount;
+    });
+    if (inBand) inBand.geographicRepresentative = true;
+    add(inBand);
+  }
+
+  ranked.forEach(add);
+  return selected;
+}
+
+function mergeUniqueHotspots(...groups) {
+  const byId = new Map();
+  for (const group of groups) {
+    for (const hotspot of Array.isArray(group) ? group : []) {
+      if (hotspot?.locId && !byId.has(hotspot.locId)) byId.set(hotspot.locId, hotspot);
+    }
+  }
+  return Array.from(byId.values());
+}
+
+async function rescueTargetHotspots(hotspots, ranked, center, params) {
+  if (!params.targets.length || !Array.isArray(hotspots)) return [];
+  const rankedIds = new Set(ranked.map((hotspot) => hotspot.locId));
+  const droppedByLocId = new Map();
+  for (const hotspot of hotspots) {
+    if (!hotspot.locId || !Number.isFinite(hotspot.lat) || !Number.isFinite(hotspot.lng)) continue;
+    if (rankedIds.has(hotspot.locId) || droppedByLocId.has(hotspot.locId)) continue;
+    droppedByLocId.set(hotspot.locId, hotspot);
+  }
+  if (!droppedByLocId.size) return [];
+
+  const rescued = new Map();
+  const feedMaxResults = 10000;
+  let failed = 0;
+  for (const target of params.targets) {
+    setStatus("Scanning area", `Checking locations reporting target species: ${target}.`);
+    try {
+      const payload = await apiJson(
+        `/api/ebird/species?lat=${center.lat}&lng=${center.lng}&dist=${params.radiusKm}&back=${params.recentDays}&maxResults=${feedMaxResults}&name=${encodeURIComponent(target)}`,
+        { token: params.token }
+      );
+      const observations = Array.isArray(payload.observations) ? payload.observations : [];
+      if (observations.length >= feedMaxResults) {
+        addWarning(`"${target}" has more reports than eBird returns in one request; some of its locations may be missing from the ranking.`);
+      }
+      for (const obs of observations) {
+        const hotspot = obs.locId ? droppedByLocId.get(obs.locId) : null;
+        if (hotspot) rescued.set(hotspot.locId, hotspot);
+      }
+    } catch (error) {
+      if (error.status !== 404) failed += 1;
+    }
+  }
+  if (failed) {
+    addWarning(`${failed} target-species lookups failed; some target locations may be missing from the ranking.`);
+  }
+  const limit = 40;
+  if (rescued.size > limit) {
+    addWarning(`Target species were reported at ${rescued.size} additional hotspots; only the ${limit} closest were checked.`);
+  }
+  return Array.from(rescued.values())
+    .sort((a, b) => haversineKm(center, a) - haversineKm(center, b))
+    .slice(0, limit);
+}
+
+async function rescueRouteTargetHotspots(hotspots, ranked, samples, params) {
+  if (!params.targets.length || !Array.isArray(hotspots) || !samples.length) return [];
+  const rankedIds = new Set(ranked.map((hotspot) => hotspot.locId));
+  const droppedByLocId = new Map();
+  for (const hotspot of hotspots) {
+    if (!hotspot.locId || rankedIds.has(hotspot.locId)) continue;
+    droppedByLocId.set(hotspot.locId, hotspot);
+  }
+  if (!droppedByLocId.size) return [];
+
+  const uniqueTargets = Array.from(new Set(params.targets));
+  const targets = uniqueTargets.slice(0, MAX_ROUTE_TARGETS);
+  if (uniqueTargets.length > targets.length) {
+    addWarning(`Route target rescue is limited to ${MAX_ROUTE_TARGETS} species; ${uniqueTargets.length - targets.length} additional targets use the general activity prior only.`);
+  }
+  const samplesPerTarget = Math.max(1, Math.floor(MAX_ROUTE_TARGET_LOOKUPS / targets.length));
+  const targetSamples = evenlySpacedItems(samples, samplesPerTarget);
+  const jobs = targets.flatMap((target) => targetSamples.map((sample) => ({ target, sample })));
+  const fullJobCount = targets.length * samples.length;
+  if (jobs.length < fullJobCount) {
+    addWarning(`Target rescue checked ${jobs.length} of ${fullJobCount} target corridor sections because of the ${MAX_ROUTE_TARGET_LOOKUPS}-request ceiling.`);
+  }
+
+  const rescued = new Map();
+  let failed = 0;
+  for (let index = 0; index < jobs.length; index += 2) {
+    const batch = jobs.slice(index, index + 2);
+    setStatus("Checking route targets", `Checking target reports ${index + 1}-${index + batch.length} of ${jobs.length}.`);
+    const results = await Promise.all(batch.map(async ({ target, sample }) => {
+      try {
+        return await apiJson(
+          `/api/ebird/species?lat=${sample.lat}&lng=${sample.lng}&dist=${ACTIVITY_QUERY_RADIUS_KM}&back=${params.recentDays}&maxResults=10000&name=${encodeURIComponent(target)}`,
+          { token: params.token }
+        );
+      } catch (error) {
+        if (error.status !== 404) failed += 1;
+        return null;
+      }
+    }));
+    for (const payload of results) {
+      const observations = Array.isArray(payload?.observations) ? payload.observations : [];
+      if (observations.length >= 10000) {
+        addWarning("A route target lookup reached eBird's 10,000-result limit; some target locations may be missing.");
+      }
+      for (const obs of observations) {
+        const hotspot = obs.locId ? droppedByLocId.get(obs.locId) : null;
+        if (hotspot) rescued.set(hotspot.locId, hotspot);
+      }
+    }
+  }
+  if (failed) {
+    addWarning(`${failed} route target lookups failed; some target locations may be missing from the shortlist.`);
+  }
+  if (rescued.size > MAX_EVIDENCE_HOTSPOTS) {
+    addWarning(`Targets were reported at ${rescued.size} additional route hotspots; only ${MAX_EVIDENCE_HOTSPOTS} can receive detailed evidence.`);
+  }
+  return Array.from(rescued.values())
+    .sort((a, b) => a.routeProgress - b.routeProgress)
+    .slice(0, MAX_EVIDENCE_HOTSPOTS);
+}
+
+function evenlySpacedItems(items, limit) {
+  if (limit <= 0) return [];
+  if (items.length <= limit) return Array.from(items);
+  if (limit <= 1) return [items[Math.floor((items.length - 1) / 2)]];
+  return Array.from({ length: limit }, (_, index) => (
+    items[Math.round(index * (items.length - 1) / (limit - 1))]
+  ));
+}
+
+function reserveRouteUnseenEvidence(hotspots, alreadySelected, params) {
+  if (!params.lifeList?.size || hotspots.length <= alreadySelected.length) return [];
+  const selectedIds = new Set(alreadySelected.map((hotspot) => hotspot.locId));
+  const dropped = hotspots
+    .filter((hotspot) => hotspot.locId && !selectedIds.has(hotspot.locId))
+    .sort((a, b) => hotspotFetchPriority(b, params) - hotspotFetchPriority(a, params));
+  const limit = Math.min(MAX_ROUTE_UNSEEN_PROBES, params.maxStops, dropped.length);
+  if (!limit) return [];
+
+  const probes = [];
+  const probeIds = new Set();
+  const add = (hotspot) => {
+    if (!hotspot || probeIds.has(hotspot.locId) || probes.length >= limit) return;
+    probeIds.add(hotspot.locId);
+    probes.push(hotspot);
+  };
+  for (let band = 0; band < limit; band += 1) {
+    add(dropped.find((hotspot) => (
+      hotspot.routeProgress >= band / limit
+      && hotspot.routeProgress <= (band + 1) / limit
+    )));
+  }
+  dropped.forEach(add);
+  addWarning(`Imported-list matching reserved ${probes.length} additional route hotspots for per-location evidence. Other corridor hotspots may also report species not on your list.`);
+  return probes;
+}
+
+async function rescueLiferHotspots(hotspots, alreadyChosen, center, params) {
+  if (!params.lifeList?.size || !Array.isArray(hotspots)) return [];
+  const chosenIds = new Set(alreadyChosen.map((hotspot) => hotspot.locId));
+  const droppedByLocId = new Map();
+  for (const hotspot of hotspots) {
+    if (!hotspot.locId || !Number.isFinite(hotspot.lat) || !Number.isFinite(hotspot.lng)) continue;
+    if (chosenIds.has(hotspot.locId) || droppedByLocId.has(hotspot.locId)) continue;
+    droppedByLocId.set(hotspot.locId, hotspot);
+  }
+  if (!droppedByLocId.size) return [];
+
+  setStatus("Scanning area", "Checking for unseen species at additional hotspots.");
+  const feedMaxResults = 10000;
+  let feed;
+  try {
+    feed = await apiJson(
+      `/api/ebird/recent?lat=${center.lat}&lng=${center.lng}&dist=${params.radiusKm}&back=${params.recentDays}&maxResults=${feedMaxResults}`,
+      { token: params.token }
+    );
+  } catch {
+    addWarning("Could not check the remaining hotspots for unseen species; imported-list coverage may be incomplete.");
+    return [];
+  }
+  if (Array.isArray(feed) && feed.length >= feedMaxResults) {
+    addWarning("The area has more recently reported species than eBird returns in one request; imported-list coverage may be incomplete.");
+  }
+
+  const rescued = new Map();
+  for (const obs of Array.isArray(feed) ? feed : []) {
+    const hotspot = obs.locId ? droppedByLocId.get(obs.locId) : null;
+    if (!hotspot || rescued.has(obs.locId)) continue;
+    if (!isSeenObservation(obs, params.lifeList)) rescued.set(obs.locId, hotspot);
+  }
+  const limit = 20;
+  if (rescued.size > limit) {
+    addWarning(`Unseen species were reported at ${rescued.size} additional hotspots; only the ${limit} closest were checked.`);
+  }
+  return Array.from(rescued.values())
+    .sort((a, b) => haversineKm(center, a) - haversineKm(center, b))
+    .slice(0, limit);
+}
+
+async function fetchRecentForHotspots(hotspots, params) {
+  const chunks = [];
+  for (let i = 0; i < hotspots.length; i += 4) chunks.push(hotspots.slice(i, i + 4));
+
+  const evidence = [];
+  let failed = 0;
+  for (let i = 0; i < chunks.length; i += 1) {
+    setStatus("Checking current reports", `Checking hotspots ${i * 4 + 1}-${Math.min((i + 1) * 4, hotspots.length)} of ${hotspots.length}.`);
+    const batch = await Promise.all(chunks[i].map((hotspot) => {
+      const url = `/api/ebird/hotspot-recent?locId=${encodeURIComponent(hotspot.locId)}&back=${params.recentDays}`;
+      return apiJson(url, { token: params.token })
+        .then((results) => ({
+          hotspot,
+          observations: (Array.isArray(results) ? results : []).map((obs) => ({
+            ...obs,
+            locId: obs.locId || hotspot.locId,
+            locName: obs.locName || hotspot.locName,
+            lat: Number.isFinite(obs.lat) ? obs.lat : hotspot.lat,
+            lng: Number.isFinite(obs.lng) ? obs.lng : hotspot.lng
+          })),
+          status: "complete"
+        }))
+        .catch((error) => {
+          failed += 1;
+          return { hotspot, observations: [], status: "failed", error };
+        });
+    }));
+    evidence.push(...batch);
+  }
+  if (failed) {
+    addWarning(`${failed} of ${hotspots.length} hotspot lookups failed; affected locations are ranked with lower confidence.`);
+  }
+  return evidence;
+}
+
+function buildCandidatesFromHotspots(evidence, params, routeIndex, areaCenter = null) {
+  return evidence.map((entry) => {
+    const hotspot = entry.hotspot;
+    const observations = entry.observations.filter(isObjectRecord);
+    const species = new Map();
+    const seen = new Set();
+    for (const obs of observations) {
+      const speciesKey = normalizeName(obs.comName || obs.sciName || "Unknown species");
+      if (speciesKey && !species.has(speciesKey)) species.set(speciesKey, obs);
+      const obsKey = obs.subId && obs.speciesCode
+        ? `${obs.subId}|${obs.speciesCode}`
+        : `${speciesKey}|${obs.obsDt || ""}|${obs.howMany ?? ""}`;
+      seen.add(obsKey);
+    }
+    const routeMatch = routeIndex
+      ? Number.isFinite(hotspot.routeDistanceKm) && Number.isFinite(hotspot.routeProgress)
+        ? { distanceKm: hotspot.routeDistanceKm, progress: hotspot.routeProgress }
+        : routeIndex.distanceTo(hotspot)
+      : { distanceKm: haversineKm(areaCenter, hotspot), progress: 0 };
+    const targetMatches = params.targets.map((target) => species.get(target)).filter(Boolean);
+    const liferSpecies = params.lifeList?.size
+      ? Array.from(species.values()).filter((obs) => !isSeenObservation(obs, params.lifeList))
+      : [];
+    const candidate = {
+      id: hotspot.locId,
+      locId: hotspot.locId,
+      name: hotspot.locName || "Unnamed birding location",
+      lat: hotspot.lat,
+      lng: hotspot.lng,
+      observations,
+      seen,
+      species,
+      notable: [],
+      routeDistanceKm: routeMatch.distanceKm,
+      routeProgress: routeMatch.progress,
+      targetMatches,
+      liferSpecies,
+      allTimeSpeciesCount: Number(hotspot.numSpeciesAllTime) || 0,
+      latestObservationDate: hotspot.latestObsDt || "",
+      activityPrior: hotspot.activityPrior || 0,
+      activityObserved: Boolean(hotspot.activityObserved),
+      explicitTargetRescue: Boolean(hotspot.explicitTargetRescue),
+      geographicRepresentative: Boolean(hotspot.geographicRepresentative),
+      discoverySources: ["ebird-hotspot"],
+      evidence: {
+        recent: {
+          status: entry.status,
+          windowDays: params.recentDays,
+          fetchedAt: new Date().toISOString(),
+          observations
+        },
+        seasonal: { status: "unavailable" },
+        notableNearby: { status: "pending", observations: [] }
+      }
+    };
+    candidate.preliminaryScore = preliminaryScore(candidate, params);
+    return candidate;
+  }).sort((a, b) => b.preliminaryScore - a.preliminaryScore);
+}
+
+function preliminaryScore(candidate, params) {
+  const weightedSpecies = weightedUniqueSpecies(candidate.observations);
+  const current = Math.min(weightedSpecies, 90) / 90;
+  const stable = ranking.richnessPrior(candidate.allTimeSpeciesCount);
+  const proximity = Math.max(0, 1 - candidate.routeDistanceKm / Math.max(params.radiusKm, 1));
+  const personal = Math.min(1, candidate.targetMatches.length / 3 + candidate.liferSpecies.length / 10);
+  return current * 0.45 + stable * 0.25 + proximity * 0.15 + personal * 0.15;
 }
 
 async function evaluateDetours(candidates, origin, destination, baseDurationSeconds, params) {
   const practical = [];
+  const ordered = orderRoutingCandidates(candidates, params);
+  const initialCount = Math.min(ordered.length, Math.max(params.maxStops, 15), MAX_INITIAL_DETOURS);
+  let attempted = 0;
   let failed = 0;
-  for (let i = 0; i < candidates.length; i += 1) {
-    const candidate = candidates[i];
-    setStatus("Checking detours", `Evaluating ${i + 1} of ${candidates.length}: ${candidate.name}`);
-    try {
-      const viaRoute = await apiJson(routeUrl("/api/route-via", origin, destination, candidate, params.mapProvider));
-      candidate.viaRoute = viaRoute;
-      candidate.addedMinutes = Math.max(0, (viaRoute.durationSeconds - baseDurationSeconds) / 60);
-      candidate.addedMiles = Math.max(0, miles(viaRoute.distanceMeters - state.route.distanceMeters));
-      if (candidate.addedMinutes <= params.maxDetour) practical.push(candidate);
-    } catch (error) {
-      candidate.routeError = error.message;
-      failed += 1;
+
+  const evaluateRange = async (start, end) => {
+    for (let index = start; index < end; index += 3) {
+      const batch = ordered.slice(index, Math.min(index + 3, end));
+      setStatus("Checking detours", `Evaluating route impact ${index + 1}-${index + batch.length} of up to ${Math.min(ordered.length, MAX_TOTAL_DETOURS)}.`);
+      const results = await Promise.all(batch.map(async (candidate) => {
+        try {
+          const viaRoute = await apiJson(routeUrl("/api/route-via", origin, destination, candidate, params.mapProvider));
+          candidate.viaRoute = viaRoute;
+          candidate.addedMinutes = Math.max(0, (viaRoute.durationSeconds - baseDurationSeconds) / 60);
+          candidate.addedMiles = Math.max(0, miles(viaRoute.distanceMeters - state.route.distanceMeters));
+          return candidate;
+        } catch (error) {
+          candidate.routeError = error.message;
+          failed += 1;
+          return null;
+        }
+      }));
+      attempted += batch.length;
+      practical.push(...results.filter((candidate) => candidate && candidate.addedMinutes <= params.maxDetour));
     }
+  };
+
+  await evaluateRange(0, initialCount);
+  if (practical.length < params.maxStops && attempted < Math.min(ordered.length, MAX_TOTAL_DETOURS)) {
+    const refillEnd = Math.min(ordered.length, MAX_TOTAL_DETOURS);
+    setStatus("Checking more detours", `The first round found ${practical.length} stops within budget; checking additional candidates.`);
+    await evaluateRange(attempted, refillEnd);
   }
   if (failed) {
-    addWarning(`${failed} of ${candidates.length} detour estimates failed and those stops were skipped.`);
+    addWarning(`${failed} of ${attempted} detour estimates failed and those stops were skipped.`);
   }
   return practical;
 }
 
+function orderRoutingCandidates(candidates, params) {
+  const sorted = Array.from(candidates).sort((a, b) => b.preliminaryScore - a.preliminaryScore);
+  const targetCount = Math.min(sorted.length, Math.max(params.maxStops, 15), MAX_INITIAL_DETOURS);
+  const mainLimit = Math.ceil(targetCount * 0.6);
+  const quietLimit = Math.ceil(targetCount * 0.2);
+  const rescueLimit = Math.max(0, targetCount - mainLimit - quietLimit);
+  const ordered = [];
+  const ids = new Set();
+  const addMany = (items, limit) => {
+    if (limit <= 0) return;
+    let added = 0;
+    for (const candidate of items) {
+      if (ids.has(candidate.id)) continue;
+      ids.add(candidate.id);
+      ordered.push(candidate);
+      added += 1;
+      if (added >= limit) break;
+    }
+  };
+  addMany(sorted, mainLimit);
+  addMany(
+    sorted.filter((candidate) => !candidate.species.size)
+      .sort((a, b) => b.allTimeSpeciesCount - a.allTimeSpeciesCount),
+    quietLimit
+  );
+  const geographicLimit = Math.ceil(rescueLimit / 2);
+  const geographicCandidates = sorted.filter((candidate) => (
+    candidate.geographicRepresentative && !ids.has(candidate.id)
+  ));
+  addMany(evenlySpacedItems(
+    geographicCandidates.sort((a, b) => a.routeProgress - b.routeProgress),
+    geographicLimit
+  ), geographicLimit);
+  addMany(
+    sorted.filter((candidate) => (
+      candidate.explicitTargetRescue
+      || candidate.targetMatches.length
+      || candidate.liferSpecies.length
+    )),
+    rescueLimit - geographicLimit
+  );
+  addMany(sorted, sorted.length);
+  return ordered;
+}
+
 async function addNotableObservations(candidates, params) {
+  if (params.mode === "area" && state.areaCenter) {
+    await addAreaNotableObservations(candidates, params);
+    return;
+  }
+  await fetchNotablesPerCandidate(selectNotableCandidates(candidates, params), params);
+}
+
+function selectNotableCandidates(candidates, params) {
   const top = candidates.slice(0, Math.max(params.maxStops, 6));
+  const topIds = new Set(top.map((candidate) => candidate.id));
+  for (const candidate of candidates) {
+    if (candidate.preserved && !topIds.has(candidate.id)) top.push(candidate);
+  }
+  return top;
+}
+
+async function fetchNotablesPerCandidate(list, params) {
   let failed = 0;
-  for (let i = 0; i < top.length; i += 1) {
-    const candidate = top[i];
-    setStatus("Adding notable birds", `Checking notable reports ${i + 1} of ${top.length}.`);
+  for (let i = 0; i < list.length; i += 1) {
+    const candidate = list[i];
+    setStatus("Adding notable birds", `Checking notable reports ${i + 1} of ${list.length}.`);
     try {
       candidate.notable = await apiJson(
         `/api/ebird/notable?lat=${candidate.lat}&lng=${candidate.lng}&dist=${Math.min(params.radiusKm, 10)}&back=${params.recentDays}&maxResults=100`,
         { token: params.token }
       );
+      if (candidate.evidence) {
+        candidate.evidence.notableNearby = {
+          status: "complete",
+          radiusKm: Math.min(params.radiusKm, 10),
+          observations: candidate.notable
+        };
+      }
     } catch {
       candidate.notable = [];
+      if (candidate.evidence) candidate.evidence.notableNearby = { status: "failed", observations: [] };
       failed += 1;
     }
   }
   if (failed) {
-    addWarning(`${failed} of ${top.length} notable-report lookups failed; notable counts may be understated.`);
+    addWarning(`${failed} of ${list.length} notable-report lookups failed; notable counts may be understated.`);
   }
+}
+
+async function addAreaNotableObservations(candidates, params) {
+  const center = state.areaCenter;
+  setStatus("Adding notable birds", "Checking recent notable reports across the area.");
+  const feedDistKm = Math.min(params.radiusKm + 10, 50);
+  const feedMaxResults = 10000;
+  let feed = [];
+  try {
+    feed = await apiJson(
+      `/api/ebird/notable?lat=${center.lat}&lng=${center.lng}&dist=${feedDistKm}&back=${params.recentDays}&maxResults=${feedMaxResults}`,
+      { token: params.token }
+    );
+  } catch {
+    await fetchNotablesPerCandidate(selectNotableCandidates(candidates, params), params);
+    return;
+  }
+  if (Array.isArray(feed) && feed.length >= feedMaxResults) {
+    addWarning("The area has more notable reports than eBird returns in one request; notable counts may be understated.");
+  }
+  const valid = (Array.isArray(feed) ? feed : []).filter((obs) => Number.isFinite(obs.lat) && Number.isFinite(obs.lng));
+  const notableRadiusKm = Math.min(params.radiusKm, 10);
+  const uncovered = [];
+  for (const candidate of candidates) {
+    if (haversineKm(center, candidate) + notableRadiusKm > feedDistKm) {
+      uncovered.push(candidate);
+    } else {
+      candidate.notable = valid.filter((obs) => haversineKm(candidate, obs) <= notableRadiusKm);
+      if (candidate.evidence) {
+        candidate.evidence.notableNearby = {
+          status: "complete",
+          radiusKm: notableRadiusKm,
+          observations: candidate.notable
+        };
+      }
+    }
+  }
+  await fetchNotablesPerCandidate(uncovered, params);
 }
 
 function scoreCandidates(candidates, params) {
+  const targetsEnabled = Boolean(params.targets.length);
+  const unseenEnabled = Boolean(params.lifeList?.size);
+  const personalEnabled = targetsEnabled || unseenEnabled;
+  const enabledMaxima = {
+    practicality: 40,
+    current: 35,
+    stable: 10,
+    ...(personalEnabled ? { personal: 15 } : {})
+  };
   for (const candidate of candidates) {
-    const weightedSpecies = weightedUniqueSpecies(candidate.observations, params.recentDays);
-    const weightedActivity = weightedObservationTotal(candidate.observations, params.recentDays);
-    const weightedNotable = weightedUniqueSpecies(candidate.notable, params.recentDays);
-    const weightedTargets = weightedTargetTotal(candidate.observations, params.targets, params.recentDays);
-    const speciesScore = Math.min(weightedSpecies, 90) / 90 * 45;
-    const activityScore = Math.min(weightedActivity, 250) / 250 * 15;
-    const notableScore = Math.min(weightedNotable, 8) / 8 * 20;
-    const targetScore = Math.min(weightedTargets, 5) / 5 * 15;
-    const liferScore = params.lifeList?.size
-      ? Math.min(candidate.liferSpecies.length, 8) / 8 * 18
-      : 0;
+    const weightedSpecies = weightedUniqueSpecies(candidate.observations);
+    const weightedActivity = weightedObservationTotal(candidate.observations);
+    const weightedTargets = weightedTargetTotal(candidate.observations, params.targets);
+    const weightedUnseen = weightedUnseenTotal(candidate.observations, params.lifeList);
+    const currentScore = Math.min(weightedSpecies, 90) / 90 * 28
+      + Math.min(weightedActivity, 250) / 250 * 7;
+    const stableScore = ranking.richnessPrior(candidate.allTimeSpeciesCount) * 10;
+    const personalScore = ranking.personalValueScore({
+      weightedTargets,
+      weightedUnseen,
+      targetsEnabled,
+      unseenEnabled
+    });
     const practicalityScore = params.mode === "area"
-      ? Math.max(0, 20 * (1 - candidate.routeDistanceKm / Math.max(params.radiusKm, 1)))
+      ? Math.max(0, 40 * (1 - candidate.routeDistanceKm / Math.max(params.radiusKm, 1)))
       : params.maxDetour === 0
-        ? 20
-        : Math.max(0, 20 * (1 - candidate.addedMinutes / Math.max(params.maxDetour, 1)));
+        ? 40
+        : Math.max(0, 40 * (1 - candidate.addedMinutes / Math.max(params.maxDetour, 1)));
+    candidate.scoredWithLifeList = Boolean(params.lifeList?.size);
+    candidate.scoringVersion = SCORING_VERSION;
+    candidate.enabledScoreParts = Object.keys(enabledMaxima);
     candidate.scoreParts = {
-      species: speciesScore,
-      activity: activityScore,
-      notable: notableScore,
-      targets: targetScore,
-      lifers: liferScore,
+      current: currentScore,
+      stable: stableScore,
+      personal: personalScore,
       practicality: practicalityScore
     };
-    candidate.score = Math.round(speciesScore + activityScore + notableScore + targetScore + liferScore + practicalityScore);
+    candidate.score = ranking.normalizedScore(candidate.scoreParts, enabledMaxima);
   }
 }
 
-function weightedUniqueSpecies(observations, recentDays) {
+function weightedUniqueSpecies(observations) {
   const bySpecies = new Map();
   for (const obs of observations) {
     const species = normalizeName(obs.comName || obs.sciName);
     if (!species) continue;
-    const weight = observationFreshnessWeight(obs.obsDt, recentDays);
+    const weight = observationFreshnessWeight(obs.obsDt);
     bySpecies.set(species, Math.max(bySpecies.get(species) || 0, weight));
   }
   return Array.from(bySpecies.values()).reduce((sum, weight) => sum + weight, 0);
 }
 
-function weightedObservationTotal(observations, recentDays) {
-  return observations.reduce((sum, obs) => sum + observationFreshnessWeight(obs.obsDt, recentDays), 0);
+function weightedObservationTotal(observations) {
+  return observations.reduce((sum, obs) => sum + observationFreshnessWeight(obs.obsDt), 0);
 }
 
-function weightedTargetTotal(observations, targets, recentDays) {
+function weightedTargetTotal(observations, targets) {
   if (!targets.length) return 0;
   const targetSet = new Set(targets);
   const byTarget = new Map();
   for (const obs of observations) {
     const species = normalizeName(obs.comName || obs.sciName);
     if (!targetSet.has(species)) continue;
-    const weight = observationFreshnessWeight(obs.obsDt, recentDays);
+    const weight = observationFreshnessWeight(obs.obsDt);
     byTarget.set(species, Math.max(byTarget.get(species) || 0, weight));
   }
   return Array.from(byTarget.values()).reduce((sum, weight) => sum + weight, 0);
 }
 
-function observationFreshnessWeight(obsDt, recentDays) {
-  const observedAt = parseObservationDate(obsDt);
-  if (!observedAt) return 0.5;
-  const today = new Date();
-  const observedDay = new Date(observedAt);
-  const todayUtcMidnight = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate());
-  const observedUtcMidnight = Date.UTC(
-    observedDay.getFullYear(),
-    observedDay.getMonth(),
-    observedDay.getDate()
-  );
-  const ageDays = Math.max(0, Math.floor((todayUtcMidnight - observedUtcMidnight) / 86400000));
-  if (ageDays <= 1) return 1;
-  const searchWindow = Math.max(1, Number(recentDays) || 1);
-  const staleRatio = Math.min(ageDays, searchWindow) / searchWindow;
-  return clamp(1 - staleRatio * 0.75, 0.25, 1);
+function weightedUnseenTotal(observations, lifeList) {
+  if (!lifeList?.size) return 0;
+  const bySpecies = new Map();
+  for (const obs of observations) {
+    if (isSeenObservation(obs, lifeList)) continue;
+    const species = normalizeName(obs.comName || obs.sciName);
+    if (!species) continue;
+    const weight = observationFreshnessWeight(obs.obsDt);
+    bySpecies.set(species, Math.max(bySpecies.get(species) || 0, weight));
+  }
+  return Array.from(bySpecies.values()).reduce((sum, weight) => sum + weight, 0);
+}
+
+function observationFreshnessWeight(obsDt) {
+  return ranking.observationFreshnessWeight(obsDt, { halfLifeDays: 7 });
 }
 
 function parseObservationDate(value) {
@@ -2892,7 +4563,7 @@ function renderRouteTradeoff() {
   const stats = tradeoffStats(state.results);
   const notableText = stats.notableCount ? `, ${stats.notableCount} notable` : "";
   const targetText = stats.targetCount ? `, ${stats.targetCount} target` : "";
-  const liferText = state.lifeList.species.size ? `, ${stats.liferCount} likely lifers` : "";
+  const liferText = state.lifeList.species.size ? `, ${stats.liferCount} unseen recent species` : "";
   const tenMinute = bestWithinBudget(10);
   const tenMinuteText = tenMinute
     ? ` At +10m, ${tenMinute.name} is already on the table.`
@@ -3162,34 +4833,69 @@ function renderResults() {
     return;
   }
 
+  const scale = scoreScale(state.results);
   state.results.forEach((candidate, index) => {
     const node = els.resultTemplate.content.cloneNode(true);
     const card = node.querySelector(".stop-card");
     card.dataset.id = candidate.id;
     if (candidate.id === state.selectedId) card.classList.add("is-selected");
     if (isPinned(candidate.id)) card.classList.add("is-pinned");
-    node.querySelector(".rank").textContent = String(index + 1);
+    const rank = node.querySelector(".rank");
+    rank.textContent = String(index + 1);
+    rank.title = `Rank ${index + 1} of ${state.results.length} by score`;
     node.querySelector(".stop-name").textContent = candidate.name;
     node.querySelector(".stop-preview").textContent = speciesPreview(candidate);
-    node.querySelector(".stop-chips").innerHTML = candidateChips(candidate);
-    node.querySelector(".score-pill").textContent = candidate.score;
+    node.querySelector(".stop-chips").innerHTML = candidateChips(candidate, index);
+    const scorePill = node.querySelector(".score-pill");
+    scorePill.querySelector("b").textContent = candidate.score;
+    scorePill.querySelector("small").textContent = candidate.scoringVersion === SCORING_VERSION ? "score" : "legacy";
+    scorePill.title = scoreTooltip(candidate, isArea, scale);
     node.querySelector(".stop-reason p").textContent = candidateReasonText(candidate, isArea);
     const detourWrap = node.querySelector(".metric-detour-wrap");
     const offrouteWrap = node.querySelector(".metric-offroute-wrap");
+    const speciesWrap = node.querySelector(".metric-species-wrap");
+    const notableWrap = node.querySelector(".metric-notable-wrap");
+    const targetsWrap = node.querySelector(".metric-targets-wrap");
+    const recentDays = state.params?.recentDays || 14;
     if (isArea) {
-      detourWrap.title = "Distance from search center";
-      offrouteWrap.title = "Search radius";
-      node.querySelector(".metric-detour").textContent = `${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi`;
+      const centerDistanceMiles = formatMiles(kmToMiles(candidate.routeDistanceKm));
+      node.querySelector(".metric-detour").textContent = `${centerDistanceMiles} mi`;
       node.querySelector(".metric-offroute").textContent = `${state.params.radiusKm} km`;
+      setMetricTooltip(
+        detourWrap,
+        `Distance from center: ${centerDistanceMiles} mi in a straight line from the search center to this stop.`
+      );
+      setMetricTooltip(
+        offrouteWrap,
+        `Search radius: stops were searched for within ${state.params.radiusKm} km of the center.`
+      );
     } else {
-      detourWrap.title = "Added drive time";
-      offrouteWrap.title = "Approx. distance off route";
       node.querySelector(".metric-detour").textContent = `+${Math.round(candidate.addedMinutes)}m`;
       node.querySelector(".metric-offroute").textContent = `${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi`;
+      setMetricTooltip(
+        detourWrap,
+        `Added drive time: about ${Math.round(candidate.addedMinutes)} extra minutes for a route via this stop instead of the direct route.`
+      );
+      setMetricTooltip(
+        offrouteWrap,
+        `Distance off route: about ${formatMiles(kmToMiles(candidate.routeDistanceKm))} miles from the nearest point on the complete route geometry.`
+      );
     }
     node.querySelector(".metric-species").textContent = candidate.species.size;
     node.querySelector(".metric-notable").textContent = uniqueNotableCount(candidate);
     node.querySelector(".metric-targets").textContent = candidate.targetMatches.length;
+    setMetricTooltip(
+      speciesWrap,
+      `Species reported recently: ${candidate.species.size} distinct ${pluralize("species", candidate.species.size)} reported at this stop in the last ${recentDays} ${pluralize("day", recentDays)}. This is recent evidence, not an encounter prediction.`
+    );
+    setMetricTooltip(
+      notableWrap,
+      `Nearby notable species: ${uniqueNotableCount(candidate)} distinct ${pluralize("species", uniqueNotableCount(candidate))} from eBird's notable reports within ${Math.min(state.params.radiusKm, 10)} km in the last ${recentDays} ${pluralize("day", recentDays)}.`
+    );
+    setMetricTooltip(
+      targetsWrap,
+      `Target matches: ${candidate.targetMatches.length} ${pluralize("species", candidate.targetMatches.length)} from your target list reported at this stop in the last ${recentDays} ${pluralize("day", recentDays)}.`
+    );
     const links = candidateLinks(candidate);
     const pin = node.querySelector(".stop-pin");
     const compareButton = node.querySelector(".compare-toggle");
@@ -3214,13 +4920,21 @@ function renderResults() {
     dir.setAttribute("aria-label", `Directions to ${candidate.name}`);
     ebird.setAttribute("aria-label", `${candidate.name} on eBird`);
     const mainButton = node.querySelector(".stop-main");
-    mainButton.setAttribute("aria-label", `View ${candidate.name}`);
+    mainButton.setAttribute("aria-label", `View ${candidate.name}, rank ${index + 1} of ${state.results.length}, score ${candidate.score} of ${scale.max}`);
     mainButton.addEventListener("click", () => selectCandidate(candidate.id));
+    setupCandidateSpeciesPreviews(card);
     els.resultsList.appendChild(node);
   });
 
   renderComparison();
   if (window.lucide) window.lucide.createIcons();
+}
+
+function setMetricTooltip(element, text) {
+  element.dataset.tooltip = text;
+  element.setAttribute("role", "group");
+  element.setAttribute("aria-label", text);
+  element.tabIndex = 0;
 }
 
 function renderMarkers() {
@@ -3242,12 +4956,19 @@ function selectCandidate(id) {
 function renderDetails(candidate) {
   const isArea = state.params?.mode === "area";
   const species = groupSpecies(candidate).slice(0, 80);
-  const notable = candidate.notable.slice(0, 20);
+  const notable = prioritizedNotableReports(candidate, 20);
   const lifers = candidate.liferSpecies.slice(0, 30);
+  const unseenNearbyNotables = unseenNotableSpecies(candidate);
+  const nearbyRadiusKm = notableSearchRadiusKm();
   const links = candidateLinks(candidate);
   const offRouteMi = formatMiles(kmToMiles(candidate.routeDistanceKm));
   const pinned = isPinned(candidate.id);
   const pinDisabled = isArea || (!pinned && state.pinnedIds.length >= 5);
+  const evidenceNote = candidate.evidence?.recent?.status === "failed"
+    ? "Recent reports could not be loaded for this hotspot; its score has lower confidence."
+    : candidate.species.size
+      ? `These are reports from the selected ${state.params?.recentDays || 14}-day window, not encounter predictions.`
+      : `No species reports were returned for this hotspot in the selected ${state.params?.recentDays || 14}-day window.`;
 
   els.detailsContent.innerHTML = `
     <h3>${escapeHtml(candidate.name)}</h3>
@@ -3255,13 +4976,15 @@ function renderDetails(candidate) {
     <section class="reason-line">
       <h4>Why This Stop?</h4>
       <p>${escapeHtml(candidateReasonText(candidate, isArea))}</p>
+      <p><small>${escapeHtml(evidenceNote)}</small></p>
     </section>
     <div class="detail-grid">
       <div><b>${candidate.species.size}</b><small>recent species</small></div>
       <div><b>${candidate.observations.length}</b><small>records</small></div>
       <div><b>${uniqueNotableCount(candidate)}</b><small>notable species</small></div>
       <div><b>${candidate.targetMatches.length}</b><small>target matches</small></div>
-      <div><b>${candidate.liferSpecies.length}</b><small>likely lifers</small></div>
+      <div><b>${candidate.liferSpecies.length}</b><small>unseen recent species</small></div>
+      ${state.lifeList.species.size ? `<div><b>${unseenNearbyNotables.length}</b><small>unseen nearby</small></div>` : ""}
     </div>
     <section class="score-line">
       <h4>${isArea ? "Area position" : "Route impact"}</h4>
@@ -3279,17 +5002,12 @@ function renderDetails(candidate) {
     <section class="score-line">
       <h4>Score</h4>
       <div class="score-bars">
-        ${scoreRow("Species", candidate.scoreParts.species, 45)}
-        ${scoreRow("Activity", candidate.scoreParts.activity, 15)}
-        ${scoreRow("Notable", candidate.scoreParts.notable, 20)}
-        ${scoreRow("Targets", candidate.scoreParts.targets, 15)}
-        ${scoreRow("Lifers", candidate.scoreParts.lifers, 18)}
-        ${scoreRow(isArea ? "Proximity" : "Route", candidate.scoreParts.practicality, 20)}
+        ${scoreComponents(candidate, isArea).map((part) => scoreRow(part.label, part.value, part.max)).join("")}
       </div>
     </section>
     ${lifers.length ? `
       <section class="species-list">
-        <h4>Likely Lifers</h4>
+        <h4>Unseen Species Reported Recently</h4>
         <ul>${lifers.map((obs) => `<li>${escapeHtml(obs.comName || obs.sciName || "")} <small>${escapeHtml(obs.obsDt || "")}</small></li>`).join("")}</ul>
       </section>
     ` : ""}
@@ -3301,14 +5019,22 @@ function renderDetails(candidate) {
     ` : ""}
     ${notable.length ? `
       <section class="species-list">
-        <h4>Notable Reports</h4>
-        <ul>${notable.map((obs) => `<li>${escapeHtml(obs.comName)} <small>${escapeHtml(obs.obsDt || "")}</small></li>`).join("")}</ul>
+        <h4>Nearby Notable Reports</h4>
+        <p class="species-list-note">Reported within ${nearbyRadiusKm} km of this stop; reports may be from other nearby locations.</p>
+        <ul>${notable.map((obs) => `<li>${escapeHtml(obs.comName || obs.sciName || "")} <small>${escapeHtml(obs.obsDt || "")}</small>${notableUnseenBadge(obs)}</li>`).join("")}</ul>
       </section>
     ` : ""}
-    <section class="species-list">
-      <h4>Recent Species <small>(${candidate.species.size} grouped by common name)</small></h4>
-      <ul>${species.map((sp) => `<li>${escapeHtml(sp.name)} <small>×${sp.count}${sp.latest ? ` · ${escapeHtml(sp.latest)}` : ""}</small></li>`).join("")}</ul>
-    </section>
+    ${species.length ? `
+      <section class="species-list">
+        <h4>Species Reported Recently <small>(${candidate.species.size} grouped by common name)</small></h4>
+        <ul>${species.map((sp) => `<li>${escapeHtml(sp.name)} <small>×${sp.count}${sp.latest ? ` · ${escapeHtml(sp.latest)}` : ""}</small></li>`).join("")}</ul>
+      </section>
+    ` : `
+      <section class="species-list">
+        <h4>No Recent Species List</h4>
+        <p>${escapeHtml(evidenceNote)}</p>
+      </section>
+    `}
     <div class="detail-actions">
       ${isArea ? "" : `<button type="button" class="detail-pin" aria-pressed="${pinned}" ${pinDisabled ? "disabled" : ""}>${pinned ? "Remove from itinerary" : pinDisabled ? "Itinerary full" : "Pin to itinerary"}</button>`}
       <a href="${links.mapsUrl}" target="_blank" rel="noreferrer">Directions</a>
@@ -3403,7 +5129,7 @@ function renderComparison() {
       `).join("")}
       ${comparisonRow("Detour", compared.map(compareDetourCell))}
       ${comparisonRow("Species Count", compared.map((candidate) => `${candidate.species.size} species<br><small>${candidate.observations.length} records</small>`))}
-      ${comparisonRow("Notables", compared.map(compareNotablesCell))}
+      ${comparisonRow("Nearby Notables", compared.map(compareNotablesCell))}
       ${comparisonRow("Targets", compared.map(compareTargetsCell))}
       ${comparisonRow("Observation Freshness", compared.map(compareFreshnessCell))}
       ${comparisonRow("Score Breakdown", compared.map(compareScoreCell))}
@@ -3438,9 +5164,12 @@ function compareDetourCell(candidate) {
 }
 
 function compareNotablesCell(candidate) {
-  const notableNames = uniqueObservationNames(candidate.notable).slice(0, 4);
+  const prioritizedNotables = prioritizedNotableReports(candidate, candidate.notable.length);
+  const notableNames = uniqueObservationNames(prioritizedNotables).slice(0, 4);
+  const unseenCount = unseenNotableSpecies(candidate).length;
   return `
-    <b>${uniqueNotableCount(candidate)} notable</b>
+    <b>${uniqueNotableCount(candidate)} nearby notable</b>
+    ${state.lifeList.species.size ? `<small>${unseenCount} unseen in your life list</small>` : ""}
     <small>${notableNames.length ? notableNames.map(escapeHtml).join(", ") : "No notable reports loaded"}</small>
   `;
 }
@@ -3465,16 +5194,11 @@ function compareFreshnessCell(candidate) {
 }
 
 function compareScoreCell(candidate) {
-  const routeLabel = state.params?.mode === "area" ? "Proximity" : "Route";
+  const isArea = state.params?.mode === "area";
   return `
     <b>${candidate.score} total</b>
     <div class="comparison-score">
-      ${compactScorePart("Species", candidate.scoreParts.species, 45)}
-      ${compactScorePart("Activity", candidate.scoreParts.activity, 15)}
-      ${compactScorePart("Notable", candidate.scoreParts.notable, 20)}
-      ${compactScorePart("Targets", candidate.scoreParts.targets, 15)}
-      ${compactScorePart("Lifers", candidate.scoreParts.lifers, 18)}
-      ${compactScorePart(routeLabel, candidate.scoreParts.practicality, 20)}
+      ${scoreComponents(candidate, isArea).map((part) => compactScorePart(part.label, part.value, part.max)).join("")}
     </div>
   `;
 }
@@ -3494,6 +5218,63 @@ function updateVisibleDetails() {
   if (els.detailsPanel.hidden || !state.selectedId) return;
   const candidate = state.results.find((item) => item.id === state.selectedId);
   if (candidate) renderDetails(candidate);
+}
+
+const LEGACY_SCORE_COMPONENTS = [
+  { key: "species", label: "Species", max: 45 },
+  { key: "activity", label: "Activity", max: 15 },
+  { key: "notable", label: "Notable", max: 20 },
+  { key: "targets", label: "Targets", max: 15 },
+  { key: "lifers", label: "Lifers", max: 18 },
+  { key: "practicality", label: "Route", areaLabel: "Proximity", max: 20 }
+];
+
+const SCORE_COMPONENTS = [
+  { key: "current", label: "Recent evidence", max: 35 },
+  { key: "stable", label: "Hotspot history", max: 10 },
+  { key: "personal", label: "Personal value", max: 15 },
+  { key: "practicality", label: "Route", areaLabel: "Proximity", max: 40 }
+];
+
+function scoreComponents(candidate, isArea) {
+  const parts = candidate.scoreParts || {};
+  const components = candidate.scoringVersion === SCORING_VERSION
+    ? SCORE_COMPONENTS.filter((part) => candidate.enabledScoreParts?.includes(part.key))
+    : LEGACY_SCORE_COMPONENTS;
+  return components.map((part) => ({
+    key: part.key,
+    label: isArea && part.areaLabel ? part.areaLabel : part.label,
+    max: part.max,
+    value: Number.isFinite(parts[part.key]) ? parts[part.key] : 0
+  }));
+}
+
+// Read from the scoring context each candidate was scored in, not the current life
+// list: saved trips keep the scores they were built with, so a life list imported or
+// cleared since then would otherwise put the pill on a scale its own numbers can
+// exceed. Trips saved before that context was recorded fall back to the scores
+// themselves, which can understate the scale but can never contradict it.
+function scoreScale(candidates) {
+  const current = candidates.every((candidate) => candidate.scoringVersion === SCORING_VERSION);
+  if (current) return { includesLifers: false, max: 100, legacy: false };
+  const includesLifers = candidates.some((candidate) => (
+    typeof candidate.scoredWithLifeList === "boolean"
+      ? candidate.scoredWithLifeList
+      : Number(candidate.scoreParts?.lifers) > 0
+  ));
+  const max = LEGACY_SCORE_COMPONENTS.reduce(
+    (sum, part) => sum + (part.key === "lifers" && !includesLifers ? 0 : part.max),
+    0
+  );
+  return { includesLifers, max, legacy: true };
+}
+
+function scoreTooltip(candidate, isArea, scale) {
+  const breakdown = scoreComponents(candidate, isArea)
+    .filter((part) => scale.includesLifers || part.key !== "lifers")
+    .map((part) => `${part.label} ${part.value.toFixed(1)}/${part.max}`)
+    .join(", ");
+  return `${candidate.scoringVersion === SCORING_VERSION ? "Score" : "Legacy score"} ${candidate.score} of ${scale.max} — ${breakdown}`;
 }
 
 function scoreRow(label, value, max) {
@@ -3521,7 +5302,10 @@ function speciesPreview(candidate) {
     .slice(0, 4)
     .map((obs) => obs.comName || obs.sciName)
     .filter(Boolean);
-  return names.length ? names.join(", ") : "Recent observations available";
+  if (names.length) return names.join(", ");
+  return candidate.evidence?.recent?.status === "failed"
+    ? "Recent reports unavailable"
+    : "No reports in the selected window";
 }
 
 function candidateReasonText(candidate, isArea = state.params?.mode === "area") {
@@ -3529,17 +5313,31 @@ function candidateReasonText(candidate, isArea = state.params?.mode === "area") 
   const targetCount = candidate.targetMatches.length;
   const liferCount = candidate.liferSpecies.length;
   const notableCount = uniqueNotableCount(candidate);
+  const unseenNearbyCount = unseenNotableSpecies(candidate).length;
+  const otherNearbyNotableCount = Math.max(0, notableCount - unseenNearbyCount);
 
   if (targetCount) reasons.push(`${targetCount} ${pluralize("target", targetCount)}`);
-  if (liferCount) reasons.push(`${liferCount} likely ${pluralize("lifer", liferCount)}`);
-  if (notableCount === 1) {
-    reasons.push("recent rarity");
-  } else if (notableCount > 1) {
-    reasons.push(`${notableCount} recent rarities`);
+  if (liferCount) reasons.push(`${liferCount} recently reported ${pluralize("species", liferCount)} not on your list`);
+  if (unseenNearbyCount) reasons.push(`${unseenNearbyCount} unseen ${pluralize("notable", unseenNearbyCount)} nearby`);
+  if (otherNearbyNotableCount) {
+    if (unseenNearbyCount) {
+      const rarityLabel = otherNearbyNotableCount === 1 ? "rarity" : "rarities";
+      reasons.push(`${otherNearbyNotableCount} other nearby recent ${rarityLabel}`);
+    } else if (otherNearbyNotableCount === 1) {
+      reasons.push("nearby recent rarity");
+    } else {
+      reasons.push(`${otherNearbyNotableCount} nearby recent rarities`);
+    }
   }
 
   if (!reasons.length) {
-    reasons.push(`${candidate.species.size} recent ${pluralize("species", candidate.species.size)}`);
+    if (candidate.species.size) {
+      reasons.push(`${candidate.species.size} recently reported ${pluralize("species", candidate.species.size)}`);
+    } else if (candidate.allTimeSpeciesCount) {
+      reasons.push(`established hotspot with ${candidate.allTimeSpeciesCount} species reported all time`);
+    } else {
+      reasons.push("known public eBird hotspot");
+    }
   }
 
   if (isArea) {
@@ -3558,13 +5356,126 @@ function pluralize(noun, count) {
   return count === 1 ? noun : `${noun}s`;
 }
 
-function candidateChips(candidate) {
+function candidateChips(candidate, index) {
   const chips = [];
+  if (candidate.evidence?.recent?.status === "failed") {
+    chips.push('<span class="stop-chip">limited evidence</span>');
+  } else if (!candidate.species.size) {
+    chips.push('<span class="stop-chip">no recent reports</span>');
+  }
   if (candidate.targetMatches.length) chips.push(`<span class="stop-chip chip-target">${candidate.targetMatches.length} target</span>`);
-  if (candidate.liferSpecies.length) chips.push(`<span class="stop-chip chip-lifer">${candidate.liferSpecies.length} lifer</span>`);
-  if (uniqueNotableCount(candidate)) chips.push(`<span class="stop-chip chip-notable">${uniqueNotableCount(candidate)} notable</span>`);
+  const liferNames = uniqueObservationNames(candidate.liferSpecies);
+  if (liferNames.length) {
+    chips.push(candidateSpeciesPreview({
+      count: liferNames.length,
+      index,
+      kind: "lifer",
+      label: "not on your list",
+      names: liferNames,
+      title: "Unseen recent species at this stop"
+    }));
+  }
+
+  const unseenNearby = unseenNotableSpecies(candidate);
+  const unseenNearbyNames = uniqueObservationNames(unseenNearby);
+  const unseenNearbyKeys = new Set(unseenNearbyNames.map(normalizeName));
+  const otherNearbyNames = uniqueObservationNames(candidate.notable.filter((obs) => {
+    const key = normalizeName(obs.comName || obs.sciName || obs.speciesCode);
+    return key && !unseenNearbyKeys.has(key);
+  }));
+
+  if (unseenNearbyNames.length) {
+    chips.push(candidateSpeciesPreview({
+      count: unseenNearbyNames.length,
+      index,
+      kind: "unseen-nearby",
+      label: "unseen nearby",
+      names: unseenNearbyNames,
+      title: "Unseen nearby notables"
+    }));
+  }
+  if (otherNearbyNames.length) {
+    chips.push(candidateSpeciesPreview({
+      count: otherNearbyNames.length,
+      index,
+      kind: "notable",
+      label: unseenNearbyNames.length ? "other notable nearby" : "notable nearby",
+      names: otherNearbyNames,
+      title: unseenNearbyNames.length ? "Other nearby notables" : "Nearby notables"
+    }));
+  }
   if (isHotspot(candidate)) chips.push('<span class="stop-chip chip-hotspot">top hotspot</span>');
   return chips.join("");
+}
+
+function candidateSpeciesPreview({ count, index, kind, label, names, title }) {
+  const previewId = `stop-${index}-${kind}-preview`;
+  return `
+    <div class="stop-chip-menu preview-${kind}">
+      <button
+        type="button"
+        class="stop-chip chip-${kind}"
+        aria-describedby="${previewId}"
+        aria-label="${count} ${escapeHtml(label)}. Show ${escapeHtml(title.toLowerCase())}."
+      >${count} ${escapeHtml(label)}</button>
+      <div id="${previewId}" class="stop-chip-dropdown" role="tooltip">
+        <strong>${escapeHtml(title)}</strong>
+        <small>${count} species</small>
+        <ul>${names.map((name) => `<li>${escapeHtml(name)}</li>`).join("")}</ul>
+      </div>
+    </div>`;
+}
+
+function setupCandidateSpeciesPreviews(card) {
+  card.querySelectorAll(".stop-chip-menu").forEach((menu) => {
+    const trigger = menu.querySelector("button.stop-chip");
+    const activate = () => {
+      card.classList.add("has-active-species-preview");
+      positionCandidateSpeciesPreview(menu);
+    };
+    const deactivate = () => {
+      if (!card.querySelector(".stop-chip-menu:hover, .stop-chip-menu:focus-within")) {
+        card.classList.remove("has-active-species-preview");
+      }
+    };
+    menu.addEventListener("pointerenter", activate);
+    menu.addEventListener("pointerleave", deactivate);
+    trigger?.addEventListener("focus", activate);
+    trigger?.addEventListener("blur", () => requestAnimationFrame(deactivate));
+  });
+}
+
+function positionCandidateSpeciesPreview(menu) {
+  const dropdown = menu.querySelector(".stop-chip-dropdown");
+  if (!dropdown || !els.resultsList) return;
+  menu.classList.remove("opens-up");
+  const triggerRect = menu.getBoundingClientRect();
+  const resultsRect = els.resultsList.getBoundingClientRect();
+  const gap = 7;
+  const edgePadding = 8;
+  const dropdownWidth = Math.max(0, Math.min(280, resultsRect.width - edgePadding * 2));
+  const dropdownLeft = Math.min(
+    Math.max(triggerRect.left, resultsRect.left + edgePadding),
+    resultsRect.right - edgePadding - dropdownWidth
+  );
+  const desiredHeight = Math.min(dropdown.scrollHeight, 250);
+  const spaceBelow = Math.max(0, resultsRect.bottom - triggerRect.bottom - gap - edgePadding);
+  const spaceAbove = Math.max(0, triggerRect.top - resultsRect.top - gap - edgePadding);
+  const opensUp = spaceBelow < desiredHeight && spaceAbove > spaceBelow;
+  const availableHeight = Math.max(80, opensUp ? spaceAbove : spaceBelow);
+  const dropdownOffset = dropdownLeft - triggerRect.left;
+  const bridgeLeft = Math.min(0, dropdownOffset);
+  const bridgeRight = Math.max(triggerRect.width, dropdownOffset + dropdownWidth);
+  menu.classList.toggle("opens-up", opensUp);
+  menu.style.setProperty("--stop-chip-dropdown-left", `${dropdownOffset}px`);
+  menu.style.setProperty("--stop-chip-dropdown-width", `${dropdownWidth}px`);
+  menu.style.setProperty("--stop-chip-dropdown-max-height", `${Math.min(250, availableHeight)}px`);
+  menu.style.setProperty("--stop-chip-bridge-left", `${bridgeLeft}px`);
+  menu.style.setProperty("--stop-chip-bridge-width", `${bridgeRight - bridgeLeft}px`);
+  menu.style.setProperty("--stop-chip-bridge-trigger-left", `${-bridgeLeft}px`);
+  menu.style.setProperty("--stop-chip-bridge-trigger-right", `${triggerRect.width - bridgeLeft}px`);
+  menu.style.setProperty("--stop-chip-bridge-dropdown-left", `${dropdownOffset - bridgeLeft}px`);
+  menu.style.setProperty("--stop-chip-bridge-dropdown-right", `${dropdownOffset + dropdownWidth - bridgeLeft}px`);
 }
 
 function isHotspot(candidate) {
@@ -3573,6 +5484,49 @@ function isHotspot(candidate) {
 
 function uniqueNotableCount(candidate) {
   return new Set(candidate.notable.map((obs) => normalizeName(obs.comName || obs.sciName))).size;
+}
+
+function unseenNotableSpecies(candidate, lifeList = state.lifeList.species) {
+  if (!lifeList?.size) return [];
+  const unseen = new Map();
+  for (const obs of candidate.notable || []) {
+    if (isSeenObservation(obs, lifeList)) continue;
+    const key = normalizeName(obs.comName || obs.sciName || obs.speciesCode);
+    if (key && !unseen.has(key)) unseen.set(key, obs);
+  }
+  return Array.from(unseen.values());
+}
+
+function prioritizedNotableReports(candidate, limit) {
+  const observations = candidate.notable || [];
+  if (!state.lifeList.species.size) return observations.slice(0, limit);
+
+  const prioritizedIndexes = new Set();
+  const unseenSpecies = new Set();
+  const prioritized = [];
+  observations.forEach((obs, index) => {
+    if (isSeenObservation(obs, state.lifeList.species)) return;
+    const key = normalizeName(obs.comName || obs.sciName || obs.speciesCode);
+    if (!key || unseenSpecies.has(key)) return;
+    unseenSpecies.add(key);
+    prioritizedIndexes.add(index);
+    prioritized.push(obs);
+  });
+
+  observations.forEach((obs, index) => {
+    if (!prioritizedIndexes.has(index)) prioritized.push(obs);
+  });
+  return prioritized.slice(0, limit);
+}
+
+function notableUnseenBadge(obs) {
+  if (!state.lifeList.species.size || isSeenObservation(obs, state.lifeList.species)) return "";
+  return '<span class="unseen-nearby-badge">Unseen nearby</span>';
+}
+
+function notableSearchRadiusKm(params = state.params) {
+  const radius = Number(params?.radiusKm);
+  return Math.min(Number.isFinite(radius) && radius > 0 ? radius : 10, 10);
 }
 
 function uniqueObservationNames(observations) {
@@ -3632,10 +5586,32 @@ function observationAliases(obs) {
 }
 
 function renderInsights() {
+  updateResultsActions();
   const liveDetour = clamp(Number(els.maxDetour.value || 60), 0, 240);
   const liveTargets = parseTargetsInput();
   const canAttemptSearch = shouldAttemptEbirdSearch();
   const lifeListCount = state.lifeList.displayNames.length || state.lifeList.species.size;
+  if (state.mode === "species") {
+    const radius = state.params?.radiusKm || els.radiusKm.value || 25;
+    const recent = state.params?.recentDays || els.recentDays.value || 14;
+    const speciesLabel = state.species?.comName || els.speciesQuery.value.trim();
+    els.tripPlanSummary.textContent = speciesLabel
+      ? `${speciesLabel}: mapping recent sightings within ${radius} km${state.areaCenter ? ` of ${shortName(state.areaCenter.name) || ""}` : ""}.`
+      : "Pick a species and a location to map every recent sighting nearby.";
+    els.targetSpeciesSummary.textContent = state.species?.sciName
+      ? `${state.species.comName} (${state.species.sciName}).`
+      : speciesLabel
+        ? `Showing matches for "${speciesLabel}".`
+        : "Choose a species to begin.";
+    if (state.sightingLocations.length) {
+      els.sightingSummary.textContent = `${state.sightingLocations.length} ${pluralize("location", state.sightingLocations.length)} with recent sightings in the last ${recent} days (latest observation per location).`;
+    } else {
+      els.sightingSummary.textContent = canAttemptSearch
+        ? "Recent sightings appear after you map a species."
+        : "Add a personal eBird token in Settings (the gear icon) to map recent species sightings.";
+    }
+    return;
+  }
   if (state.mode === "area") {
     els.tripPlanSummary.textContent = state.areaCenter
       ? `${state.routeName}: searching hotspots within ${state.params?.radiusKm || els.radiusKm.value || 25} km.`
@@ -3666,11 +5642,15 @@ function renderInsights() {
     const speciesCount = state.results.reduce((sum, candidate) => sum + candidate.species.size, 0);
     const notableCount = state.results.reduce((sum, candidate) => sum + uniqueNotableCount(candidate), 0);
     const liferCount = uniqueLiferCount(state.results);
-    els.sightingSummary.textContent = `${speciesCount} recent species across ${state.results.length} ranked stops, including ${notableCount} notable species${state.lifeList.species.size ? ` and ${liferCount} likely lifers` : ""}.`;
+    const unseenNearbyCount = uniqueUnseenNotableCount(state.results);
+    const unseenNearbyText = state.lifeList.species.size && unseenNearbyCount
+      ? ` and ${unseenNearbyCount} unseen species in nearby notable reports`
+      : "";
+    els.sightingSummary.textContent = `${speciesCount} recently reported species across ${state.results.length} ranked stops, including ${notableCount} nearby notable species${state.lifeList.species.size ? ` and ${liferCount} species not on your imported list` : ""}${unseenNearbyText}.`;
   } else {
     const searchedWithoutToken = state.mode === "area" ? state.areaCenter && !canAttemptSearch : state.route && !canAttemptSearch;
     els.sightingSummary.textContent = searchedWithoutToken
-      ? `${state.mode === "area" ? "Area" : "Route"} is ready. Add an eBird token to load recent sightings and notable reports.`
+      ? `${state.mode === "area" ? "Area" : "Route"} is ready. Add a personal eBird token in Settings (the gear icon) to load recent sightings and notable reports.`
       : "Recent eBird activity and notable reports appear after search.";
   }
 }
@@ -3764,6 +5744,17 @@ function uniqueLiferCount(candidates) {
     }
   }
   return seen.size;
+}
+
+function uniqueUnseenNotableCount(candidates) {
+  const unseen = new Set();
+  for (const candidate of candidates) {
+    for (const obs of unseenNotableSpecies(candidate)) {
+      const key = normalizeName(obs.comName || obs.sciName || obs.speciesCode);
+      if (key) unseen.add(key);
+    }
+  }
+  return unseen.size;
 }
 
 function reportOrderedStops(isArea) {
@@ -3941,7 +5932,7 @@ function buildTargetCoverageBlock() {
   if (!targets.length) {
     return `
       <h2>Species targets</h2>
-      <p class="report-note">No target species were entered for this search. Use likely lifers, notable birds, and recent species lists as field priorities.</p>`;
+      <p class="report-note">No target species were entered for this search. Use unseen recent reports, notable birds, and recent species lists as field priorities.</p>`;
   }
 
   const matchedTargets = targets.map((target) => {
@@ -4007,6 +5998,7 @@ function renderReport() {
 
 function buildReportMarkup() {
   const p = state.params;
+  if (p.mode === "species") return buildSpeciesReportMarkup();
   const route = state.route;
   const isArea = p.mode === "area";
   const generated = new Date().toLocaleString();
@@ -4053,7 +6045,8 @@ function buildReportMarkup() {
   const stopsBlock = state.results.length
     ? `<h2>Ranked stops</h2>${state.results.map((candidate, index) => {
         const species = groupSpecies(candidate).slice(0, 40);
-        const notable = candidate.notable.slice(0, 12);
+        const notable = prioritizedNotableReports(candidate, 12);
+        const unseenNearbyCount = unseenNotableSpecies(candidate).length;
         const links = candidateLinks(candidate);
         return `
           <div class="report-stop">
@@ -4064,9 +6057,9 @@ function buildReportMarkup() {
                 ? `~${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi from center ·`
                 : `+${Math.round(candidate.addedMinutes)} min · +${candidate.addedMiles.toFixed(1)} mi detour · ~${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi off route ·`}
               ${candidate.species.size} species ·
-              ${uniqueNotableCount(candidate)} notable ·
+              ${uniqueNotableCount(candidate)} nearby notable ·
               ${candidate.targetMatches.length} targets ·
-              ${candidate.liferSpecies.length} likely lifers
+              ${candidate.liferSpecies.length} unseen recent species at stop${state.lifeList.species.size ? ` · ${unseenNearbyCount} unseen nearby` : ""}
             </p>
             <p class="report-stop-reason">${escapeHtml(candidateReasonText(candidate, isArea))}</p>
             <dl class="report-stop-route">
@@ -4075,8 +6068,8 @@ function buildReportMarkup() {
               ${param("eBird", `<a href="${escapeHtml(links.ebirdUrl)}">${escapeHtml(links.ebirdUrl)}</a>`, { raw: true })}
             </dl>
             ${candidate.targetMatches.length ? `<h4>Species targets</h4><ul>${candidate.targetMatches.map((obs) => `<li>${escapeHtml(obs.comName || obs.sciName || "")}${obs.obsDt ? ` <small>${escapeHtml(obs.obsDt)}</small>` : ""}</li>`).join("")}</ul>` : ""}
-            ${candidate.liferSpecies.length ? `<h4>Likely lifers</h4><ul>${candidate.liferSpecies.slice(0, 20).map((obs) => `<li>${escapeHtml(obs.comName || obs.sciName || "")}</li>`).join("")}</ul>` : ""}
-            ${notable.length ? `<h4>Notable</h4><ul>${notable.map((obs) => `<li>${escapeHtml(obs.comName || obs.sciName || "")} <small>${escapeHtml(obs.obsDt || "")}</small></li>`).join("")}</ul>` : ""}
+            ${candidate.liferSpecies.length ? `<h4>Unseen species reported recently at this stop</h4><ul>${candidate.liferSpecies.slice(0, 20).map((obs) => `<li>${escapeHtml(obs.comName || obs.sciName || "")}</li>`).join("")}</ul>` : ""}
+            ${notable.length ? `<h4>Nearby notable reports (within ${notableSearchRadiusKm(p)} km)</h4><ul>${notable.map((obs) => `<li>${escapeHtml(obs.comName || obs.sciName || "")} <small>${escapeHtml(obs.obsDt || "")}</small>${state.lifeList.species.size && !isSeenObservation(obs, state.lifeList.species) ? " — unseen nearby" : ""}</li>`).join("")}</ul>` : ""}
             <h4>Recent species</h4>
             <ul>${species.map((sp) => `<li>${escapeHtml(sp.name)} <small>×${sp.count}</small></li>`).join("")}</ul>
           </div>`;
@@ -4096,9 +6089,71 @@ function buildReportMarkup() {
   `;
 }
 
+function buildSpeciesReportMarkup() {
+  const p = state.params;
+  const generated = new Date().toLocaleString();
+  const center = state.areaCenter;
+  const speciesLabel = state.species?.comName || p.speciesQuery || "Species";
+  const locations = state.sightingLocations;
+  const provider = p.mapProvider || state.provider;
+  const param = (label, value, options = {}) => {
+    const renderedValue = options.raw ? String(value) : escapeHtml(String(value));
+    return `<div><dt>${escapeHtml(label)}</dt><dd>${renderedValue}</dd></div>`;
+  };
+
+  const paramsBlock = `
+    <h2>Search parameters</h2>
+    <dl class="report-params">
+      ${param("Species", state.species?.sciName ? `${speciesLabel} (${state.species.sciName})` : speciesLabel)}
+      ${param("Location", p.origin)}
+      ${param("Map service", providerLabel(p.mapProvider))}
+      ${param("Search radius", `${p.radiusKm} km`)}
+      ${param("Recent window", `${p.recentDays} days`)}
+    </dl>`;
+
+  const summaryBlock = `
+    <h2>Species summary</h2>
+    <dl class="report-route">
+      ${param("Species", speciesLabel)}
+      ${param("Location", state.routeName || p.origin)}
+      ${param("Radius", `${p.radiusKm} km`)}
+      ${param("Locations with recent sightings", locations.length)}
+      ${param("Records", `${locations.length} (latest observation per location)`)}
+      ${center ? param("Center coordinates", `${center.lat.toFixed(5)}, ${center.lng.toFixed(5)}`) : ""}
+    </dl>`;
+
+  const locationsBlock = locations.length
+    ? `<h2>Sighting locations</h2>${locations.map((loc, index) => {
+        const ebirdUrl = loc.locId
+          ? `https://ebird.org/hotspot/${encodeURIComponent(loc.locId)}`
+          : `https://ebird.org/map?lat=${loc.lat}&lng=${loc.lng}`;
+        const mapsUrl = directionsUrlForPoints([center, loc].filter(Boolean), provider);
+        const howManyText = loc.maxCount ? `${loc.maxCount} ${pluralize("bird", loc.maxCount)} counted · ` : "";
+        return `
+          <div class="report-stop">
+            <h3>${index + 1}. ${escapeHtml(loc.name)}</h3>
+            <p class="report-stop-meta">Latest observation · ${escapeHtml(howManyText)}${escapeHtml(formatFreshness(loc.latest))}${loc.latest ? ` <small>${escapeHtml(loc.latest)}</small>` : ""}</p>
+            <dl class="report-stop-route">
+              ${param("Coordinates", `${loc.lat.toFixed(5)}, ${loc.lng.toFixed(5)}`)}
+              ${mapsUrl ? param("Directions", `<a href="${escapeHtml(mapsUrl)}">${escapeHtml(mapsUrl)}</a>`, { raw: true }) : ""}
+              ${param("eBird", `<a href="${escapeHtml(ebirdUrl)}">${escapeHtml(ebirdUrl)}</a>`, { raw: true })}
+            </dl>
+          </div>`;
+      }).join("")}`
+    : `<h2>Sighting locations</h2><p>No recent ${escapeHtml(speciesLabel)} sightings within ${escapeHtml(String(p.radiusKm))} km.</p>`;
+
+  return `
+    <h1>Birdtrip Species Report</h1>
+    <p class="report-sub">${escapeHtml(state.routeName || speciesLabel)} · Generated ${escapeHtml(generated)}</p>
+    ${paramsBlock}
+    ${summaryBlock}
+    ${locationsBlock}
+  `;
+}
+
 function downloadHtmlReport() {
   if (!hasReportableSearch()) {
-    setStatus("Nothing to export", `Run a ${state.mode === "area" ? "area" : "route"} search before downloading a report.`);
+    setStatus("Nothing to export", `Run a ${reportModeNoun()} search before downloading a report.`);
     return;
   }
 
@@ -4117,9 +6172,10 @@ function downloadHtmlReport() {
 }
 
 function buildStandaloneReportDocument(reportMarkup) {
+  const mode = state.params?.mode;
   const title = state.routeName
     ? `Birdtrip - ${state.routeName}`
-    : `Birdtrip ${state.params?.mode === "area" ? "Area" : "Trip"} Report`;
+    : `Birdtrip ${mode === "area" ? "Area" : mode === "species" ? "Species" : "Trip"} Report`;
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -4384,17 +6440,29 @@ a {
 }
 
 function reportFileName() {
-  const fallback = state.params?.mode === "area"
+  const mode = state.params?.mode;
+  const fallback = mode === "area"
     ? state.params.origin
-    : `${state.params.origin} to ${state.params.destination}`;
-  const base = slugify(state.routeName || fallback) || `${state.params?.mode === "area" ? "area" : "trip"}-report`;
+    : mode === "species"
+      ? `${state.species?.comName || state.params.speciesQuery || "species"} ${state.params.origin}`
+      : `${state.params.origin} to ${state.params.destination}`;
+  const base = slugify(state.routeName || fallback)
+    || `${mode === "area" ? "area" : mode === "species" ? "species" : "trip"}-report`;
   const date = new Date().toISOString().slice(0, 10);
   return `birdtrip-${base}-${date}.html`;
 }
 
+function reportModeNoun() {
+  if (state.mode === "area") return "area";
+  if (state.mode === "species") return "species";
+  return "route";
+}
+
 function hasReportableSearch() {
   if (!state.params) return false;
-  return state.params.mode === "area" ? Boolean(state.areaCenter) : Boolean(state.route);
+  if (state.params.mode === "area") return Boolean(state.areaCenter);
+  if (state.params.mode === "species") return Boolean(state.areaCenter);
+  return Boolean(state.route);
 }
 
 function slugify(value) {
@@ -4420,6 +6488,7 @@ class LeafletMapAdapter {
 
   init() {
     this.map = L.map(this.container, { zoomControl: true }).setView([33.45, -112.07], 7);
+    this.map.attributionControl.setPrefix(false);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 19,
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
@@ -4730,12 +6799,21 @@ function ensureGoogleHtmlMarkerClass() {
 }
 
 function markerHtml(candidate, index, selectedId) {
+  if (candidate.__sighting) {
+    const label = candidate.count > 1 ? candidate.count : "";
+    return `<div class="bird-marker marker-sighting ${candidate.id === selectedId ? "marker-selected" : ""}">${label}</div>`;
+  }
   const pinnedIndex = state.pinnedIds.indexOf(candidate.id);
   const label = pinnedIndex >= 0 ? `P${pinnedIndex + 1}` : index + 1;
   return `<div class="bird-marker ${markerClass(candidate)} ${candidate.id === selectedId ? "marker-selected" : ""}">${label}</div>`;
 }
 
 function markerPopup(candidate) {
+  if (candidate.__sighting) {
+    const when = candidate.latest ? formatFreshness(candidate.latest) : "recently";
+    const howMany = candidate.maxCount ? `; ${candidate.maxCount} ${pluralize("bird", candidate.maxCount)} counted` : "";
+    return `<strong>${escapeHtml(candidate.name)}</strong><br>Latest observation ${escapeHtml(when)}${howMany}`;
+  }
   const pinnedIndex = state.pinnedIds.indexOf(candidate.id);
   const pinnedText = pinnedIndex >= 0 ? `<br>Pinned stop ${pinnedIndex + 1}` : "";
   const impact = state.params?.mode === "area"

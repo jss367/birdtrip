@@ -5,6 +5,13 @@ const path = require("path");
 const PORT = Number(process.env.PORT || 4177);
 const PUBLIC_DIR = path.join(__dirname, "public");
 const CACHE_TTL_MS = 10 * 60 * 1000;
+const SEASONALITY_TTL_MS = 24 * 60 * 60 * 1000;
+const SEASONALITY_CACHE_MAX_ENTRIES = 100;
+const SEASONALITY_SAMPLE_DAYS = [5, 15, 25];
+const SEASONALITY_MIN_SAMPLED_DAYS = 24;
+const SEASONALITY_CHUNK_SIZE = 6;
+const SEASONALITY_MAX_CONCURRENT_BUILDS = 2;
+const SEASONALITY_MAX_QUEUED_BUILDS = 20;
 const UPSTREAM_TIMEOUT_MS = 15000;
 const MAP_PROVIDERS = new Set(["osm", "google"]);
 const DEFAULT_MAP_PROVIDER = MAP_PROVIDERS.has(process.env.MAP_PROVIDER)
@@ -15,6 +22,10 @@ const GOOGLE_MAPS_SERVER_KEY = process.env.GOOGLE_MAPS_SERVER_KEY || process.env
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "";
 const cache = new Map();
+const seasonalityCache = new Map();
+const seasonalityBuilds = new Map();
+const seasonalityBuildQueue = [];
+let activeSeasonalityBuilds = 0;
 
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
@@ -33,7 +44,7 @@ function logApiRequest(req, res, url) {
   res.on("finish", () => {
     const elapsed = Date.now() - started;
     const logUrl = new URL(url);
-    if (logUrl.pathname === "/api/reverse-geocode") {
+    if (logUrl.pathname === "/api/reverse-geocode" || logUrl.pathname === "/api/ebird/seasonality") {
       logUrl.searchParams.delete("lat");
       logUrl.searchParams.delete("lng");
     }
@@ -68,6 +79,41 @@ function setCached(key, value) {
   return value;
 }
 
+function pruneSeasonalityCache(target = seasonalityCache, now = Date.now()) {
+  for (const [key, entry] of target) {
+    if (now - entry.time > SEASONALITY_TTL_MS) target.delete(key);
+  }
+  while (target.size > SEASONALITY_CACHE_MAX_ENTRIES) {
+    target.delete(target.keys().next().value);
+  }
+}
+
+function setCachedSeasonality(key, value) {
+  pruneSeasonalityCache();
+  seasonalityCache.delete(key);
+  seasonalityCache.set(key, { time: Date.now(), value });
+  pruneSeasonalityCache();
+}
+
+function releaseSeasonalityBuildSlot() {
+  const next = seasonalityBuildQueue.shift();
+  if (next) next(releaseSeasonalityBuildSlot);
+  else activeSeasonalityBuilds -= 1;
+}
+
+function acquireSeasonalityBuildSlot() {
+  if (activeSeasonalityBuilds < SEASONALITY_MAX_CONCURRENT_BUILDS) {
+    activeSeasonalityBuilds += 1;
+    return Promise.resolve(releaseSeasonalityBuildSlot);
+  }
+  if (seasonalityBuildQueue.length >= SEASONALITY_MAX_QUEUED_BUILDS) {
+    const error = new Error("Too many seasonal data requests are already in progress");
+    error.status = 429;
+    return Promise.reject(error);
+  }
+  return new Promise((resolve) => seasonalityBuildQueue.push(resolve));
+}
+
 function parseCoordPair(value, name) {
   if (!value) throwClientInputError(`${name} is required`);
   const [lng, lat] = value.split(",").map(Number);
@@ -87,25 +133,45 @@ function throwClientInputError(message) {
 }
 
 function boundedNumber(value, fallback, min, max) {
-  const parsed = Number(value ?? fallback);
+  const raw = typeof value === "string" && value.trim() === "" ? fallback : value ?? fallback;
+  const parsed = Number(raw);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.max(min, Math.min(max, parsed));
 }
 
-async function fetchJson(url, headers = {}) {
+async function fetchJson(url, headers = {}, options = {}) {
   const cacheKey = `${url} ${JSON.stringify(headers)}`;
-  const hit = cached(cacheKey);
+  const shouldCache = options.cache !== false;
+  const hit = shouldCache ? cached(cacheKey) : null;
   if (hit) return hit;
 
-  const response = await fetch(url, {
-    headers: {
-      "accept": "application/json",
-      "user-agent": "birdtrip/0.1 local personal app",
-      ...headers
+  const timeoutMs = Number(options.timeoutMs) || 0;
+  const controller = timeoutMs > 0 ? new AbortController() : null;
+  const timeout = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  let response;
+  let text;
+  try {
+    response = await fetch(url, {
+      signal: controller?.signal,
+      headers: {
+        "accept": "application/json",
+        "user-agent": "birdtrip/0.1 local personal app",
+        ...headers
+      }
+    });
+    text = await response.text();
+  } catch (error) {
+    if (error.name === "AbortError" && controller?.signal.aborted) {
+      const timeoutError = new Error("Upstream request timed out");
+      timeoutError.status = 504;
+      timeoutError.details = { timeoutMs };
+      throw timeoutError;
     }
-  });
+    throw error;
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 
-  const text = await response.text();
   let body;
   try {
     body = text ? JSON.parse(text) : null;
@@ -121,7 +187,7 @@ async function fetchJson(url, headers = {}) {
     throw error;
   }
 
-  return setCached(cacheKey, body);
+  return shouldCache ? setCached(cacheKey, body) : body;
 }
 
 async function postJson(url, payload, headers = {}) {
@@ -370,6 +436,259 @@ async function routeGoogle(origin, destination, viaPoints = []) {
   };
 }
 
+let taxonomyCache = null;
+let taxonomyPromise = null;
+
+async function loadTaxonomy(token) {
+  if (taxonomyCache) return taxonomyCache;
+  if (taxonomyPromise) return taxonomyPromise;
+  taxonomyPromise = (async () => {
+    const endpoint = new URL("https://api.ebird.org/v2/ref/taxonomy/ebird");
+    endpoint.searchParams.set("fmt", "json");
+    endpoint.searchParams.set("cat", "species");
+    endpoint.searchParams.set("locale", "en");
+    const headers = token ? { "x-ebirdapitoken": String(token) } : {};
+    const data = await fetchJson(endpoint.toString(), headers);
+    if (!Array.isArray(data)) {
+      const error = new Error("eBird taxonomy response was not a list");
+      error.status = 502;
+      throw error;
+    }
+    const list = [];
+    const byCode = new Map();
+    for (const item of data) {
+      const code = item.speciesCode;
+      const comName = item.comName;
+      if (!code || !comName) continue;
+      const sciName = item.sciName || "";
+      const entry = {
+        code,
+        comName,
+        sciName,
+        comLower: comName.toLowerCase(),
+        sciLower: sciName.toLowerCase()
+      };
+      list.push(entry);
+      byCode.set(code, entry);
+    }
+    taxonomyCache = { list, byCode };
+    return taxonomyCache;
+  })();
+  try {
+    return await taxonomyPromise;
+  } catch (error) {
+    taxonomyPromise = null;
+    throw error;
+  }
+}
+
+function searchTaxonomy(taxonomy, query, limit = 12) {
+  const q = String(query || "").trim().toLowerCase();
+  if (!q) return [];
+  const starts = [];
+  const contains = [];
+  for (const entry of taxonomy.list) {
+    if (entry.comLower.startsWith(q) || entry.sciLower.startsWith(q)) {
+      starts.push(entry);
+    } else if (entry.comLower.includes(q) || entry.sciLower.includes(q)) {
+      contains.push(entry);
+    }
+    if (starts.length >= limit) break;
+  }
+  return [...starts, ...contains]
+    .slice(0, limit)
+    .map((entry) => ({ speciesCode: entry.code, comName: entry.comName, sciName: entry.sciName }));
+}
+
+function resolveSpecies(taxonomy, name) {
+  const norm = String(name || "").trim().toLowerCase();
+  if (!norm) return null;
+  for (const entry of taxonomy.list) {
+    if (entry.comLower === norm || entry.sciLower === norm) return entry;
+  }
+  const starts = taxonomy.list.filter(
+    (entry) => entry.comLower.startsWith(norm) || entry.sciLower.startsWith(norm)
+  );
+  return starts.length === 1 ? starts[0] : null;
+}
+
+function isCountableSpeciesName(comName) {
+  const name = String(comName || "");
+  if (!name) return false;
+  if (name.includes("/")) return false;
+  if (/\bsp\.\)?$/.test(name)) return false;
+  if (/\bx\b/i.test(name)) return false;
+  if (/\((?:domestic|hybrid)/i.test(name)) return false;
+  return true;
+}
+
+function hotspotRegionCode(hotspot) {
+  if (!hotspot) return "";
+  return ["subnational2Code", "subnational1Code", "countryCode"]
+    .map((field) => hotspot[field])
+    .find((code) => typeof code === "string" && code) || "";
+}
+
+function coordinateDistanceKm(a, b) {
+  const toRadians = (degrees) => degrees * Math.PI / 180;
+  const lat1 = toRadians(a.lat);
+  const lat2 = toRadians(b.lat);
+  const deltaLat = lat2 - lat1;
+  const deltaLng = toRadians(b.lng - a.lng);
+  const h = Math.sin(deltaLat / 2) ** 2
+    + Math.cos(lat1) * Math.cos(lat2) * Math.sin(deltaLng / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.sqrt(h));
+}
+
+function nearestHotspotRegion(hotspots, lat, lng) {
+  const selected = { lat: Number(lat), lng: Number(lng) };
+  let nearestRegion = "";
+  let nearestDistance = Infinity;
+  for (const spot of hotspots) {
+    const region = hotspotRegionCode(spot);
+    const spotLat = Number(spot?.lat);
+    const spotLng = Number(spot?.lng);
+    if (!region || !Number.isFinite(spotLat) || !Number.isFinite(spotLng)) continue;
+    const distance = coordinateDistanceKm(selected, { lat: spotLat, lng: spotLng });
+    if (distance >= nearestDistance) continue;
+    nearestRegion = region;
+    nearestDistance = distance;
+  }
+  return nearestRegion;
+}
+
+async function inferEbirdRegion(lat, lng, token) {
+  const endpoint = new URL("https://api.ebird.org/v2/ref/hotspot/geo");
+  endpoint.searchParams.set("lat", String(lat));
+  endpoint.searchParams.set("lng", String(lng));
+  endpoint.searchParams.set("dist", "25");
+  endpoint.searchParams.set("fmt", "json");
+  const hotspots = await fetchJson(
+    endpoint.toString(),
+    { "x-ebirdapitoken": String(token) },
+    { timeoutMs: UPSTREAM_TIMEOUT_MS, cache: false }
+  );
+  if (!Array.isArray(hotspots) || !hotspots.length) {
+    const error = new Error("No eBird hotspots were found near that location");
+    error.status = 404;
+    throw error;
+  }
+  const region = nearestHotspotRegion(hotspots, lat, lng);
+  if (!region) {
+    const error = new Error("Could not resolve an eBird region for that location");
+    error.status = 502;
+    throw error;
+  }
+  return region;
+}
+
+async function regionDisplayName(regionCode, token) {
+  try {
+    const info = await fetchJson(
+      `https://api.ebird.org/v2/ref/region/info/${encodeURIComponent(regionCode)}`,
+      { "x-ebirdapitoken": String(token) },
+      { timeoutMs: UPSTREAM_TIMEOUT_MS }
+    );
+    return info && typeof info.result === "string" && info.result ? info.result : regionCode;
+  } catch {
+    return regionCode;
+  }
+}
+
+async function buildSeasonality(regionCode, token) {
+  const year = new Date().getFullYear() - 1;
+  const cacheKey = `${regionCode}:${year}`;
+  pruneSeasonalityCache();
+  const hit = seasonalityCache.get(cacheKey);
+  if (hit && Date.now() - hit.time <= SEASONALITY_TTL_MS) return hit.value;
+
+  const pending = seasonalityBuilds.get(cacheKey);
+  if (pending) return pending;
+  const build = runSeasonalityBuild(regionCode, token, year, cacheKey);
+  seasonalityBuilds.set(cacheKey, build);
+  try {
+    return await build;
+  } finally {
+    if (seasonalityBuilds.get(cacheKey) === build) seasonalityBuilds.delete(cacheKey);
+  }
+}
+
+async function runSeasonalityBuild(regionCode, token, year, cacheKey) {
+  const release = await acquireSeasonalityBuildSlot();
+  try {
+    return await buildSeasonalityUncached(regionCode, token, year, cacheKey);
+  } finally {
+    release();
+  }
+}
+
+async function buildSeasonalityUncached(regionCode, token, year, cacheKey) {
+  const sampleDates = [];
+  for (let month = 1; month <= 12; month += 1) {
+    for (const day of SEASONALITY_SAMPLE_DAYS) sampleDates.push({ month, day });
+  }
+
+  const sampledDays = Array(12).fill(0);
+  const species = new Map();
+  for (let i = 0; i < sampleDates.length; i += SEASONALITY_CHUNK_SIZE) {
+    const chunk = sampleDates.slice(i, i + SEASONALITY_CHUNK_SIZE);
+    const settled = await Promise.allSettled(chunk.map(({ month, day }) => {
+      const endpoint = new URL(
+        `https://api.ebird.org/v2/data/obs/${encodeURIComponent(regionCode)}/historic/${year}/${month}/${day}`
+      );
+      endpoint.searchParams.set("cat", "species");
+      endpoint.searchParams.set("detail", "simple");
+      return fetchJson(
+        endpoint.toString(),
+        { "x-ebirdapitoken": String(token) },
+        { timeoutMs: UPSTREAM_TIMEOUT_MS, cache: false }
+      );
+    }));
+    settled.forEach((result, index) => {
+      if (result.status !== "fulfilled" || !Array.isArray(result.value)) return;
+      const monthIndex = chunk[index].month - 1;
+      sampledDays[monthIndex] += 1;
+      const seenToday = new Set();
+      for (const obs of result.value) {
+        const code = obs && obs.speciesCode;
+        if (!code || seenToday.has(code) || !isCountableSpeciesName(obs && obs.comName)) continue;
+        seenToday.add(code);
+        let entry = species.get(code);
+        if (!entry) {
+          entry = {
+            speciesCode: code,
+            comName: obs.comName,
+            sciName: obs.sciName || "",
+            months: Array(12).fill(0)
+          };
+          species.set(code, entry);
+        }
+        entry.months[monthIndex] += 1;
+      }
+    });
+  }
+
+  const totalSampled = sampledDays.reduce((sum, value) => sum + value, 0);
+  if (totalSampled < SEASONALITY_MIN_SAMPLED_DAYS || sampledDays.some((count) => count < 1)) {
+    const error = new Error("eBird historic data was unavailable for too many of the sampled days");
+    error.status = 502;
+    error.details = { regionCode, year, sampledDays };
+    throw error;
+  }
+
+  const value = {
+    regionCode,
+    year,
+    requestedSampleDaysPerMonth: SEASONALITY_SAMPLE_DAYS.length,
+    sampledDays,
+    species: [...species.values()].filter(
+      (entry) => entry.months.reduce((sum, count) => sum + count, 0) >= 2
+    )
+  };
+  setCachedSeasonality(cacheKey, value);
+  return value;
+}
+
 async function handleApi(req, res, url) {
   try {
     if (url.pathname === "/api/config") {
@@ -490,6 +809,135 @@ async function handleApi(req, res, url) {
       return sendJson(res, 200, data);
     }
 
+    if (url.pathname === "/api/ebird/hotspots") {
+      const token = req.headers["x-ebird-api-token"] || process.env.EBIRD_API_KEY;
+      if (!token) return sendError(res, 401, "An eBird API token is required");
+
+      const lat = boundedNumber(url.searchParams.get("lat"), NaN, -90, 90);
+      const lng = boundedNumber(url.searchParams.get("lng"), NaN, -180, 180);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        return sendError(res, 400, "lat and lng are required");
+      }
+
+      const dist = boundedNumber(url.searchParams.get("dist"), 25, 1, 500);
+      const backValue = url.searchParams.get("back");
+      const back = backValue === null ? null : boundedNumber(backValue, 14, 1, 30);
+      const endpoint = new URL("https://api.ebird.org/v2/ref/hotspot/geo");
+      endpoint.searchParams.set("lat", String(lat));
+      endpoint.searchParams.set("lng", String(lng));
+      endpoint.searchParams.set("dist", String(dist));
+      if (back !== null) endpoint.searchParams.set("back", String(back));
+      endpoint.searchParams.set("fmt", "json");
+
+      const data = await fetchJson(endpoint.toString(), { "x-ebirdapitoken": String(token) });
+      return sendJson(res, 200, data);
+    }
+
+    if (url.pathname === "/api/ebird/hotspot-recent") {
+      const token = req.headers["x-ebird-api-token"] || process.env.EBIRD_API_KEY;
+      if (!token) return sendError(res, 401, "An eBird API token is required");
+
+      const locId = String(url.searchParams.get("locId") || "");
+      if (!/^L\d+$/.test(locId)) {
+        return sendError(res, 400, "locId must be an eBird location code like L123456");
+      }
+
+      const back = boundedNumber(url.searchParams.get("back"), 14, 1, 30);
+      const endpoint = new URL(`https://api.ebird.org/v2/data/obs/${locId}/recent`);
+      endpoint.searchParams.set("back", String(back));
+      endpoint.searchParams.set("includeProvisional", "true");
+
+      const data = await fetchJson(endpoint.toString(), { "x-ebirdapitoken": String(token) });
+      return sendJson(res, 200, data);
+    }
+
+    if (url.pathname === "/api/ebird/seasonality") {
+      const token = req.headers["x-ebird-api-token"] || process.env.EBIRD_API_KEY;
+      if (!token) return sendError(res, 401, "An eBird API token is required");
+
+      const latValue = url.searchParams.get("lat");
+      const lngValue = url.searchParams.get("lng");
+      const lat = Number(latValue);
+      const lng = Number(lngValue);
+      if (
+        latValue === null || lngValue === null
+        || latValue.trim() === "" || lngValue.trim() === ""
+        || !Number.isFinite(lat) || !Number.isFinite(lng)
+        || lat < -90 || lat > 90 || lng < -180 || lng > 180
+      ) {
+        return sendError(res, 400, "lat and lng are required and must be within valid ranges");
+      }
+
+      const regionCode = await inferEbirdRegion(lat, lng, token);
+      const [seasonality, regionName] = await Promise.all([
+        buildSeasonality(regionCode, token),
+        regionDisplayName(regionCode, token)
+      ]);
+      return sendJson(res, 200, { ...seasonality, regionName });
+    }
+
+    if (url.pathname === "/api/ebird/taxonomy/search") {
+      const token = req.headers["x-ebird-api-token"] || process.env.EBIRD_API_KEY;
+      const q = String(url.searchParams.get("q") || "").trim();
+      if (q.length < 1) return sendJson(res, 200, []);
+      const taxonomy = await loadTaxonomy(token);
+      return sendJson(res, 200, searchTaxonomy(taxonomy, q));
+    }
+
+    if (url.pathname === "/api/ebird/species") {
+      const token = req.headers["x-ebird-api-token"] || process.env.EBIRD_API_KEY;
+      if (!token) return sendError(res, 401, "An eBird API token is required");
+
+      const lat = boundedNumber(url.searchParams.get("lat"), NaN, -90, 90);
+      const lng = boundedNumber(url.searchParams.get("lng"), NaN, -180, 180);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        return sendError(res, 400, "lat and lng are required");
+      }
+
+      let speciesCode = String(url.searchParams.get("speciesCode") || "").trim();
+      let resolved = null;
+      if (speciesCode) {
+        const taxonomy = await loadTaxonomy(token).catch(() => null);
+        if (taxonomy) resolved = taxonomy.byCode.get(speciesCode) || null;
+      } else {
+        const name = String(url.searchParams.get("name") || "").trim();
+        if (!name) return sendError(res, 400, "A species code or name is required");
+        const taxonomy = await loadTaxonomy(token);
+        resolved = resolveSpecies(taxonomy, name);
+        if (!resolved) {
+          return sendError(res, 404, `No eBird species matched "${name}"`, {
+            suggestions: searchTaxonomy(taxonomy, name, 6)
+          });
+        }
+        speciesCode = resolved.code;
+      }
+      if (!/^[a-z0-9]+$/i.test(speciesCode)) {
+        return sendError(res, 400, "Invalid species code");
+      }
+
+      const dist = boundedNumber(url.searchParams.get("dist"), 25, 1, 50);
+      const back = boundedNumber(url.searchParams.get("back"), 14, 1, 30);
+      const maxResults = boundedNumber(url.searchParams.get("maxResults"), 1000, 1, 10000);
+      const endpoint = new URL(
+        `https://api.ebird.org/v2/data/obs/geo/recent/${encodeURIComponent(speciesCode)}`
+      );
+      endpoint.searchParams.set("lat", String(lat));
+      endpoint.searchParams.set("lng", String(lng));
+      endpoint.searchParams.set("dist", String(dist));
+      endpoint.searchParams.set("back", String(back));
+      endpoint.searchParams.set("maxResults", String(maxResults));
+      endpoint.searchParams.set("includeProvisional", "true");
+
+      const observations = await fetchJson(endpoint.toString(), { "x-ebirdapitoken": String(token) });
+      return sendJson(res, 200, {
+        speciesCode,
+        species: resolved
+          ? { speciesCode: resolved.code, comName: resolved.comName, sciName: resolved.sciName }
+          : null,
+        observations: Array.isArray(observations) ? observations : []
+      });
+    }
+
     return sendError(res, 404, "Unknown API endpoint");
   } catch (error) {
     return sendError(res, error.status || 500, error.message || "Request failed", error.details);
@@ -536,6 +984,16 @@ const server = http.createServer((req, res) => {
   serveStatic(req, res, url);
 });
 
-server.listen(PORT, () => {
-  console.log(`Birdtrip running at http://localhost:${PORT}`);
-});
+if (require.main === module) {
+  server.listen(PORT, () => {
+    console.log(`Birdtrip running at http://localhost:${PORT}`);
+  });
+}
+
+module.exports = {
+  acquireSeasonalityBuildSlot,
+  buildSeasonality,
+  fetchJson,
+  nearestHotspotRegion,
+  pruneSeasonalityCache
+};

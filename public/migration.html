@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Illustrative annual bird migration patterns across the United States, by bird group and month.">
+  <meta name="theme-color" content="#10b981">
+  <link rel="canonical" href="https://birdtrip.org/migration.html">
+  <meta property="og:site_name" content="Birdtrip">
+  <meta property="og:title" content="Birdtrip Migration Map">
+  <meta property="og:description" content="Animate illustrative generalized migration patterns across the United States, month by month.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://birdtrip.org/migration.html">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Birdtrip Migration Map">
+  <meta name="twitter:description" content="Animate illustrative generalized migration patterns across the United States, month by month.">
+  <title>Birdtrip Migration Map</title>
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body class="migration-page">
+  <div class="migration-shell">
+    <header class="app-header migration-header">
+      <a class="app-brand migration-brand-link" href="./">
+        <div class="brand-mark" aria-hidden="true"><i data-lucide="binoculars"></i></div>
+        <div>
+          <h1>Birdtrip</h1>
+          <p>Migration Map</p>
+        </div>
+      </a>
+      <div class="header-actions">
+        <span id="pageStatus" class="migration-page-status" role="status" aria-live="polite"></span>
+        <button type="button" id="shareButton" class="ghost-button">
+          <i data-lucide="share-2"></i>
+          Share
+        </button>
+        <button type="button" id="downloadReportButton" class="ghost-button">
+          <i data-lucide="file-down"></i>
+          Download HTML
+        </button>
+      </div>
+    </header>
+
+    <main class="migration-layout">
+      <section class="migration-map-region">
+        <div id="map"></div>
+        <div id="migrationTimelineBar" class="migration-timeline-bar">
+          <button type="button" id="migrationPlayButton" class="migration-play-button">
+            <i data-lucide="play"></i>
+            <span>Play</span>
+          </button>
+          <div class="migration-timeline-main">
+            <div class="migration-timeline-status">
+              <b id="migrationMonthLabel">April</b>
+              <span id="migrationPhaseLabel">Peak spring movement</span>
+            </div>
+            <input id="migrationMonth" name="migrationMonth" type="range" min="0" max="11" value="3" aria-label="Migration month">
+            <div id="migrationTimeline" class="migration-months" aria-label="Migration months"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="migration-results-region">
+        <div class="results-header">
+          <div>
+            <h2>Migration Map</h2>
+            <p id="resultContext">Illustrative generalized patterns; not live radar.</p>
+          </div>
+          <label class="migration-group-picker">
+            <span>Bird group</span>
+            <select id="migrationGroup" name="migrationGroup">
+              <option value="all">All nocturnal migrants</option>
+              <option value="warblers">Warblers and songbirds</option>
+              <option value="waterfowl">Waterfowl</option>
+              <option value="shorebirds">Shorebirds</option>
+              <option value="raptors">Raptors</option>
+              <option value="hummingbirds">Hummingbirds</option>
+            </select>
+          </label>
+        </div>
+        <div class="results-list migration-results" id="resultsList"></div>
+      </section>
+    </main>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+  <script src="./migration-map.js"></script>
+  <script src="./migration-app.js"></script>
+</body>
+</html>

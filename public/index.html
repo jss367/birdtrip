@@ -33,23 +33,11 @@
         </div>
       </div>
       <div class="header-actions">
-        <button type="button" id="quickStartButton" class="ghost-button">
-          <i data-lucide="sparkles"></i>
-          Quick Start
-        </button>
-        <button type="button" id="shareTripButton" class="ghost-button">
-          <i data-lucide="share-2"></i>
-          Share
-        </button>
-        <button type="button" id="downloadReportButton" class="ghost-button">
-          <i data-lucide="file-down"></i>
-          Download HTML
-        </button>
         <span id="setupStatus" class="setup-badge setup-checking" role="status" aria-live="polite">
           <i data-lucide="loader-circle"></i>
           Checking Setup
         </span>
-        <button type="button" id="settingsButton" class="icon-button" title="Search settings">
+        <button type="button" id="settingsButton" class="icon-button" title="Settings">
           <i data-lucide="settings"></i>
         </button>
         <div id="authBar" class="auth-bar" hidden>
@@ -78,15 +66,27 @@
       </header>
 
       <form id="searchForm" class="search-form">
-        <div class="mode-switch" role="group" aria-label="Search mode">
-          <button type="button" id="routeModeButton" class="is-active" data-mode="route" aria-pressed="true">
+        <div class="mode-switch" role="group" aria-label="Birdtrip tools">
+          <button type="button" id="routeModeButton" class="mode-switch-item is-active" data-mode="route" aria-pressed="true">
             <i data-lucide="route"></i>
             Route
           </button>
-          <button type="button" id="areaModeButton" data-mode="area" aria-pressed="false">
+          <button type="button" id="areaModeButton" class="mode-switch-item" data-mode="area" aria-pressed="false">
             <i data-lucide="map"></i>
             Area
           </button>
+          <button type="button" id="speciesModeButton" class="mode-switch-item" data-mode="species" aria-pressed="false">
+            <i data-lucide="bird"></i>
+            Species
+          </button>
+          <a id="migrationMapLink" class="mode-switch-item" href="./migration.html">
+            <i data-lucide="waves"></i>
+            Migration
+          </a>
+          <a id="seasonalLink" class="mode-switch-item" href="./seasonal.html">
+            <i data-lucide="calendar-range"></i>
+            Seasons
+          </a>
         </div>
 
         <section class="form-group" id="locationGroup">
@@ -108,6 +108,18 @@
               <span id="useCurrentLocationLabel">Use current location</span>
             </button>
             <small class="field-error" id="originError" hidden></small>
+          </label>
+          <label id="speciesField" hidden>
+            <span>Species</span>
+            <div class="autocomplete">
+              <input id="speciesQuery" name="speciesQuery" autocomplete="off" spellcheck="false"
+                placeholder="e.g. Vermilion Flycatcher"
+                role="combobox" aria-autocomplete="list" aria-expanded="false"
+                aria-controls="speciesSuggestions" aria-haspopup="listbox">
+              <ul class="autocomplete-list" id="speciesSuggestions" role="listbox" hidden></ul>
+            </div>
+            <small class="field-hint" id="speciesHint">Pick a species to map every recent sighting in the area.</small>
+            <small class="field-error" id="speciesError" hidden></small>
           </label>
           <label id="destinationField">
             <span>Destination</span>
@@ -132,26 +144,38 @@
 
         <section class="form-group">
           <div class="group-label">
+            <i data-lucide="feather"></i>
+            <span>Target Species</span>
+          </div>
+          <div class="target-field">
+            <textarea id="targets" name="targets" hidden></textarea>
+            <div id="targetRows" class="target-rows"></div>
+            <small class="field-hint">Press Enter to add another species, or paste a list.</small>
+          </div>
+        </section>
+
+        <section class="form-group">
+          <div class="group-label">
             <i data-lucide="sliders-horizontal"></i>
             <span>Search Settings</span>
           </div>
           <div class="control-grid">
-            <label>
-              <span id="maxDetourLabel">Max added</span>
+            <label id="maxDetourField">
+              <span>Max added</span>
               <div class="number-field">
                 <input id="maxDetour" name="maxDetour" type="number" min="0" max="240" value="60">
-                <small id="maxDetourUnit">min</small>
+                <small>min</small>
               </div>
             </label>
             <label>
-              <span>Recent</span>
+              <span>Recent reports</span>
               <div class="number-field">
                 <input id="recentDays" name="recentDays" type="number" min="1" max="30" value="14">
                 <small>days</small>
               </div>
             </label>
             <label>
-              <span>Radius</span>
+              <span id="radiusKmLabel">Corridor radius</span>
               <div class="number-field">
                 <input id="radiusKm" name="radiusKm" type="number" min="1" max="50" value="25">
                 <small>km</small>
@@ -164,43 +188,6 @@
                 <small>max</small>
               </div>
             </label>
-          </div>
-        </section>
-
-        <section class="form-group">
-          <div class="group-label">
-            <i data-lucide="feather"></i>
-            <span>Birding Data</span>
-          </div>
-          <label>
-            <span>eBird API token</span>
-            <input id="apiToken" name="apiToken" type="password" placeholder="Paste token or use EBIRD_API_KEY">
-            <small class="field-hint">Powered by eBird recent observations.</small>
-          </label>
-          <label class="check-line">
-            <input id="rememberToken" name="rememberToken" type="checkbox">
-            <span>Remember token in this browser</span>
-          </label>
-
-          <label>
-            <span>Target species</span>
-            <textarea id="targets" name="targets" rows="4" placeholder="One common name per line"></textarea>
-          </label>
-          <div class="life-list-import">
-            <div>
-              <span>Life list</span>
-              <small id="lifeListStatus" class="field-hint">Import an eBird or iNaturalist CSV to boost likely lifers.</small>
-            </div>
-            <div class="file-actions">
-              <label class="file-button">
-                <input id="lifeListInput" name="lifeListInput" type="file" accept=".csv,.tsv,.txt,text/csv,text/tab-separated-values">
-                <i data-lucide="upload"></i>
-                Import
-              </label>
-              <button type="button" id="clearLifeListButton" title="Clear imported life list" aria-label="Clear imported life list">
-                <i data-lucide="trash-2"></i>
-              </button>
-            </div>
           </div>
         </section>
 
@@ -274,7 +261,7 @@
           <span id="targetCount">0</span>
         </div>
         <div class="summary-tile tile-lifers">
-          <small>Potential Lifers</small>
+          <small>Not on Your List</small>
           <span id="liferCount">-</span>
         </div>
         <div class="summary-tile tile-notable">
@@ -303,12 +290,13 @@
     <main class="workspace">
       <section class="map-region">
         <div id="map"></div>
-        <div class="map-glass" aria-hidden="true">
+        <div class="map-glass" id="mapGlass" aria-hidden="true">
           <span><b class="legend-dot target"></b> Target species</span>
-          <span><b class="legend-dot lifer"></b> Likely lifer</span>
+          <span><b class="legend-dot lifer"></b> Unseen recent report</span>
           <span><b class="legend-dot notable"></b> Notable birds</span>
           <span><b class="legend-dot hotspot"></b> Ranked hotspot</span>
           <span><b class="legend-dot pinned"></b> Pinned stop</span>
+          <span><b class="legend-dot sighting"></b> Species sighting</span>
           <span><b class="legend-line route"></b> <span id="mapAreaLegend">Route corridor</span></span>
         </div>
       </section>
@@ -316,14 +304,24 @@
       <section class="results-region">
         <div class="results-header">
           <div>
-            <h2>Ranked Stops</h2>
+            <h2 id="resultsTitle">Ranked Stops</h2>
             <p id="resultContext">No route searched yet.</p>
           </div>
-          <div class="legend">
+          <div class="legend" id="resultLegend">
             <span><b class="tier high"></b>Top hotspot</span>
             <span><b class="tier mid"></b>Notable birds</span>
-            <span><b class="tier lifer"></b>Likely lifer</span>
+            <span><b class="tier lifer"></b>Unseen recent report</span>
             <span><b class="tier low"></b>Target match</span>
+          </div>
+          <div class="results-actions" id="resultsActions" hidden>
+            <button type="button" id="shareTripButton" class="ghost-button">
+              <i data-lucide="share-2"></i>
+              Share
+            </button>
+            <button type="button" id="downloadReportButton" class="ghost-button">
+              <i data-lucide="file-down"></i>
+              Download HTML
+            </button>
           </div>
         </div>
         <div class="insight-strip">
@@ -427,6 +425,47 @@
     </main>
   </div>
 
+  <dialog id="settingsModal" class="settings-modal" aria-labelledby="settingsModalTitle">
+    <div class="settings-modal-header">
+      <h2 id="settingsModalTitle">Settings</h2>
+      <button type="button" id="closeSettingsButton" class="icon-button" title="Close settings" aria-label="Close settings">
+        <i data-lucide="x"></i>
+      </button>
+    </div>
+    <div id="ebirdAccessStatus" class="ebird-access-status is-checking" role="status" aria-live="polite" aria-atomic="true">
+      <i data-lucide="loader-circle"></i>
+      <div>
+        <strong>Checking eBird access</strong>
+        <small>Confirming live bird data availability.</small>
+      </div>
+    </div>
+    <div class="life-list-import">
+      <div>
+        <span>Life list</span>
+        <small id="lifeListStatus" class="field-hint">Import an eBird or iNaturalist CSV to highlight recently reported species not on your list.</small>
+      </div>
+      <div class="file-actions">
+        <label class="file-button">
+          <input id="lifeListInput" name="lifeListInput" type="file" accept=".csv,.tsv,.txt,text/csv,text/tab-separated-values">
+          <i data-lucide="upload"></i>
+          Import
+        </label>
+        <button type="button" id="clearLifeListButton" title="Clear imported life list" aria-label="Clear imported life list">
+          <i data-lucide="trash-2"></i>
+        </button>
+      </div>
+    </div>
+    <label>
+      <span>Personal eBird API token</span>
+      <input id="apiToken" name="apiToken" type="password" autocomplete="off" placeholder="Paste your eBird API token">
+      <small class="field-hint">Optional. Overrides Birdtrip's shared eBird access for searches from this browser.</small>
+    </label>
+    <label class="check-line">
+      <input id="rememberToken" name="rememberToken" type="checkbox">
+      <span>Remember token in this browser</span>
+    </label>
+  </dialog>
+
   <section id="report" class="report" aria-hidden="true"></section>
 
   <template id="resultTemplate">
@@ -436,20 +475,20 @@
         <span class="stop-copy">
           <strong class="stop-name"></strong>
           <small class="stop-preview"></small>
-          <span class="stop-chips"></span>
         </span>
-        <span class="score-pill"></span>
+        <span class="score-pill"><b></b><small>score</small></span>
       </button>
+      <div class="stop-chips"></div>
       <div class="stop-reason">
         <span>Why This Stop?</span>
         <p></p>
       </div>
       <div class="stop-metrics">
-        <span class="metric-detour-wrap" title="Added drive time"><i data-lucide="clock-3"></i><b class="metric-detour"></b></span>
-        <span class="metric-offroute-wrap" title="Approx. distance off route"><i data-lucide="ruler"></i><b class="metric-offroute"></b></span>
-        <span title="Recent species"><i data-lucide="feather"></i><b class="metric-species"></b></span>
-        <span title="Notable species"><i data-lucide="sparkles"></i><b class="metric-notable"></b></span>
-        <span title="Target matches"><i data-lucide="target"></i><b class="metric-targets"></b></span>
+        <span class="metric-help metric-detour-wrap"><i data-lucide="clock-3"></i><b class="metric-detour"></b></span>
+        <span class="metric-help metric-offroute-wrap"><i data-lucide="ruler"></i><b class="metric-offroute"></b></span>
+        <span class="metric-help metric-species-wrap"><i data-lucide="feather"></i><b class="metric-species"></b></span>
+        <span class="metric-help metric-notable-wrap"><i data-lucide="sparkles"></i><b class="metric-notable"></b></span>
+        <span class="metric-help metric-targets-wrap"><i data-lucide="target"></i><b class="metric-targets"></b></span>
       </div>
       <div class="stop-links">
         <button class="stop-pin" type="button"><i data-lucide="pin"></i><span>Pin</span></button>
@@ -459,45 +498,6 @@
       </div>
     </article>
   </template>
-
-  <div id="quickStartModal" class="modal-backdrop" hidden>
-    <section class="quick-start-modal" role="dialog" aria-modal="true" aria-labelledby="quickStartTitle">
-      <button type="button" id="closeQuickStart" class="icon-button close-modal" title="Close">
-        <i data-lucide="x"></i>
-      </button>
-      <div class="modal-kicker">
-        <i data-lucide="sparkles"></i>
-        Quick Start
-      </div>
-      <h2 id="quickStartTitle">Plan a birding route in minutes</h2>
-      <div class="quick-steps">
-        <div>
-          <b>1</b>
-          <span>Add a route</span>
-          <p>Start with origin and destination. The sample route is ready for a fast trial.</p>
-        </div>
-        <div>
-          <b>2</b>
-          <span>Connect bird data</span>
-          <p>Paste an eBird token or use the server EBIRD_API_KEY for live recent sightings.</p>
-        </div>
-        <div>
-          <b>3</b>
-          <span>Choose targets</span>
-          <p>Targets improve the ranking by surfacing lifers and wanted species.</p>
-        </div>
-      </div>
-      <div class="modal-actions">
-        <button type="button" id="modalSampleButton" class="primary">
-          <i data-lucide="map-pinned"></i>
-          Use Sample Route
-        </button>
-        <button type="button" id="modalExploreButton">
-          Explore Without Setup
-        </button>
-      </div>
-    </section>
-  </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
@@ -512,6 +512,7 @@
       </div>
     </div>
   </div>
+  <script src="./ranking.js"></script>
   <script src="./auth.js"></script>
   <script src="./app.js"></script>
 </body>
