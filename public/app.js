@@ -418,7 +418,9 @@ async function resolveSharedSearch() {
   const slug = sharedTripSlugFromLocation();
   if (!slug) return readSharedSearchFromUrl();
   try {
-    const response = await fetch(`/api/trips/${encodeURIComponent(slug)}`);
+    const response = await fetch(`/api/trips/${encodeURIComponent(slug)}`, {
+      signal: AbortSignal.timeout(8000)
+    });
     if (!response.ok) {
       throw new Error(`The shared trip request failed (${response.status})`);
     }

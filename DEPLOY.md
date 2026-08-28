@@ -34,6 +34,8 @@ Shared trip links (`/t/<slug>`) are optional and need a Postgres database:
 DATABASE_URL=postgres://user:pass@host/db?sslmode=require
 ```
 
+Set `TRUST_PROXY=1` when the app runs behind a trusted reverse proxy (Render sets this via `render.yaml`) so rate limiting keys on the client IP the proxy appends to `x-forwarded-for`; leave it unset for direct connections so spoofed headers are ignored.
+
 Any managed Postgres works; Neon's free tier is a good fit since Render's free plan has no persistent disk. The app creates its own `trips` table on first use. If `DATABASE_URL` is unset, the share button falls back to long query-parameter links and everything else works unchanged. Shared trips that go unopened for 90 days are deleted automatically (swept opportunistically on writes — no cron needed).
 
 ## Render Blueprint

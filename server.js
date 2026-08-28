@@ -157,8 +157,16 @@ function readJsonBody(req, maxBytes) {
 }
 
 function requestClientIp(req) {
-  const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
-  return forwarded || req.socket.remoteAddress || "unknown";
+  // The leftmost x-forwarded-for entries are client-controlled, so only the
+  // entry appended by the trusted proxy in front of us (the last one) is safe
+  // to use — and only when we know such a proxy exists (TRUST_PROXY is set,
+  // as in render.yaml). Otherwise use the socket address alone.
+  if (/^(1|true|yes)$/i.test(process.env.TRUST_PROXY || "")) {
+    const hops = String(req.headers["x-forwarded-for"] || "").split(",");
+    const lastHop = hops[hops.length - 1].trim();
+    if (lastHop) return lastHop;
+  }
+  return req.socket.remoteAddress || "unknown";
 }
 
 function enforceTripCreateLimit(req) {

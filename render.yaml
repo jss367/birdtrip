@@ -12,6 +12,8 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      - key: TRUST_PROXY
+        value: "1"
       - key: EBIRD_API_KEY
         sync: false
       - key: DATABASE_URL

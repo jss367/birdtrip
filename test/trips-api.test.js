@@ -105,22 +105,43 @@ test("unknown and malformed slugs both read as expired", async () => {
   assert.equal(malformed.status, 404);
 });
 
-test("trip creation is rate limited per client", async () => {
-  setTripStore(fakeTripStore());
-  const headers = {
-    "content-type": "application/json",
-    "x-forwarded-for": "203.0.113.77"
-  };
+async function createTripsUntilLimited(makeHeaders) {
   let lastStatus = 0;
   for (let i = 0; i < 31; i += 1) {
     const response = await fetch(`${baseUrl}/api/trips`, {
       method: "POST",
-      headers,
+      headers: { "content-type": "application/json", ...makeHeaders(i) },
       body: JSON.stringify({ origin: "San Diego" })
     });
     lastStatus = response.status;
   }
+  return lastStatus;
+}
+
+test("rate limiting ignores x-forwarded-for unless TRUST_PROXY is set", async () => {
+  setTripStore(fakeTripStore());
+  delete process.env.TRUST_PROXY;
+  // Every request spoofs a different client IP, but without TRUST_PROXY the
+  // limiter keys on the socket address, so the limit still trips.
+  const lastStatus = await createTripsUntilLimited((i) => ({
+    "x-forwarded-for": `198.51.100.${i}`
+  }));
   assert.equal(lastStatus, 429);
+});
+
+test("with TRUST_PROXY, rate limiting keys on the proxy-appended address", async () => {
+  setTripStore(fakeTripStore());
+  process.env.TRUST_PROXY = "1";
+  try {
+    // The leftmost (client-controlled) entry varies per request; the limiter
+    // must key on the last entry, which the trusted proxy appended.
+    const lastStatus = await createTripsUntilLimited((i) => ({
+      "x-forwarded-for": `10.0.0.${i}, 203.0.113.77`
+    }));
+    assert.equal(lastStatus, 429);
+  } finally {
+    delete process.env.TRUST_PROXY;
+  }
 });
 
 test("shared trip pages serve the app shell", async () => {
