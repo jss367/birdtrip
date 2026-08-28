@@ -2136,6 +2136,21 @@ function routeTimeContext() {
   return { offsetMinutes: approxOffsetMinutes, approximate: true };
 }
 
+// Clock display context for a single stop. Routes can cross time zones, so a
+// stop whose rounded solar zone differs from the origin's is displayed with
+// the origin's display offset shifted by the solar difference (approximate),
+// while stops in the origin's zone keep the route context unchanged.
+function stopTimeContext(lng) {
+  const routeContext = routeTimeContext();
+  const stopOffset = timing?.stopClockOffsetMinutes?.({
+    originDisplayOffsetMinutes: routeContext.offsetMinutes,
+    originLng: state.route?.origin?.lng,
+    stopLng: lng
+  });
+  if (!stopOffset?.shifted) return routeContext;
+  return { offsetMinutes: stopOffset.offsetMinutes, approximate: true };
+}
+
 function departureTimestamp() {
   const value = cleanTimeString(state.params?.departTime);
   if (!value) return null;
@@ -2172,11 +2187,10 @@ function candidateTiming(candidate) {
     window: habitat.window
   });
   if (!assessment) return null;
-  return { arrivalMs, sun, habitat, assessment };
+  return { arrivalMs, sun, habitat, assessment, lng: candidate.lng };
 }
 
-function formatClock(ms) {
-  const context = routeTimeContext();
+function formatClock(ms, context = routeTimeContext()) {
   if (!context.approximate) {
     return new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   }
@@ -2195,12 +2209,13 @@ function timingChipLabel(stopTiming) {
 }
 
 function timingSentence(stopTiming) {
-  const arrival = formatClock(stopTiming.arrivalMs);
+  const context = stopTimeContext(stopTiming.lng);
+  const arrival = formatClock(stopTiming.arrivalMs, context);
   const habitatName = stopTiming.habitat.habitat === "general" ? "This stop" : `This ${stopTiming.habitat.habitat} stop`;
   const sunPart = stopTiming.sun.polar
     ? ""
-    : ` Sunrise ${formatClock(stopTiming.sun.sunriseMs)}, sunset ${formatClock(stopTiming.sun.sunsetMs)}.`;
-  const zonePart = routeTimeContext().approximate ? " Times are approximate local time along the route." : "";
+    : ` Sunrise ${formatClock(stopTiming.sun.sunriseMs, context)}, sunset ${formatClock(stopTiming.sun.sunsetMs, context)}.`;
+  const zonePart = context.approximate ? " Times are approximate local time at this stop." : "";
   return `You'd reach this stop around ${arrival} — ${stopTiming.assessment.note}. ${habitatName} is ${stopTiming.habitat.bestLabel}.${sunPart}${zonePart}`;
 }
 
@@ -5322,7 +5337,7 @@ function candidateChips(candidate, index) {
   if (isHotspot(candidate)) chips.push('<span class="stop-chip chip-hotspot">top hotspot</span>');
   const stopTiming = candidateTiming(candidate);
   if (stopTiming) {
-    chips.push(`<span class="stop-chip chip-time-${stopTiming.assessment.quality}" title="${escapeHtml(timingSentence(stopTiming))}">~${escapeHtml(formatClock(stopTiming.arrivalMs))} · ${escapeHtml(timingChipLabel(stopTiming))}</span>`);
+    chips.push(`<span class="stop-chip chip-time-${stopTiming.assessment.quality}" title="${escapeHtml(timingSentence(stopTiming))}">~${escapeHtml(formatClock(stopTiming.arrivalMs, stopTimeContext(stopTiming.lng)))} · ${escapeHtml(timingChipLabel(stopTiming))}</span>`);
   }
   return chips.join("");
 }
@@ -5929,7 +5944,7 @@ function buildReportMarkup() {
 
   const departureMs = isArea ? null : departureTimestamp();
   const departParam = departureMs
-    ? param("Leave at", `${formatClock(departureMs)}${routeTimeContext().approximate ? " (approximate local time along the route)" : ""}`)
+    ? param("Leave at", `${formatClock(departureMs)}${routeTimeContext().approximate ? " (approximate local time at the origin)" : ""}`)
     : "";
   const paramsBlock = `
     <h2>Search parameters</h2>
@@ -5978,7 +5993,7 @@ function buildReportMarkup() {
             <h3>${index + 1}. ${escapeHtml(candidate.name)}</h3>
             <p class="report-stop-meta">
               Score ${candidate.score} ·
-              ${stopTiming ? `arrive ~${escapeHtml(formatClock(stopTiming.arrivalMs))} (${escapeHtml(timingChipLabel(stopTiming))}) ·` : ""}
+              ${stopTiming ? `arrive ~${escapeHtml(formatClock(stopTiming.arrivalMs, stopTimeContext(stopTiming.lng)))} (${escapeHtml(timingChipLabel(stopTiming))}) ·` : ""}
               ${isArea
                 ? `~${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi from center ·`
                 : `+${Math.round(candidate.addedMinutes)} min · +${candidate.addedMiles.toFixed(1)} mi detour · ~${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi off route ·`}

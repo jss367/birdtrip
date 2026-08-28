@@ -52,6 +52,41 @@ test("approximate UTC offset tracks longitude in whole hours", () => {
   assert.equal(timing.approximateUtcOffsetMinutes(NaN), null);
 });
 
+test("stop clock offsets shift by each stop's solar zone on cross-timezone routes", () => {
+  // New York -> Los Angeles viewed from New York in summer: the origin is
+  // displayed with the exact browser offset (EDT, UTC-4). LA sits three
+  // rounded solar hours west, so its clocks shift to UTC-7 (PDT).
+  assert.deepEqual(
+    timing.stopClockOffsetMinutes({ originDisplayOffsetMinutes: -4 * 60, originLng: -74.006, stopLng: -118.243 }),
+    { offsetMinutes: -7 * 60, shifted: true }
+  );
+  // A stop in the origin's solar zone (Washington, DC) keeps the exact
+  // browser offset, DST included.
+  assert.deepEqual(
+    timing.stopClockOffsetMinutes({ originDisplayOffsetMinutes: -4 * 60, originLng: -74.006, stopLng: -77.037 }),
+    { offsetMinutes: -4 * 60, shifted: false }
+  );
+  // Approximate mode (viewer's clock doesn't match the route): the origin is
+  // displayed at its solar offset and each stop lands on its own solar zone.
+  assert.deepEqual(
+    timing.stopClockOffsetMinutes({ originDisplayOffsetMinutes: -5 * 60, originLng: -74.006, stopLng: -118.243 }),
+    { offsetMinutes: -8 * 60, shifted: true }
+  );
+  // Missing longitudes fall back to the origin display offset, unshifted.
+  assert.deepEqual(
+    timing.stopClockOffsetMinutes({ originDisplayOffsetMinutes: -4 * 60, originLng: undefined, stopLng: -118.243 }),
+    { offsetMinutes: -4 * 60, shifted: false }
+  );
+  assert.deepEqual(
+    timing.stopClockOffsetMinutes({ originDisplayOffsetMinutes: -4 * 60, originLng: -74.006, stopLng: NaN }),
+    { offsetMinutes: -4 * 60, shifted: false }
+  );
+  assert.deepEqual(
+    timing.stopClockOffsetMinutes({ originDisplayOffsetMinutes: NaN, originLng: -74.006, stopLng: -118.243 }),
+    { offsetMinutes: null, shifted: false }
+  );
+});
+
 test("habitat inference maps hotspot names to time-of-day windows", () => {
   assert.equal(timing.inferStopTiming("Sweetwater Wetlands").window, "dawn");
   assert.equal(timing.inferStopTiming("Tres Rios Marsh").habitat, "marsh");

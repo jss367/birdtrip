@@ -62,6 +62,26 @@
     return Math.round(lng / 15) * 60 || 0; // "|| 0" normalizes -0
   }
 
+  // Resolve the UTC offset (in minutes) to use when displaying a stop's clock
+  // times, given the offset already used for the route origin's clocks. Stops
+  // whose rounded solar zone matches the origin's keep the origin display
+  // offset unchanged (`shifted: false` — in the common case that offset is the
+  // browser timezone, exact and DST-correct). Stops a rounded hour or more
+  // away shift the origin display offset by the solar difference, which keeps
+  // DST consistent when both zones observe the same daylight-saving rules but
+  // is still an approximation (`shifted: true`).
+  function stopClockOffsetMinutes({ originDisplayOffsetMinutes, originLng, stopLng }) {
+    const originSolarOffset = approximateUtcOffsetMinutes(originLng);
+    const stopSolarOffset = approximateUtcOffsetMinutes(stopLng);
+    if (!Number.isFinite(originDisplayOffsetMinutes)
+      || originSolarOffset === null
+      || stopSolarOffset === null
+      || stopSolarOffset === originSolarOffset) {
+      return { offsetMinutes: Number.isFinite(originDisplayOffsetMinutes) ? originDisplayOffsetMinutes : null, shifted: false };
+    }
+    return { offsetMinutes: originDisplayOffsetMinutes + (stopSolarOffset - originSolarOffset), shifted: true };
+  }
+
   // Ordered by specificity: an "Owl Woods" is an owling spot before it is
   // woodland, and a "Marsh Lake" is a marsh before it is open water.
   const HABITAT_RULES = [
@@ -180,6 +200,7 @@
     assessArrival,
     estimateArrivalMs,
     inferStopTiming,
+    stopClockOffsetMinutes,
     sunTimes
   });
 }(globalThis));
