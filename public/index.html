@@ -69,6 +69,10 @@
             <i data-lucide="waves"></i>
             Migration
           </a>
+          <a id="seasonalLink" class="mode-switch-item" href="./seasonal.html">
+            <i data-lucide="calendar-range"></i>
+            Seasons
+          </a>
         </div>
 
         <section class="form-group" id="locationGroup">
@@ -150,7 +154,7 @@
               </div>
             </label>
             <label>
-              <span>Recent</span>
+              <span>Recent reports</span>
               <div class="number-field">
                 <input id="recentDays" name="recentDays" type="number" min="1" max="30" value="14">
                 <small>days</small>
@@ -252,7 +256,7 @@
           <span id="targetCount">0</span>
         </div>
         <div class="summary-tile tile-lifers">
-          <small>Potential Lifers</small>
+          <small>Not on Your List</small>
           <span id="liferCount">-</span>
         </div>
         <div class="summary-tile tile-notable">
@@ -283,7 +287,7 @@
         <div id="map"></div>
         <div class="map-glass" id="mapGlass" aria-hidden="true">
           <span><b class="legend-dot target"></b> Target species</span>
-          <span><b class="legend-dot lifer"></b> Likely lifer</span>
+          <span><b class="legend-dot lifer"></b> Unseen recent report</span>
           <span><b class="legend-dot notable"></b> Notable birds</span>
           <span><b class="legend-dot hotspot"></b> Ranked hotspot</span>
           <span><b class="legend-dot pinned"></b> Pinned stop</span>
@@ -301,7 +305,7 @@
           <div class="legend" id="resultLegend">
             <span><b class="tier high"></b>Top hotspot</span>
             <span><b class="tier mid"></b>Notable birds</span>
-            <span><b class="tier lifer"></b>Likely lifer</span>
+            <span><b class="tier lifer"></b>Unseen recent report</span>
             <span><b class="tier low"></b>Target match</span>
           </div>
           <div class="balance-field balance-field-results" id="balanceFieldResults" hidden>
@@ -442,7 +446,7 @@
     <div class="life-list-import">
       <div>
         <span>Life list</span>
-        <small id="lifeListStatus" class="field-hint">Import an eBird or iNaturalist CSV to boost likely lifers.</small>
+        <small id="lifeListStatus" class="field-hint">Import an eBird or iNaturalist CSV to highlight recently reported species not on your list.</small>
       </div>
       <div class="file-actions">
         <label class="file-button">
@@ -502,6 +506,7 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+  <script src="./ranking.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>

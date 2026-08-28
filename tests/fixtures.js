@@ -1,6 +1,8 @@
 // Hand-designed fixture: exact scores fall out of scoreCandidates' formulas.
 // All observations are same-day (freshness weight 1), one observation per
-// species (activity = 0.06n), no targets by default. birdPoints = 0.56n + 2.5nb.
+// species, no targets by default. Under the current model, birdPoints =
+// current + stable (+ personal) = n/90*28 + n/250*7 + richnessPrior(n)*10;
+// notables no longer score but still drive chips and marker classes.
 //
 // Geometry constraint: area-mode notables are attributed by distance (10 km),
 // not locId, so only the three far reserves carry notables and they sit
@@ -104,7 +106,7 @@ async function stubApis(page) {
   await page.route((url) => url.pathname === "/api/route", (route) => route.fulfill({ json: BASE_ROUTE }));
   await page.route((url) => url.pathname === "/api/route-via", (route) => {
     // Detour proportional to area distance: addedMinutes = 60 * d/25, so route
-    // practicality 20*(1 - m/60) reproduces the area conv-points column and
+    // practicality 40*(1 - m/60) reproduces the area conv-points column and
     // the fixture table's orderings carry over unchanged.
     const params = new URL(route.request().url()).searchParams;
     const [lng, lat] = String(params.get("via") || "0,0").split(",").map(Number);

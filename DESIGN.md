@@ -5,10 +5,10 @@
 Build a local web app that helps a birder decide where to stop while driving from one place to another. The central workflow is:
 
 1. Enter an origin and destination.
-2. Set a maximum allowed detour, recent-observation window, and route search radius.
-3. Find birding locations near the route.
-4. Rank stops by birding value and practical route cost.
-5. Inspect recent species, notable birds, and route impact before choosing stops.
+2. Set a maximum allowed detour, recent-report window, and route search radius.
+3. Discover known public eBird hotspots throughout the route corridor independently of recent reports.
+4. Rank stops by current evidence, hotspot history, personal value, and practical route cost.
+5. Inspect species reported recently, nearby notable birds, evidence confidence, and route impact before choosing stops.
 
 The first version should be useful for real trip planning without requiring paid map keys. It should also degrade cleanly when the user does not provide an eBird API token.
 
@@ -51,18 +51,20 @@ The public endpoints are appropriate for local/personal use and demos. A product
 ### Bird Data
 
 - eBird API endpoints accessed through the local server:
-  - Nearby recent observations: `/v2/data/obs/geo/recent` (route mode; returns only the most recent observation per species across the whole circle)
-  - Nearby recently visited hotspots: `/v2/ref/hotspot/geo` (area mode)
-  - Recent observations at a hotspot: `/v2/data/obs/{locId}/recent` (area mode; per-location species lists, so per-hotspot species counts are accurate)
+  - Nearby recent observations: `/v2/data/obs/geo/recent` (route/area activity prior only; returns the most recent observation per species across the whole circle)
+  - Nearby hotspot directory: `/v2/ref/hotspot/geo` without a recent-visit filter (route and area candidate discovery)
+  - Recent observations at a hotspot: `/v2/data/obs/{locId}/recent` (per-location evidence in route and area modes)
   - Nearby recent notable observations: `/v2/data/obs/geo/recent/notable`
   - Recent observations of a single species: `/v2/data/obs/geo/recent/{speciesCode}`
   - eBird taxonomy (`/v2/ref/taxonomy/ebird`), loaded once and cached in memory for species name → code lookup and autocomplete.
+  - Historic observations for a region on a date: `/v2/data/obs/{regionCode}/historic/{y}/{m}/{d}` (Seasonal Birds page only; three fixed dates per month of the previous calendar year estimate sampled-date occurrence, not complete-checklist frequency; raw responses are not cached, while bounded per-region aggregates are cached in memory for 24 hours).
+  - Region name lookup: `/v2/ref/region/info/{regionCode}` (Seasonal Birds page; the region itself is inferred from the most specific region code on the nearest hotspot).
 
-The app accepts an API token in the UI and stores it in browser local storage. The server can also read `EBIRD_API_KEY` from the environment.
+The app accepts an API token in the UI and keeps it in tab-scoped session storage. It stores the token in browser local storage only when the user opts into remembering it. The server can also read `EBIRD_API_KEY` from the environment.
 
 ## Search Modes
 
-- **Route** (default): rank birding stops along a driving corridor between origin and destination, filtered by an added-time detour budget.
+- **Route** (default): discover known hotspots along the complete driving corridor, fetch per-hotspot current evidence, then rank practical stops within an added-time detour budget.
 - **Area**: rank birding hotspots within a radius of a single location.
 - **Species**: answer "show me all the X sightings in this area." Pick a species (autocomplete backed by the eBird taxonomy) and a location, then map every recent sighting of that species within the radius. Sightings are grouped by location into individual map pins (not score-ranked hotspots); each pin and list row shows the report count, highest count seen, and how recent the latest sighting is.
 
@@ -108,7 +110,7 @@ Each stop row should show:
 - Birding score.
 - Added driving time.
 - Distance from route approximation.
-- Recent species count.
+- Species reported within the selected recent-report window.
 - Notable observation count.
 - Matched target species count.
 - Short recent-species preview.
@@ -136,13 +138,20 @@ A print-friendly report includes:
 
 ## Scoring
 
-Candidate score is intentionally transparent:
+Candidate score is intentionally transparent and normalized to 100 using the
+components enabled for the whole search:
 
-- Recent species count: up to 45 points.
-- Checklist activity proxy, represented by observation records: up to 15 points.
-- Notable observations: up to 20 points.
-- Target matches: up to 15 points.
-- Route practicality: up to 20 points, reduced as added minutes approach the user limit.
+- Route practicality or area proximity: up to 40 raw points.
+- Current per-hotspot evidence: up to 35 raw points, with a fixed seven-day
+  freshness half-life independent of the selected cutoff.
+- Stable hotspot-history prior: up to 10 raw points, using log-transformed
+  all-time richness rather than a hard cap.
+- Personal value: up to 15 raw points when targets or an imported list exist.
+
+Nearby notable reports are displayed as alerts and do not generically increase
+destination quality. Species absent from an imported list are described as
+“unseen recent reports,” not “likely lifers.” Scores saved under the older model
+remain labeled legacy scores and are not silently recalculated.
 
 The score is a planning heuristic, not an objective quality rating. Stops over the detour budget are excluded.
 
@@ -150,16 +159,21 @@ The score is a planning heuristic, not an objective quality rating. Stops over t
 
 1. Geocode origin and destination.
 2. Request a driving route from the selected routing provider.
-3. Sample points along the route at roughly even intervals.
-4. For each sampled point, request nearby eBird observations within the corridor radius.
-5. Group observations into candidate locations by eBird location ID when available, otherwise by rounded coordinates.
-6. For each candidate:
-   - Estimate route distance from sampled route point.
-   - Request a route from the selected provider for origin -> candidate -> destination.
-   - Compute added minutes against the direct route.
-   - Fetch notable observations near the candidate.
-   - Score and rank.
-7. Return the top candidates by score after detour filtering.
+3. Generate coverage-based directory samples, up to 16, and report when a route
+   is too long for complete coverage under the request ceiling.
+4. In parallel, request the unfiltered hotspot directory and a bounded nearby-
+   recent feed used only as a current-activity prior.
+5. Deduplicate hotspots and filter them by minimum distance to the complete
+   route polyline, not distance to sampled points.
+6. Build a geographically diverse 40-hotspot shortlist using log-transformed
+   history, current activity, route proximity, targets, and unseen-species
+   rescues.
+7. Fetch recent observations at each shortlisted hotspot so every displayed
+   species count is per-location evidence. Quiet hotspots remain candidates.
+8. Route an initial diverse cohort with concurrency three. If too few candidates
+   meet the detour budget, adaptively route a second cohort, up to 40 total.
+9. Fetch nearby notable reports for practical finalists, score, and return the
+   requested number of stops.
 
 This is deliberately bounded to protect public APIs: the client limits sample count and candidate count, while the server caches repeated requests in memory.
 

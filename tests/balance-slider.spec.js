@@ -13,9 +13,9 @@ test("prioritize-birding admits Far Rich Reserve at #1", async ({ page }) => {
 test("less-driving keeps only nearby stops", async ({ page }) => {
   await runAreaSearch(page);
   await setSlider(page, "#balanceSliderResults", 4);
-  // Utilities at convMult 5: L1 135.68, L4 133.20, L3 132.00, L2 128.32, L5 107.20.
+  // Utilities at convMult 5: L4 218.45, L1 217.32, L3 212.25, L2 207.17, L5 203.65.
   expect(await visibleOrder(page)).toEqual([
-    "City Park Alpha", "Harbor Park", "City Park Gamma", "City Park Beta", "Near Pond"
+    "Harbor Park", "City Park Alpha", "City Park Gamma", "City Park Beta", "Near Pond"
   ]);
 });
 
@@ -54,7 +54,7 @@ test("moving right reduces the average distance of top results", async ({ page }
 
 test("hotspot classification is stable across slider positions", async ({ page }) => {
   await runAreaSearch(page);
-  // Near Pond (20 species, siteQuality 14) must never classify as a top
+  // Near Pond (20 species, siteQuality ~26) must never classify as a top
   // hotspot, no matter how much the balance favors convenience.
   for (const position of [0, 2, 4]) {
     await setSlider(page, "#balanceSliderResults", position);
@@ -67,10 +67,10 @@ test("hotspot classification is stable across slider positions", async ({ page }
 
 test("life-list ranking matches the lifer-weighted baseline", async ({ page }) => {
   await runAreaSearch(page);
-  // All 78 "City Park Alpha Species N" marked seen: L1 gains 0 lifer points
-  // while every other candidate has >=8 unseen species -> capped +18 each.
-  // Default-balance utilities: L3 78.00, L4 76.00, L2 75.92, L6 74.04,
-  // L8 73.50, then L1 62.08 (#6 - the fully-birded park drops out).
+  // All 78 "City Park Alpha Species N" marked seen: L1 earns 0 personal points
+  // while every other candidate has >=8 unseen species -> capped +15 each.
+  // Default-balance utilities: L3 83.25, L4 83.05, L2 81.37, L1 70.12,
+  // L5 65.05 - the fully-birded park drops from #1 to #4.
   const rows = Array.from({ length: 78 }, (_, i) => `City Park Alpha Species ${i + 1}`).join("\n");
   await page.setInputFiles("#lifeListInput", {
     name: "life-list.csv",
@@ -79,7 +79,7 @@ test("life-list ranking matches the lifer-weighted baseline", async ({ page }) =
   });
   await expect(page.locator(".stop-card")).toHaveCount(5);
   expect(await visibleOrder(page)).toEqual([
-    "City Park Gamma", "Harbor Park", "City Park Beta", "Wetland Reserve North", "Far Rich Reserve"
+    "City Park Gamma", "Harbor Park", "City Park Beta", "City Park Alpha", "Near Pond"
   ]);
 });
 

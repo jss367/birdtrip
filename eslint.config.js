@@ -4,6 +4,9 @@ const globals = require("globals");
 // Flat config. ESLint ignores node_modules and .git by default.
 // The shipped app stays dependency-free; ESLint is a devDependency only.
 module.exports = [
+  {
+    ignores: [".context/**"]
+  },
   js.configs.recommended,
   {
     // Browser client, loaded as a classic script (not a module).
@@ -19,9 +22,9 @@ module.exports = [
     }
   },
   {
-    // Node server, tests, and config files (CommonJS). Tests also get browser
-    // globals for code inside page.evaluate callbacks.
-    files: ["server.js", "eslint.config.js", "playwright.config.js", "tests/**/*.js"],
+    // Node server, tests, and config files (CommonJS). Playwright tests also
+    // get browser globals for code inside page.evaluate callbacks.
+    files: ["server.js", "eslint.config.js", "playwright.config.js", "test/**/*.js", "tests/**/*.js"],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "commonjs",
