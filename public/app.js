@@ -46,6 +46,7 @@ const state = {
 };
 
 const ranking = window.BirdtripRanking;
+const navigationExport = window.BirdtripNavigationExport;
 const SCORING_VERSION = 2;
 const DISCOVERY_QUERY_RADIUS_KM = 200;
 const ACTIVITY_QUERY_RADIUS_KM = 50;
@@ -151,6 +152,10 @@ const els = {
   itineraryAddedTime: document.querySelector("#itineraryAddedTime"),
   itineraryTotalDrive: document.querySelector("#itineraryTotalDrive"),
   clearItinerary: document.querySelector("#clearItinerary"),
+  navigationExport: document.querySelector("#navigationExport"),
+  navigationExportSummary: document.querySelector("#navigationExportSummary"),
+  googleMapsRouteLink: document.querySelector("#googleMapsRouteLink"),
+  downloadGpxButton: document.querySelector("#downloadGpxButton"),
   resultsList: document.querySelector("#resultsList"),
   resultTemplate: document.querySelector("#resultTemplate"),
   detailsPanel: document.querySelector("#detailsPanel"),
@@ -306,6 +311,7 @@ function init() {
   });
   els.clearComparisonButton.addEventListener("click", clearComparison);
   els.clearItinerary.addEventListener("click", clearPinnedStops);
+  els.downloadGpxButton.addEventListener("click", downloadGpxRoute);
   els.previewBirdingRouteButton.addEventListener("click", previewBestBirdingRoute);
   els.pinBirdingRouteButton.addEventListener("click", pinBestBirdingRoute);
   els.compareBirdingRouteButton.addEventListener("click", compareBestBirdingRoute);
@@ -2281,7 +2287,8 @@ function setBusy(isBusy) {
     els.loadTripButton,
     els.deleteTripButton,
     els.clearComparisonButton,
-    els.clearItinerary
+    els.clearItinerary,
+    els.downloadGpxButton
   ];
 
   controls.forEach((control) => {
@@ -4463,7 +4470,102 @@ function renderItineraryBuilder() {
   els.itineraryList.querySelectorAll("[data-remove-id]").forEach((button) => {
     button.addEventListener("click", () => removePinnedStop(button.dataset.removeId));
   });
+  renderNavigationExport(stops);
   if (window.lucide) window.lucide.createIcons();
+}
+
+function navigationRoutePoints(stops = pinnedStops()) {
+  const points = [];
+  if (state.origin) {
+    points.push({
+      ...state.origin,
+      name: state.origin.name || state.params?.origin || "Start",
+      type: "Start"
+    });
+  }
+  stops.forEach((stop, index) => {
+    points.push({ ...stop, name: `Stop ${index + 1}: ${stop.name}`, type: "Birding stop" });
+  });
+  if (state.destination) {
+    points.push({
+      ...state.destination,
+      name: state.destination.name || state.params?.destination || "Destination",
+      type: "Destination"
+    });
+  }
+  return points;
+}
+
+function navigationTrackCoordinates(stops = pinnedStops()) {
+  if (state.itinerary?.status === "ready") {
+    return state.itinerary.route?.geometry?.coordinates || [];
+  }
+  if (stops.length === 1) {
+    return stops[0].viaRoute?.geometry?.coordinates || [];
+  }
+  if (!stops.length) return state.route?.geometry?.coordinates || [];
+  return [];
+}
+
+function renderNavigationExport(stops = pinnedStops()) {
+  const routeMode = (state.params?.mode || state.mode) === "route";
+  const points = navigationRoutePoints(stops);
+  const canExport = routeMode && Boolean(state.route) && points.length >= 2;
+  els.navigationExport.hidden = !routeMode;
+  els.downloadGpxButton.disabled = !canExport;
+
+  const googleMapsUrl = canExport ? navigationExport.buildGoogleMapsUrl(points) : "";
+  if (googleMapsUrl) {
+    els.googleMapsRouteLink.href = googleMapsUrl;
+    els.googleMapsRouteLink.removeAttribute("aria-disabled");
+    els.googleMapsRouteLink.removeAttribute("tabindex");
+  } else {
+    els.googleMapsRouteLink.removeAttribute("href");
+    els.googleMapsRouteLink.setAttribute("aria-disabled", "true");
+    els.googleMapsRouteLink.tabIndex = -1;
+  }
+
+  els.navigationExportSummary.textContent = stops.length
+    ? `${stops.length} pinned ${pluralize("stop", stops.length)} will be exported in this order.`
+    : canExport
+      ? "Exports the direct route. Pin birding stops to add waypoints."
+      : "Run a route search to create navigation files."
+}
+
+function downloadGpxRoute() {
+  const stops = pinnedStops();
+  const points = navigationRoutePoints(stops);
+  if (!state.route || points.length < 2) {
+    setStatus("Nothing to export", "Run a route search before downloading a navigation file.");
+    return;
+  }
+
+  const name = state.routeName || `${state.params?.origin || "Start"} to ${state.params?.destination || "Destination"}`;
+  const gpx = navigationExport.buildGpxDocument({
+    name,
+    points,
+    trackPoints: navigationTrackCoordinates(stops)
+  });
+  downloadBlob(gpx, "application/gpx+xml;charset=utf-8", navigationFileName(name));
+  setStatus("GPX downloaded", `${stops.length ? `${stops.length} pinned ${pluralize("stop", stops.length)} and ` : ""}the route endpoints are ready to import into a navigation app.`);
+}
+
+function navigationFileName(name) {
+  const base = slugify(name) || "route";
+  const date = new Date().toISOString().slice(0, 10);
+  return `birdtrip-${base}-navigation-${date}.gpx`;
+}
+
+function downloadBlob(contents, type, fileName) {
+  const blob = new Blob([contents], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function renderResults() {
@@ -5816,15 +5918,7 @@ function downloadHtmlReport() {
 
   renderReport();
   const documentHtml = buildStandaloneReportDocument(buildReportMarkup());
-  const blob = new Blob([documentHtml], { type: "text/html;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = reportFileName();
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  downloadBlob(documentHtml, "text/html;charset=utf-8", reportFileName());
   setStatus("Report downloaded", "Saved a standalone HTML trip report for offline reference.");
 }
 
