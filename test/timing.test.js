@@ -87,6 +87,36 @@ test("stop clock offsets shift by each stop's solar zone on cross-timezone route
   );
 });
 
+test("calendar days apart count displayed midnights between departure and arrival", () => {
+  // Depart 10 PM UTC-5; 2.5 hours of driving lands at 12:30 AM the next
+  // displayed day.
+  const departure = Date.UTC(2026, 7, 28, 3, 0); // 10:00 PM Aug 27, UTC-5
+  assert.equal(
+    timing.calendarDaysApart({ fromMs: departure, toMs: departure + 2.5 * HOUR_MS, offsetMinutes: -5 * 60 }),
+    1
+  );
+  // An hour after departure is still 11 PM on the departure day.
+  assert.equal(
+    timing.calendarDaysApart({ fromMs: departure, toMs: departure + 1 * HOUR_MS, offsetMinutes: -5 * 60 }),
+    0
+  );
+  // The day boundary follows the display offset: at UTC-6 the same arrival
+  // instant is 11:30 PM, still on the departure day.
+  assert.equal(
+    timing.calendarDaysApart({ fromMs: departure, toMs: departure + 2.5 * HOUR_MS, offsetMinutes: -6 * 60 }),
+    0
+  );
+  // A cross-country route can land several displayed days later.
+  assert.equal(
+    timing.calendarDaysApart({ fromMs: departure, toMs: departure + 49 * HOUR_MS, offsetMinutes: -5 * 60 }),
+    2
+  );
+  // Non-finite inputs are rejected rather than guessed at.
+  assert.equal(timing.calendarDaysApart({ fromMs: NaN, toMs: departure, offsetMinutes: 0 }), null);
+  assert.equal(timing.calendarDaysApart({ fromMs: departure, toMs: departure, offsetMinutes: undefined }), null);
+  assert.equal(timing.calendarDaysApart({}), null);
+});
+
 test("habitat inference maps hotspot names to time-of-day windows", () => {
   assert.equal(timing.inferStopTiming("Sweetwater Wetlands").window, "dawn");
   assert.equal(timing.inferStopTiming("Tres Rios Marsh").habitat, "marsh");

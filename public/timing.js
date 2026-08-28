@@ -82,6 +82,20 @@
     return { offsetMinutes: originDisplayOffsetMinutes + (stopSolarOffset - originSolarOffset), shifted: true };
   }
 
+  // Whole calendar days between two instants as read off a clock fixed at
+  // `offsetMinutes` east of UTC: 0 when both fall on the same displayed date,
+  // 1 when `toMs` lands on the next displayed date, and so on. Used to flag
+  // arrivals that a long route pushes past midnight, which would otherwise
+  // render as the same clock time on the wrong day.
+  function calendarDaysApart(options = {}) {
+    const fromMs = Number(options.fromMs);
+    const toMs = Number(options.toMs);
+    const offsetMinutes = Number(options.offsetMinutes);
+    if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || !Number.isFinite(offsetMinutes)) return null;
+    const dayIndex = (ms) => Math.floor((ms + offsetMinutes * 60000) / DAY_MS);
+    return dayIndex(toMs) - dayIndex(fromMs);
+  }
+
   // Ordered by specificity: an "Owl Woods" is an owling spot before it is
   // woodland, and a "Marsh Lake" is a marsh before it is open water.
   const HABITAT_RULES = [
@@ -198,6 +212,7 @@
   root.BirdtripTiming = Object.freeze({
     approximateUtcOffsetMinutes,
     assessArrival,
+    calendarDaysApart,
     estimateArrivalMs,
     inferStopTiming,
     stopClockOffsetMinutes,

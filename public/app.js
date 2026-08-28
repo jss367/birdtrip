@@ -2205,6 +2205,33 @@ function formatClock(ms, context = routeTimeContext()) {
     .toLocaleTimeString([], { hour: "numeric", minute: "2-digit", timeZone: "UTC" });
 }
 
+// Day marker (" +1d", " +2d", …) appended to an arrival clock when the route
+// pushes the arrival past midnight, so tomorrow's 1:05 AM is distinguishable
+// from today's. Days are counted on the same clock formatClock displays:
+// browser-local calendar days when the context is exact, fixed-offset days
+// when it is approximate.
+function arrivalDayMarker(arrivalMs, context) {
+  const departureMs = departureTimestamp();
+  if (departureMs === null || !Number.isFinite(arrivalMs)) return "";
+  let days;
+  if (context.approximate) {
+    days = timing?.calendarDaysApart?.({ fromMs: departureMs, toMs: arrivalMs, offsetMinutes: context.offsetMinutes });
+  } else {
+    const localDayStartMs = (ms) => {
+      const local = new Date(ms);
+      return Date.UTC(local.getFullYear(), local.getMonth(), local.getDate());
+    };
+    days = Math.round((localDayStartMs(arrivalMs) - localDayStartMs(departureMs)) / 86400000);
+  }
+  return Number.isFinite(days) && days > 0 ? ` +${days}d` : "";
+}
+
+// The one arrival-clock string every surface (chips, details, report) shares:
+// clock time plus the overnight day marker.
+function arrivalClockLabel(stopTiming, context = stopTimeContext(stopTiming.lng)) {
+  return `${formatClock(stopTiming.arrivalMs, context)}${arrivalDayMarker(stopTiming.arrivalMs, context)}`;
+}
+
 function timingChipLabel(stopTiming) {
   switch (stopTiming.assessment.quality) {
     case "prime": return "prime time";
@@ -2217,7 +2244,7 @@ function timingChipLabel(stopTiming) {
 
 function timingSentence(stopTiming) {
   const context = stopTimeContext(stopTiming.lng);
-  const arrival = formatClock(stopTiming.arrivalMs, context);
+  const arrival = arrivalClockLabel(stopTiming, context);
   const habitatName = stopTiming.habitat.habitat === "general" ? "This stop" : `This ${stopTiming.habitat.habitat} stop`;
   const sunPart = stopTiming.sun.polar
     ? ""
@@ -5344,7 +5371,7 @@ function candidateChips(candidate, index) {
   if (isHotspot(candidate)) chips.push('<span class="stop-chip chip-hotspot">top hotspot</span>');
   const stopTiming = candidateTiming(candidate);
   if (stopTiming) {
-    chips.push(`<span class="stop-chip chip-time-${stopTiming.assessment.quality}" title="${escapeHtml(timingSentence(stopTiming))}">~${escapeHtml(formatClock(stopTiming.arrivalMs, stopTimeContext(stopTiming.lng)))} · ${escapeHtml(timingChipLabel(stopTiming))}</span>`);
+    chips.push(`<span class="stop-chip chip-time-${stopTiming.assessment.quality}" title="${escapeHtml(timingSentence(stopTiming))}">~${escapeHtml(arrivalClockLabel(stopTiming))} · ${escapeHtml(timingChipLabel(stopTiming))}</span>`);
   }
   return chips.join("");
 }
@@ -6000,7 +6027,7 @@ function buildReportMarkup() {
             <h3>${index + 1}. ${escapeHtml(candidate.name)}</h3>
             <p class="report-stop-meta">
               Score ${candidate.score} ·
-              ${stopTiming ? `arrive ~${escapeHtml(formatClock(stopTiming.arrivalMs, stopTimeContext(stopTiming.lng)))} (${escapeHtml(timingChipLabel(stopTiming))}) ·` : ""}
+              ${stopTiming ? `arrive ~${escapeHtml(arrivalClockLabel(stopTiming))} (${escapeHtml(timingChipLabel(stopTiming))}) ·` : ""}
               ${isArea
                 ? `~${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi from center ·`
                 : `+${Math.round(candidate.addedMinutes)} min · +${candidate.addedMiles.toFixed(1)} mi detour · ~${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi off route ·`}
