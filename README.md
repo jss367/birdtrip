@@ -10,6 +10,17 @@ npm start
 
 Then open `http://localhost:4177`.
 
+## Verify
+
+Run the unit tests and lint checks before submitting changes:
+
+```sh
+npm test
+npm run lint
+```
+
+The unit tests cover route-corridor geometry, detour calculations, ranking scores, seasonal analysis, and server-side caching behavior.
+
 ## Launch
 
 See [DEPLOY.md](./DEPLOY.md) for production hosting, DNS, Docker, and environment-variable notes.
@@ -45,3 +56,9 @@ Live bird data uses the eBird API. Either:
 You can also import an eBird or iNaturalist CSV/TSV life list in the app. Imported common names, scientific names, and eBird species codes stay in the browser and highlight recent reports of species not on your list.
 
 OpenStreetMap mode uses public Nominatim and OSRM demo endpoints for geocoding and routing. That is fine for local experimentation, but a production deployment should use services with explicit quotas.
+
+## Server safeguards
+
+Successful upstream responses are cached in memory. eBird and routing responses default to a 10-minute time to live, while geocoding responses default to 24 hours. Concurrent identical requests share one upstream fetch, so repeated searches and overlapping searches do not spend quota unnecessarily. The cache is bounded to 1,000 entries and is cleared whenever the server restarts.
+
+API routes are also limited to 300 requests per client per minute by default and return `429` with `RateLimit-*` and `Retry-After` headers when the limit is exceeded. These settings can be adjusted with environment variables described in [DEPLOY.md](./DEPLOY.md).

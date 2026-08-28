@@ -49,6 +49,7 @@ const state = {
 };
 
 const ranking = window.BirdtripRanking;
+const navigationExport = window.BirdtripNavigationExport;
 const SCORING_VERSION = 2;
 const DISCOVERY_QUERY_RADIUS_KM = 200;
 const ACTIVITY_QUERY_RADIUS_KM = 50;
@@ -154,6 +155,10 @@ const els = {
   itineraryAddedTime: document.querySelector("#itineraryAddedTime"),
   itineraryTotalDrive: document.querySelector("#itineraryTotalDrive"),
   clearItinerary: document.querySelector("#clearItinerary"),
+  navigationExport: document.querySelector("#navigationExport"),
+  navigationExportSummary: document.querySelector("#navigationExportSummary"),
+  googleMapsRouteLink: document.querySelector("#googleMapsRouteLink"),
+  downloadGpxButton: document.querySelector("#downloadGpxButton"),
   resultsList: document.querySelector("#resultsList"),
   resultTemplate: document.querySelector("#resultTemplate"),
   detailsPanel: document.querySelector("#detailsPanel"),
@@ -309,6 +314,7 @@ async function init() {
   });
   els.clearComparisonButton.addEventListener("click", clearComparison);
   els.clearItinerary.addEventListener("click", clearPinnedStops);
+  els.downloadGpxButton.addEventListener("click", downloadGpxRoute);
   els.previewBirdingRouteButton.addEventListener("click", previewBestBirdingRoute);
   els.pinBirdingRouteButton.addEventListener("click", pinBestBirdingRoute);
   els.compareBirdingRouteButton.addEventListener("click", compareBestBirdingRoute);
@@ -1369,6 +1375,7 @@ async function runRouteSearch(params) {
   state.route = { ...route, origin, destination };
   renderRoute(route.geometry.coordinates);
   updateRouteSummary(route);
+  renderNavigationExport();
 
   if (!shouldAttemptEbirdSearch()) {
     setStatus("eBird access needed", "Route loaded. Add a personal eBird token in Settings (the gear icon) to rank live birding stops.");
@@ -2378,7 +2385,8 @@ function setBusy(isBusy) {
     els.loadTripButton,
     els.deleteTripButton,
     els.clearComparisonButton,
-    els.clearItinerary
+    els.clearItinerary,
+    els.downloadGpxButton
   ];
 
   controls.forEach((control) => {
@@ -2409,13 +2417,18 @@ async function apiJson(url, options = {}) {
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    if (String(url).startsWith("/api/ebird/") && [401, 403, 429].includes(response.status)) {
+    if (
+      String(url).startsWith("/api/ebird/")
+      && [401, 403, 429].includes(response.status)
+      && payload.code !== "RATE_LIMITED"
+    ) {
       revealEbirdTokenForError(response.status, options.token ? "personal" : "shared", { prompt: !options.background });
     }
     const base = payload.error || response.statusText || "Request failed";
     const detail = detailText(payload.details);
     const error = new Error(detail ? `${base} — ${detail}` : base);
     error.status = response.status;
+    error.code = payload.code;
     error.details = payload.details;
     throw error;
   }
@@ -3498,14 +3511,7 @@ async function fetchHotspotDirectoryForRoute(samples, routeIndex, params) {
     addWarning(`${failed} of ${samples.length} hotspot-directory requests failed; corridor discovery is partial.`);
   }
 
-  return Array.from(byId.values()).map((hotspot) => {
-    const routeMatch = routeIndex.distanceTo(hotspot);
-    return {
-      ...hotspot,
-      routeDistanceKm: routeMatch.distanceKm,
-      routeProgress: routeMatch.progress
-    };
-  }).filter((hotspot) => hotspot.routeDistanceKm <= params.radiusKm);
+  return ranking.filterHotspotsByCorridor(byId.values(), routeIndex, params.radiusKm);
 }
 
 function applyActivityPrior(hotspots, observationsBySample, params) {
@@ -3919,8 +3925,12 @@ async function evaluateDetours(candidates, origin, destination, baseDurationSeco
         try {
           const viaRoute = await apiJson(routeUrl("/api/route-via", origin, destination, candidate, params.mapProvider));
           candidate.viaRoute = viaRoute;
-          candidate.addedMinutes = Math.max(0, (viaRoute.durationSeconds - baseDurationSeconds) / 60);
-          candidate.addedMiles = Math.max(0, miles(viaRoute.distanceMeters - state.route.distanceMeters));
+          const impact = ranking.detourImpact(viaRoute, {
+            durationSeconds: baseDurationSeconds,
+            distanceMeters: state.route.distanceMeters
+          });
+          candidate.addedMinutes = impact.addedMinutes;
+          candidate.addedMiles = impact.addedMiles;
           return candidate;
         } catch (error) {
           candidate.routeError = error.message;
@@ -4076,42 +4086,30 @@ async function addAreaNotableObservations(candidates, params) {
 function scoreCandidates(candidates, params) {
   const targetsEnabled = Boolean(params.targets.length);
   const unseenEnabled = Boolean(params.lifeList?.size);
-  const personalEnabled = targetsEnabled || unseenEnabled;
-  const enabledMaxima = {
-    practicality: 40,
-    current: 35,
-    stable: 10,
-    ...(personalEnabled ? { personal: 15 } : {})
-  };
   for (const candidate of candidates) {
     const weightedSpecies = weightedUniqueSpecies(candidate.observations);
     const weightedActivity = weightedObservationTotal(candidate.observations);
     const weightedTargets = weightedTargetTotal(candidate.observations, params.targets);
     const weightedUnseen = weightedUnseenTotal(candidate.observations, params.lifeList);
-    const currentScore = Math.min(weightedSpecies, 90) / 90 * 28
-      + Math.min(weightedActivity, 250) / 250 * 7;
-    const stableScore = ranking.richnessPrior(candidate.allTimeSpeciesCount) * 10;
-    const personalScore = ranking.personalValueScore({
+    const result = ranking.calculateCandidateScore({
+      mode: params.mode,
+      weightedSpecies,
+      weightedActivity,
+      allTimeSpeciesCount: candidate.allTimeSpeciesCount,
       weightedTargets,
       weightedUnseen,
       targetsEnabled,
-      unseenEnabled
+      unseenEnabled,
+      routeDistanceKm: candidate.routeDistanceKm,
+      radiusKm: params.radiusKm,
+      addedMinutes: candidate.addedMinutes,
+      maxDetour: params.maxDetour
     });
-    const practicalityScore = params.mode === "area"
-      ? Math.max(0, 40 * (1 - candidate.routeDistanceKm / Math.max(params.radiusKm, 1)))
-      : params.maxDetour === 0
-        ? 40
-        : Math.max(0, 40 * (1 - candidate.addedMinutes / Math.max(params.maxDetour, 1)));
     candidate.scoredWithLifeList = Boolean(params.lifeList?.size);
     candidate.scoringVersion = SCORING_VERSION;
-    candidate.enabledScoreParts = Object.keys(enabledMaxima);
-    candidate.scoreParts = {
-      current: currentScore,
-      stable: stableScore,
-      personal: personalScore,
-      practicality: practicalityScore
-    };
-    candidate.score = ranking.normalizedScore(candidate.scoreParts, enabledMaxima);
+    candidate.enabledScoreParts = result.enabledScoreParts;
+    candidate.scoreParts = result.scoreParts;
+    candidate.score = result.score;
   }
 }
 
@@ -4560,7 +4558,108 @@ function renderItineraryBuilder() {
   els.itineraryList.querySelectorAll("[data-remove-id]").forEach((button) => {
     button.addEventListener("click", () => removePinnedStop(button.dataset.removeId));
   });
+  renderNavigationExport(stops);
   if (window.lucide) window.lucide.createIcons();
+}
+
+function navigationRoutePoints(stops = pinnedStops()) {
+  const points = [];
+  if (state.origin) {
+    points.push({
+      ...state.origin,
+      name: state.origin.name || state.params?.origin || "Start",
+      type: "Start"
+    });
+  }
+  stops.forEach((stop, index) => {
+    points.push({ ...stop, name: `Stop ${index + 1}: ${stop.name}`, type: "Birding stop" });
+  });
+  if (state.destination) {
+    points.push({
+      ...state.destination,
+      name: state.destination.name || state.params?.destination || "Destination",
+      type: "Destination"
+    });
+  }
+  return points;
+}
+
+function navigationTrackCoordinates(stops = pinnedStops()) {
+  if (state.itinerary?.status === "ready") {
+    return state.itinerary.route?.geometry?.coordinates || [];
+  }
+  if (stops.length === 1) {
+    return stops[0].viaRoute?.geometry?.coordinates || [];
+  }
+  if (!stops.length) return state.route?.geometry?.coordinates || [];
+  return [];
+}
+
+function renderNavigationExport(stops = pinnedStops()) {
+  const routeMode = (state.params?.mode || state.mode) === "route";
+  const points = navigationRoutePoints(stops);
+  const canExport = routeMode && Boolean(state.route) && points.length >= 2;
+  els.navigationExport.hidden = !routeMode;
+  els.downloadGpxButton.disabled = !canExport;
+
+  const googleMapsUrl = canExport ? navigationExport.buildGoogleMapsUrl(points) : "";
+  if (googleMapsUrl) {
+    els.googleMapsRouteLink.href = googleMapsUrl;
+    els.googleMapsRouteLink.removeAttribute("aria-disabled");
+    els.googleMapsRouteLink.removeAttribute("tabindex");
+    els.googleMapsRouteLink.title = "Open this route in Google Maps";
+  } else {
+    els.googleMapsRouteLink.removeAttribute("href");
+    els.googleMapsRouteLink.setAttribute("aria-disabled", "true");
+    els.googleMapsRouteLink.tabIndex = -1;
+    els.googleMapsRouteLink.title = canExport && stops.length > 3
+      ? "Google Maps mobile links support at most 3 waypoints; use GPX to export every stop"
+      : "Run a route search to open directions";
+  }
+
+  els.navigationExportSummary.textContent = stops.length > 3
+    ? `GPX includes all ${stops.length} pinned stops. Google Maps is limited to 3 waypoints on mobile.`
+    : stops.length
+    ? `${stops.length} pinned ${pluralize("stop", stops.length)} will be exported in this order.`
+    : canExport
+      ? "Exports the direct route. Pin birding stops to add waypoints."
+      : "Run a route search to create navigation files."
+}
+
+function downloadGpxRoute() {
+  const stops = pinnedStops();
+  const points = navigationRoutePoints(stops);
+  if (!state.route || points.length < 2) {
+    setStatus("Nothing to export", "Run a route search before downloading a navigation file.");
+    return;
+  }
+
+  const name = state.routeName || `${state.params?.origin || "Start"} to ${state.params?.destination || "Destination"}`;
+  const gpx = navigationExport.buildGpxDocument({
+    name,
+    points,
+    trackPoints: navigationTrackCoordinates(stops)
+  });
+  downloadBlob(gpx, "application/gpx+xml;charset=utf-8", navigationFileName(name));
+  setStatus("GPX downloaded", `${stops.length ? `${stops.length} pinned ${pluralize("stop", stops.length)} and ` : ""}the route endpoints are ready to import into a navigation app.`);
+}
+
+function navigationFileName(name) {
+  const base = slugify(name) || "route";
+  const date = new Date().toISOString().slice(0, 10);
+  return `birdtrip-${base}-navigation-${date}.gpx`;
+}
+
+function downloadBlob(contents, type, fileName) {
+  const blob = new Blob([contents], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function renderResults() {
@@ -5913,15 +6012,7 @@ function downloadHtmlReport() {
 
   renderReport();
   const documentHtml = buildStandaloneReportDocument(buildReportMarkup());
-  const blob = new Blob([documentHtml], { type: "text/html;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = reportFileName();
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  downloadBlob(documentHtml, "text/html;charset=utf-8", reportFileName());
   setStatus("Report downloaded", "Saved a standalone HTML trip report for offline reference.");
 }
 
