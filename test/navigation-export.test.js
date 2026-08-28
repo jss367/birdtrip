@@ -22,6 +22,19 @@ test("Google Maps route preserves ordered stops as driving waypoints", () => {
   assert.equal(url.searchParams.get("waypoints"), "33.1,-113.2");
 });
 
+test("Google Maps export refuses to silently truncate mobile waypoints", () => {
+  const url = navigationExport.buildGoogleMapsUrl([
+    { lat: 32, lng: -114, name: "Start" },
+    { lat: 32.1, lng: -113.9, name: "Stop 1" },
+    { lat: 32.2, lng: -113.8, name: "Stop 2" },
+    { lat: 32.3, lng: -113.7, name: "Stop 3" },
+    { lat: 32.4, lng: -113.6, name: "Stop 4" },
+    { lat: 33, lng: -113, name: "Destination" }
+  ]);
+
+  assert.equal(url, "");
+});
+
 test("GPX export includes named route points, escaped XML, and route geometry", () => {
   const gpx = navigationExport.buildGpxDocument({
     name: "Yuma & Phoenix",

@@ -1325,6 +1325,7 @@ async function runRouteSearch(params) {
   state.route = { ...route, origin, destination };
   renderRoute(route.geometry.coordinates);
   updateRouteSummary(route);
+  renderNavigationExport();
 
   if (!shouldAttemptEbirdSearch()) {
     setStatus("eBird access needed", "Route loaded. Add a personal eBird token in Settings (the gear icon) to rank live birding stops.");
@@ -4519,13 +4520,19 @@ function renderNavigationExport(stops = pinnedStops()) {
     els.googleMapsRouteLink.href = googleMapsUrl;
     els.googleMapsRouteLink.removeAttribute("aria-disabled");
     els.googleMapsRouteLink.removeAttribute("tabindex");
+    els.googleMapsRouteLink.title = "Open this route in Google Maps";
   } else {
     els.googleMapsRouteLink.removeAttribute("href");
     els.googleMapsRouteLink.setAttribute("aria-disabled", "true");
     els.googleMapsRouteLink.tabIndex = -1;
+    els.googleMapsRouteLink.title = canExport && stops.length > 3
+      ? "Google Maps mobile links support at most 3 waypoints; use GPX to export every stop"
+      : "Run a route search to open directions";
   }
 
-  els.navigationExportSummary.textContent = stops.length
+  els.navigationExportSummary.textContent = stops.length > 3
+    ? `GPX includes all ${stops.length} pinned stops. Google Maps is limited to 3 waypoints on mobile.`
+    : stops.length
     ? `${stops.length} pinned ${pluralize("stop", stops.length)} will be exported in this order.`
     : canExport
       ? "Exports the direct route. Pin birding stops to add waypoints."

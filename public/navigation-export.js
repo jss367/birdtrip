@@ -1,6 +1,8 @@
 (function exposeBirdtripNavigationExport(root) {
   "use strict";
 
+  const MAX_GOOGLE_MAPS_WAYPOINTS = 3;
+
   function validPoint(point) {
     return Number.isFinite(Number(point?.lat)) && Number.isFinite(Number(point?.lng));
   }
@@ -33,6 +35,7 @@
     url.searchParams.set("origin", coordinate(routePoints[0]));
     url.searchParams.set("destination", coordinate(routePoints.at(-1)));
     const waypoints = routePoints.slice(1, -1);
+    if (waypoints.length > MAX_GOOGLE_MAPS_WAYPOINTS) return "";
     if (waypoints.length) {
       url.searchParams.set("waypoints", waypoints.map(coordinate).join("|"));
     }
