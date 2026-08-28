@@ -85,6 +85,34 @@ test("corridor filtering includes the boundary and annotates route position", ()
   );
 });
 
+test("backfilling route metrics reconstructs missing progress from geometry", () => {
+  const route = [[0, 0], [10, 0], [10, 10]];
+  const legacy = { lat: 1, lng: 5, routeDistanceKm: 111 };
+  const bare = { lat: 7, lng: 9 };
+  const modern = { lat: 3, lng: 3, routeDistanceKm: 42, routeProgress: 0.25 };
+  const unlocated = { routeDistanceKm: 1 };
+
+  const result = ranking.backfillRouteMetrics([legacy, bare, modern, unlocated], route);
+
+  assert.equal(result.length, 4);
+  const expectedLegacy = ranking.distanceToRouteKm(legacy, route);
+  assert.equal(legacy.routeProgress, expectedLegacy.progress);
+  assert.equal(legacy.routeDistanceKm, 111);
+  const expectedBare = ranking.distanceToRouteKm(bare, route);
+  assert.equal(bare.routeProgress, expectedBare.progress);
+  assert.equal(bare.routeDistanceKm, expectedBare.distanceKm);
+  assert.deepEqual(modern, { lat: 3, lng: 3, routeDistanceKm: 42, routeProgress: 0.25 });
+  assert.deepEqual(unlocated, { routeDistanceKm: 1 });
+});
+
+test("backfilling route metrics leaves candidates untouched without geometry", () => {
+  const legacy = { lat: 1, lng: 5, routeDistanceKm: 111 };
+
+  ranking.backfillRouteMetrics([legacy], null);
+
+  assert.deepEqual(legacy, { lat: 1, lng: 5, routeDistanceKm: 111 });
+});
+
 test("route sampling and distance use the short path across the antimeridian", () => {
   const route = [[179, 0], [-179, 0]];
   const samples = ranking.sampleRouteForCoverage(route, {

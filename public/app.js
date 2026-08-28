@@ -844,9 +844,16 @@ function restoreTripState(trip) {
   const savedState = trip.state || {};
   state.routeName = savedState.routeName || "";
   state.route = savedState.route || null;
-  state.results = Array.isArray(savedState.results)
-    ? savedState.results.filter(isObjectRecord).map(hydrateCandidate)
+  const savedResults = Array.isArray(savedState.results)
+    ? savedState.results.filter(isObjectRecord)
     : [];
+  // Trips saved before routeProgress was serialized restore without it, which
+  // would hide arrival timing and drive-order sorting until a fresh search.
+  // Rebuild the missing metrics from the saved route geometry.
+  if (state.route?.geometry?.coordinates) {
+    ranking.backfillRouteMetrics(savedResults, state.route.geometry.coordinates);
+  }
+  state.results = savedResults.map(hydrateCandidate);
   state.selectedId = savedState.selectedId || null;
   state.warnings = Array.isArray(savedState.warnings) ? savedState.warnings : [];
   state.params = isObjectRecord(savedState.params)
