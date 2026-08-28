@@ -72,10 +72,20 @@
 
   auth.signOut = async function signOut() {
     if (!auth.client) return;
+    // Only clear the session/UI once Supabase confirms the sign-out. Clearing
+    // on failure would make the page look signed out (and wipe local user
+    // data via the sign-out listener) while the persisted Supabase session is
+    // still valid, so a reload on a shared browser would restore the account.
+    let error = null;
     try {
-      await auth.client.auth.signOut();
+      ({ error } = await auth.client.auth.signOut());
     } catch (err) {
-      console.warn("Sign-out failed:", err && err.message);
+      error = err;
+    }
+    if (error) {
+      console.warn("Sign-out failed:", error && error.message);
+      showAuthStatus(`Sign-out failed: ${(error && error.message) || "please try again"}`);
+      return;
     }
     setSession(null);
   };

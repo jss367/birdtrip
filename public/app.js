@@ -352,8 +352,13 @@ async function initializeStartupMap(preferredProvider, sharedSearch) {
   }
 
   await waitForAppConfig();
+  // A restored account session hydrates during config load and may apply the
+  // account's map provider; wait for it so this pass can't reset that choice
+  // with the pre-hydration `preferredProvider` captured in init(). (The map is
+  // already usable on OSM from the pass above.)
+  await accountHydrationReady;
   try {
-    await setMapProvider(resolveProvider(preferredProvider || state.config.defaultMapProvider || providerFromInput()), { persist: false });
+    await setMapProvider(resolveProvider(accountMapProvider || preferredProvider || state.config.defaultMapProvider || providerFromInput()), { persist: false });
   } catch (error) {
     addWarning(`Map could not be initialized: ${error.message}. Searches can continue with the current setup.`);
     renderWarnings();
@@ -369,7 +374,11 @@ async function initializeStartupMap(preferredProvider, sharedSearch) {
 
 async function reapplyStartupProvider(preferredProvider) {
   if (state.userSelectedProvider) return;
-  const nextProvider = resolveProvider(preferredProvider || state.config.defaultMapProvider || providerFromInput());
+  // As in initializeStartupMap: an account provider hydrated in the meantime
+  // outranks the pre-hydration preference captured at startup.
+  await accountHydrationReady;
+  if (state.userSelectedProvider) return;
+  const nextProvider = resolveProvider(accountMapProvider || preferredProvider || state.config.defaultMapProvider || providerFromInput());
   if (state.provider === nextProvider) return;
   try {
     await setMapProvider(nextProvider, { persist: false });
@@ -1016,6 +1025,12 @@ function applyAccountProfile(profile, which) {
   updateInputSummaries();
 }
 
+// Map provider applied from the account during hydration/merge. The startup
+// map passes captured their preferred provider before hydration ran, so they
+// consult this to avoid resetting the account preference back to the
+// pre-hydration value (see initializeStartupMap / reapplyStartupProvider).
+let accountMapProvider = null;
+
 // mapProvider owns real state (state.provider + the map adapter) through
 // setMapProvider(); assigning the <select> directly would leave searches on
 // the old provider while autocomplete and links use the new one. The select
@@ -1024,6 +1039,7 @@ function applyPreferenceField(field, value) {
   // Explicit shared-link fields outrank hydrated account defaults.
   if (sharedFieldLocks.has(field)) return;
   if (field === "mapProvider") {
+    accountMapProvider = value;
     setMapProvider(value, { persist: false }).catch((err) => {
       console.warn("Applying account map provider failed:", err && err.message);
     });
@@ -3430,6 +3446,12 @@ function serializeTargetRows() {
 function syncTargetsFromRows() {
   els.targets.value = serializeTargetRows();
   updateInputSummaries();
+  // Every call site is a user edit in the target-row editor (typing, removal,
+  // paste, autocomplete pick) — hydration writes els.targets directly and
+  // renderTargetRows() never calls back here — so persist right away instead
+  // of waiting for an unrelated savePreferences() trigger. The account write
+  // this queues is debounced in queueProfileUpsert().
+  savePreferences();
 }
 
 function renderTargetRows() {
