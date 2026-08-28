@@ -88,6 +88,9 @@ test("movement for passage migrants is simply their presence", () => {
   const norm = [0, 0, 0, 0.5, 1, 0, 0, 0, 0.7, 0.4, 0, 0];
   assert.deepEqual(timing.movementByMonth(norm, "passage"), norm);
   assert.deepEqual(timing.movementByMonth(norm, "resident"), Array(12).fill(0));
+  // Irregular visitors carry no migration evidence, so their presence must
+  // not be counted as movement.
+  assert.deepEqual(timing.movementByMonth(norm, "irregular"), Array(12).fill(0));
 });
 
 test("presence runs group contiguous months and survive a December wrap", () => {
@@ -129,26 +132,46 @@ test("buildMigrationTiming filters by group and excludes residents from movement
       sciName: "Setophaga cerulea",
       // Seen on only two sampled days all year: too scarce to judge.
       months: [0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0]
+    },
+    {
+      speciesCode: "prowar",
+      comName: "Prothonotary Warbler",
+      sciName: "Protonotaria citrea",
+      // Seen on all three sampled July dates and never again: irregular,
+      // and with no migration evidence it must not inflate July movement.
+      months: [0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0]
     }
   ];
 
   const warblers = timing.buildMigrationTiming(species, FULL_SAMPLING, { latitude: 38, group: "warblers" });
-  assert.equal(warblers.groupTotal, 3);
-  assert.equal(warblers.migrantCount, 2);
+  assert.equal(warblers.groupTotal, 4);
+  assert.equal(warblers.migrantCount, 2); // irregular prothonotary is not a migrant
   assert.equal(warblers.buckets.passage.length, 1);
   assert.equal(warblers.buckets.passage[0].speciesCode, "magwar");
   assert.equal(warblers.buckets.summer.length, 1);
+  assert.equal(warblers.buckets.irregular.length, 1); // still shown in its own bucket
+  assert.equal(warblers.buckets.irregular[0].speciesCode, "prowar");
   assert.equal(warblers.scarceCount, 1); // cerulean's two reports are not enough
   assert.equal(warblers.residentCount, 0); // robin is not a warbler
 
   const all = timing.buildMigrationTiming(species, FULL_SAMPLING, { latitude: 38, group: "all" });
-  assert.equal(all.groupTotal, 4);
+  assert.equal(all.groupTotal, 5);
   assert.equal(all.migrantCount, 2);
   assert.equal(all.scarceCount, 1);
   assert.equal(all.residentCount, 1); // robin counted but contributes no movement
 
   const mayIndex = 4;
   assert.ok(all.monthly[mayIndex] > 0);
+  // The July-only irregular warbler adds no movement anywhere: the aggregate
+  // chart is identical with or without it.
+  const withoutIrregular = timing.buildMigrationTiming(
+    species.filter((s) => s.speciesCode !== "prowar"),
+    FULL_SAMPLING,
+    { latitude: 38, group: "all" }
+  );
+  assert.deepEqual(all.monthly, withoutIrregular.monthly);
+  assert.deepEqual(all.movingCount, withoutIrregular.movingCount);
+  assert.equal(all.migrantCount, withoutIrregular.migrantCount);
   assert.ok(all.peaks.spring && all.peaks.spring.months.includes(mayIndex));
   assert.ok(all.peaks.fall && all.peaks.fall.peak >= 8);
 

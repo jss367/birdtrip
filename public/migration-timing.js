@@ -104,12 +104,14 @@
     return "irregular";
   }
 
-  // Per-month movement, 0..1 per species. Passage (and irregular) birds are
-  // migrating whenever they are present; seasonal residents move only while
-  // arriving or departing, which shows up as month-over-month change.
+  // Per-month movement, 0..1 per species. Passage birds are migrating whenever
+  // they are present; seasonal residents move only while arriving or departing,
+  // which shows up as month-over-month change. Irregular visitors carry no
+  // spring or fall migration evidence, so they contribute no movement (they
+  // stay listed in their own bucket instead).
   function movementByMonth(norm, status) {
-    if (status === "resident" || status === "scarce") return Array(12).fill(0);
-    if (status === "passage" || status === "irregular") return norm.slice();
+    if (status === "passage") return norm.slice();
+    if (status !== "summer" && status !== "winter") return Array(12).fill(0);
     return norm.map((value, month) => {
       const previous = norm[(month + 11) % 12];
       const next = norm[(month + 1) % 12];
@@ -239,7 +241,9 @@
       buckets,
       monthly,
       movingCount,
-      migrantCount: buckets.passage.length + buckets.summer.length + buckets.winter.length + buckets.irregular.length,
+      // Irregular visitors have no migration evidence, so they are shown but
+      // not counted among the migrants "on the move".
+      migrantCount: buckets.passage.length + buckets.summer.length + buckets.winter.length,
       residentCount,
       scarceCount,
       groupTotal,
