@@ -1488,11 +1488,14 @@ async function runRouteSearch(params) {
   // the filter is belt-and-suspenders.
   const eligible = practical.filter((candidate) => candidate.addedMinutes <= params.maxDetour);
   // Notable reports do not feed the score, so candidates can be fully scored
-  // now that detour impact is known. Rank at the default balance before
-  // selectNotableCandidates truncates, so the pool keeps the strongest
-  // candidates rather than whichever ones happened to be evaluated first.
+  // now that detour impact is known. scoreCandidates leaves rankUtility at the
+  // active balance (state.balance), so this sort ranks the pool by the
+  // weighting the user actually searched with before selectNotableCandidates
+  // truncates — a shared "Prioritize birding" link must not lose its best
+  // birding stops to the Recommended ordering. Later slider moves re-rank the
+  // same pool, drawing on the max(2 * maxStops, 12) headroom over the visible
+  // list.
   scoreCandidates(eligible, params);
-  applyBalance(eligible, DEFAULT_BALANCE);
   eligible.sort(compareByRankUtility);
   const pool = ranking.selectNotableCandidates(eligible, params);
   setStatus("Adding notable birds", "Checking nearby notable reports for the strongest practical candidates.");

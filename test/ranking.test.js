@@ -276,6 +276,36 @@ test("notable pool truncates in the caller's order, so callers must pre-rank", (
   );
 });
 
+test("pre-ranking at the active balance keeps birding-favored stops in the pool", () => {
+  // Mirrors runRouteSearch's pre-truncation ranking: rankUtility is
+  // birdPoints + convMult * practicality, sorted descending before
+  // selectNotableCandidates truncates. At "Prioritize birding" (convMult 0)
+  // the remote pure-birding stop out-ranks every convenient roadside filler;
+  // at the Recommended weighting (convMult 1) it would fall below the cap and
+  // be discarded permanently, unreachable by any later re-rank.
+  const rankAt = (candidates, convMult) => [...candidates].sort((a, b) => (
+    (b.birdPoints + convMult * b.practicality) - (a.birdPoints + convMult * a.practicality)
+    || String(a.id).localeCompare(String(b.id))
+  ));
+
+  const candidates = [
+    { id: "remote-reserve", birdPoints: 50, practicality: 0, targetMatches: [], liferSpecies: [] }
+  ];
+  for (let i = 0; i < 12; i += 1) {
+    candidates.push({ id: `roadside-${i}`, birdPoints: 20, practicality: 40, targetMatches: [], liferSpecies: [] });
+  }
+
+  // Cap is max(2 * maxStops, 12) = 12; the 13 candidates exceed it, so the
+  // last-ranked candidate is truncated. Under the default weighting the
+  // reserve is that casualty (50 < 20 + 40); under the active balance it
+  // ranks first and survives.
+  const defaultPool = ranking.selectNotableCandidates(rankAt(candidates, 1), { maxStops: 3 });
+  assert.ok(!defaultPool.some((candidate) => candidate.id === "remote-reserve"));
+
+  const birdingPool = ranking.selectNotableCandidates(rankAt(candidates, 0), { maxStops: 3 });
+  assert.equal(birdingPool[0].id, "remote-reserve");
+});
+
 test("notable pool does not duplicate rescued candidates already in the top slice", () => {
   const candidates = [
     { id: "top-rescue", explicitTargetRescue: true, targetMatches: [], liferSpecies: [] }
