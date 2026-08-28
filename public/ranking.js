@@ -149,6 +149,39 @@
     return createRouteIndex(coordinates).distanceTo(point);
   }
 
+  function filterHotspotsByCorridor(hotspots, routeIndex, corridorRadiusKm) {
+    const radiusKm = Math.max(0, Number(corridorRadiusKm) || 0);
+    if (!routeIndex || typeof routeIndex.distanceTo !== "function") return [];
+    return Array.from(hotspots || [])
+      .filter((hotspot) => (
+        hotspot?.locId
+        && Number.isFinite(hotspot.lat)
+        && Number.isFinite(hotspot.lng)
+      ))
+      .map((hotspot) => {
+        const routeMatch = routeIndex.distanceTo(hotspot);
+        return {
+          ...hotspot,
+          routeDistanceKm: routeMatch.distanceKm,
+          routeProgress: routeMatch.progress
+        };
+      })
+      .filter((hotspot) => hotspot.routeDistanceKm <= radiusKm);
+  }
+
+  function detourImpact(viaRoute, baseRoute) {
+    return {
+      addedMinutes: Math.max(
+        0,
+        (Number(viaRoute?.durationSeconds) - Number(baseRoute?.durationSeconds)) / 60
+      ),
+      addedMiles: Math.max(
+        0,
+        (Number(viaRoute?.distanceMeters) - Number(baseRoute?.distanceMeters)) / 1609.344
+      )
+    };
+  }
+
   function parseObservationDay(value) {
     const match = String(value || "").trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
     if (!match) return null;
@@ -197,15 +230,63 @@
     return richness ? Math.log1p(richness) / Math.log1p(richness + 500) : 0;
   }
 
+  function currentActivityScore(weightedSpecies, weightedActivity) {
+    return clamp(Number(weightedSpecies) || 0, 0, 90) / 90 * 28
+      + clamp(Number(weightedActivity) || 0, 0, 250) / 250 * 7;
+  }
+
+  function practicalityScore(options = {}) {
+    if (options.mode === "area") {
+      const radiusKm = Math.max(Number(options.radiusKm) || 0, 1);
+      return Math.max(0, 40 * (1 - (Number(options.routeDistanceKm) || 0) / radiusKm));
+    }
+    const maxDetour = Number(options.maxDetour) || 0;
+    if (maxDetour === 0) return 40;
+    return Math.max(0, 40 * (1 - (Number(options.addedMinutes) || 0) / Math.max(maxDetour, 1)));
+  }
+
+  function calculateCandidateScore(options = {}) {
+    const targetsEnabled = Boolean(options.targetsEnabled);
+    const unseenEnabled = Boolean(options.unseenEnabled);
+    const enabledMaxima = {
+      practicality: 40,
+      current: 35,
+      stable: 10,
+      ...(targetsEnabled || unseenEnabled ? { personal: 15 } : {})
+    };
+    const scoreParts = {
+      current: currentActivityScore(options.weightedSpecies, options.weightedActivity),
+      stable: richnessPrior(options.allTimeSpeciesCount) * 10,
+      personal: personalValueScore({
+        weightedTargets: options.weightedTargets,
+        weightedUnseen: options.weightedUnseen,
+        targetSlots: options.targetSlots,
+        targetsEnabled,
+        unseenEnabled
+      }),
+      practicality: practicalityScore(options)
+    };
+    return {
+      scoreParts,
+      enabledScoreParts: Object.keys(enabledMaxima),
+      score: normalizedScore(scoreParts, enabledMaxima)
+    };
+  }
+
   root.BirdtripRanking = Object.freeze({
+    calculateCandidateScore,
     clamp,
     createRouteIndex,
+    currentActivityScore,
+    detourImpact,
     distanceToRouteKm,
+    filterHotspotsByCorridor,
     haversineKm,
     normalizedScore,
     observationFreshnessWeight,
     parseObservationDay,
     personalValueScore,
+    practicalityScore,
     richnessPrior,
     sampleRouteForCoverage
   });

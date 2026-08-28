@@ -59,6 +59,32 @@ test("a route index reuses geometry without changing distance results", () => {
   assert.deepEqual(indexed, direct);
 });
 
+test("corridor filtering includes the boundary and annotates route position", () => {
+  const routeIndex = {
+    distanceTo(hotspot) {
+      return { distanceKm: hotspot.lat, progress: hotspot.lng / 10 };
+    }
+  };
+  const hotspots = [
+    { locId: "inside", lat: 4.9, lng: 2 },
+    { locId: "boundary", lat: 5, lng: 5 },
+    { locId: "outside", lat: 5.1, lng: 8 },
+    { locId: "invalid", lat: "4", lng: 3 },
+    { lat: 1, lng: 1 }
+  ];
+
+  const filtered = ranking.filterHotspotsByCorridor(hotspots, routeIndex, 5);
+
+  assert.deepEqual(filtered.map((hotspot) => hotspot.locId), ["inside", "boundary"]);
+  assert.deepEqual(
+    filtered.map(({ routeDistanceKm, routeProgress }) => ({ routeDistanceKm, routeProgress })),
+    [
+      { routeDistanceKm: 4.9, routeProgress: 0.2 },
+      { routeDistanceKm: 5, routeProgress: 0.5 }
+    ]
+  );
+});
+
 test("route sampling and distance use the short path across the antimeridian", () => {
   const route = [[179, 0], [-179, 0]];
   const samples = ranking.sampleRouteForCoverage(route, {
@@ -128,6 +154,65 @@ test("target credit normalizes to the requested target count", () => {
     targetSlots: 9,
     targetsEnabled: true
   }), 15);
+});
+
+test("detour impact converts route deltas and never reports a negative detour", () => {
+  const detour = ranking.detourImpact(
+    { durationSeconds: 5400, distanceMeters: 11609.344 },
+    { durationSeconds: 3600, distanceMeters: 10000 }
+  );
+  assert.equal(detour.addedMinutes, 30);
+  assert.ok(Math.abs(detour.addedMiles - 1) < Number.EPSILON * 4);
+  assert.deepEqual(
+    ranking.detourImpact(
+      { durationSeconds: 3000, distanceMeters: 9000 },
+      { durationSeconds: 3600, distanceMeters: 10000 }
+    ),
+    { addedMinutes: 0, addedMiles: 0 }
+  );
+});
+
+test("candidate scoring protects practicality and optional personalization behavior", () => {
+  const base = {
+    mode: "route",
+    weightedSpecies: 45,
+    weightedActivity: 125,
+    allTimeSpeciesCount: 250,
+    addedMinutes: 30,
+    maxDetour: 60
+  };
+  const general = ranking.calculateCandidateScore(base);
+  const personalized = ranking.calculateCandidateScore({
+    ...base,
+    weightedTargets: 5,
+    targetsEnabled: true
+  });
+  const atBudget = ranking.calculateCandidateScore({
+    ...base,
+    addedMinutes: 60
+  });
+
+  assert.equal(general.scoreParts.current, 17.5);
+  assert.equal(general.scoreParts.practicality, 20);
+  assert.deepEqual(general.enabledScoreParts, ["practicality", "current", "stable"]);
+  assert.deepEqual(personalized.enabledScoreParts, ["practicality", "current", "stable", "personal"]);
+  assert.equal(personalized.scoreParts.personal, 15);
+  assert.ok(personalized.score > general.score);
+  assert.equal(atBudget.scoreParts.practicality, 0);
+  assert.ok(atBudget.score < general.score);
+});
+
+test("area practicality falls to zero at the corridor boundary", () => {
+  assert.equal(ranking.practicalityScore({
+    mode: "area",
+    routeDistanceKm: 5,
+    radiusKm: 10
+  }), 20);
+  assert.equal(ranking.practicalityScore({
+    mode: "area",
+    routeDistanceKm: 10,
+    radiusKm: 10
+  }), 0);
 });
 
 test("all-time richness prior preserves ordering without a hard cap", () => {
