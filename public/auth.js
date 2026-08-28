@@ -102,11 +102,17 @@
         console.warn("Profile fetch failed:", error.message);
         return null;
       }
-      return data || {
+      // row_exists tells the caller whether a profiles row is already in the
+      // database: the first write for a brand-new account must send every
+      // column (see queueProfileUpsert), not just a diff against the empty
+      // defaults below.
+      if (data) return { ...data, row_exists: true };
+      return {
         life_list: {},
         targets: "",
         ebird_token: null,
-        preferences: {}
+        preferences: {},
+        row_exists: false
       };
     } catch (err) {
       console.warn("Profile fetch threw:", err && err.message);
@@ -120,7 +126,10 @@
     try {
       const { error } = await auth.client
         .from("profiles")
-        .upsert(payload, { onConflict: "user_id" });
+        // defaultToNull:false: if a partial payload ever has to insert (row
+        // missing), omitted columns fall back to the database defaults
+        // instead of null, so the NOT NULL constraints can't be violated.
+        .upsert(payload, { onConflict: "user_id", defaultToNull: false });
       if (error) {
         console.warn("Profile upsert failed:", error.message);
         return { ok: false, reason: error.message };

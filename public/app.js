@@ -584,6 +584,13 @@ let suppressProfileUpsert = false;
 // so a stale browser can't clobber columns another device updated.
 let lastSyncedProfile = null;
 
+// Whether the account already has a profiles row (set on hydrate/merge from
+// getProfile, and after the first successful upsert). When it doesn't, the
+// first upsert is an insert and must send every column: a diff-only payload
+// would leave the omitted NOT NULL columns to the database, which the client
+// can't rely on across schema/client versions.
+let profileRowExists = false;
+
 // JSON.stringify with object keys sorted recursively. Needed because jsonb
 // columns come back from Postgres with keys reordered, so a plain stringify
 // would flag identical values as changed.
@@ -636,26 +643,36 @@ function queueProfileUpsert() {
   if (profileUpsertTimer) clearTimeout(profileUpsertTimer);
   profileUpsertTimer = setTimeout(async () => {
     profileUpsertTimer = 0;
+    // Without a baseline (the profile fetch failed at sign-in), writing the
+    // browser cache wholesale could silently overwrite columns another device
+    // updated in the meantime. Retry reconciliation instead: it re-fetches
+    // the account, merges or hydrates against the fresh state, and queues its
+    // own write-back for anything that still differs. Only if the account is
+    // still unreachable does the write stay local.
+    if (!lastSyncedProfile) {
+      await runMergeAndHydrate();
+      if (!lastSyncedProfile) reportProfileUpsertFailure();
+      return;
+    }
     const full = buildProfilePatch();
     // Send only columns that changed since the last known server state so a
-    // stale browser can't overwrite columns another device updated. Without a
-    // baseline (e.g. the profile fetch failed at sign-in) fall back to the
-    // full patch rather than dropping the write.
-    let patch = full;
-    if (lastSyncedProfile) {
-      patch = {};
-      for (const column of Object.keys(full)) {
-        if (stableStringify(full[column]) !== stableStringify(lastSyncedProfile[column])) {
-          patch[column] = full[column];
-        }
-      }
-      if (!Object.keys(patch).length) {
-        // Local state already matches the account, so a first reconciliation
-        // (if one is pending) is complete without a write.
-        commitPendingSyncedUser();
-        return;
+    // stale browser can't overwrite columns another device updated.
+    const changed = {};
+    for (const column of Object.keys(full)) {
+      if (stableStringify(full[column]) !== stableStringify(lastSyncedProfile[column])) {
+        changed[column] = full[column];
       }
     }
+    if (!Object.keys(changed).length) {
+      // Local state already matches the account, so a first reconciliation
+      // (if one is pending) is complete without a write.
+      commitPendingSyncedUser();
+      return;
+    }
+    // The first write for an account with no profiles row is an insert: send
+    // every column so the row is created whole (a partial insert would leave
+    // the required columns to database defaults the client can't guarantee).
+    const patch = profileRowExists ? changed : full;
     let result = null;
     try {
       result = await window.birdtripAuth.upsertProfile(patch);
@@ -665,17 +682,21 @@ function queueProfileUpsert() {
       result = null;
     }
     if (!result || !result.ok) {
-      if (!profileUpsertFailed) {
-        addWarning("Couldn't save to your account - still saved in this browser.");
-        renderWarnings();
-        profileUpsertFailed = true;
-      }
+      reportProfileUpsertFailure();
     } else {
-      lastSyncedProfile = { ...(lastSyncedProfile || full), ...patch };
+      profileRowExists = true;
+      lastSyncedProfile = { ...lastSyncedProfile, ...patch };
       profileUpsertFailed = false;
       commitPendingSyncedUser();
     }
   }, PROFILE_UPSERT_DEBOUNCE_MS);
+}
+
+function reportProfileUpsertFailure() {
+  if (profileUpsertFailed) return;
+  addWarning("Couldn't save to your account - still saved in this browser.");
+  renderWarnings();
+  profileUpsertFailed = true;
 }
 
 // Reentrancy guard: the auth listener can fire repeatedly during sign-in.
@@ -693,7 +714,14 @@ let accountHydrationReady = Promise.resolve();
 // (map provider, radius, recent days, etc.) survive.
 function clearStateOnSignOut() {
   lastSyncedProfile = null;
+  profileRowExists = false;
   pendingSyncedUserId = null;
+  // Drop any write still debouncing: it belongs to the account that just
+  // signed out and would only produce a spurious "couldn't save" warning.
+  if (profileUpsertTimer) {
+    clearTimeout(profileUpsertTimer);
+    profileUpsertTimer = 0;
+  }
   // Forget the reconciliation marker: data added anonymously after an explicit
   // sign-out should go through the merge flow on the next sign-in.
   try {
@@ -748,6 +776,7 @@ async function runMergeAndHydrate() {
     }
 
     lastSyncedProfile = normalizeProfileColumns(account);
+    profileRowExists = account.row_exists === true;
 
     // The anonymous-data merge only makes sense the first time this browser
     // meets this account. On later sessions (restored session, page reload)
