@@ -1483,10 +1483,11 @@ async function runRouteSearch(params) {
   }
 
   // The re-ranking pool must have complete notable data so candidates are
-  // comparable: bound it, then fetch notables for every member. evaluateDetours
-  // already drops over-budget candidates; the filter is belt-and-suspenders.
+  // comparable: bound it (retaining rescued candidates), then fetch notables
+  // for every member. evaluateDetours already drops over-budget candidates;
+  // the filter is belt-and-suspenders.
   const eligible = practical.filter((candidate) => candidate.addedMinutes <= params.maxDetour);
-  const pool = selectNotableCandidates(eligible, params);
+  const pool = ranking.selectNotableCandidates(eligible, params);
   setStatus("Adding notable birds", "Checking nearby notable reports for the strongest practical candidates.");
   await fetchNotablesPerCandidate(pool, params);
   scoreCandidates(pool, params);
@@ -4002,17 +4003,6 @@ function orderRoutingCandidates(candidates, params) {
   );
   addMany(sorted, sorted.length);
   return ordered;
-}
-
-// Bounds the route-mode re-ranking pool: every candidate kept here gets a
-// notable lookup so pool members stay comparable when the balance changes.
-function selectNotableCandidates(candidates, params) {
-  const top = candidates.slice(0, Math.max(params.maxStops * 2, 12));
-  const topIds = new Set(top.map((candidate) => candidate.id));
-  for (const candidate of candidates) {
-    if (candidate.preserved && !topIds.has(candidate.id)) top.push(candidate);
-  }
-  return top;
 }
 
 async function fetchNotablesPerCandidate(list, params) {

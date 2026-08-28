@@ -221,3 +221,55 @@ test("all-time richness prior preserves ordering without a hard cap", () => {
   assert.ok(ranking.richnessPrior(500) > ranking.richnessPrior(400));
   assert.ok(ranking.richnessPrior(400) > ranking.richnessPrior(100));
 });
+
+test("notable pool keeps rescued candidates beyond the truncation cap", () => {
+  const candidates = [];
+  for (let i = 0; i < 20; i += 1) candidates.push({ id: `plain-${i}`, targetMatches: [], liferSpecies: [] });
+  candidates.push(
+    { id: "rescue-target", explicitTargetRescue: true, targetMatches: [], liferSpecies: [] },
+    { id: "rescue-match", targetMatches: [{ comName: "Eurasian Hoopoe" }], liferSpecies: [] },
+    { id: "rescue-lifer", targetMatches: [], liferSpecies: [{ comName: "Iberian Magpie" }] }
+  );
+
+  const pool = ranking.selectNotableCandidates(candidates, { maxStops: 3 });
+  const ids = new Set(pool.map((candidate) => candidate.id));
+
+  // Cap is max(2 * maxStops, 12) = 12 plain candidates, plus the rescues.
+  assert.equal(pool.length, 15);
+  assert.ok(ids.has("rescue-target"));
+  assert.ok(ids.has("rescue-match"));
+  assert.ok(ids.has("rescue-lifer"));
+});
+
+test("notable pool bounds organic rescue extras but keeps all explicit rescues", () => {
+  const candidates = [];
+  for (let i = 0; i < 12; i += 1) candidates.push({ id: `plain-${i}`, targetMatches: [], liferSpecies: [] });
+  for (let i = 0; i < 5; i += 1) {
+    candidates.push({ id: `explicit-${i}`, explicitTargetRescue: true, targetMatches: [], liferSpecies: [] });
+  }
+  for (let i = 0; i < 5; i += 1) {
+    candidates.push({ id: `match-${i}`, targetMatches: [{ comName: "Great Bustard" }], liferSpecies: [] });
+  }
+  for (let i = 0; i < 5; i += 1) {
+    candidates.push({ id: `lifer-${i}`, targetMatches: [], liferSpecies: [{ comName: "Wallcreeper" }] });
+  }
+
+  const pool = ranking.selectNotableCandidates(candidates, { maxStops: 2 });
+  const ids = pool.map((candidate) => candidate.id);
+
+  assert.equal(ids.filter((id) => id.startsWith("explicit-")).length, 5);
+  assert.equal(ids.filter((id) => id.startsWith("match-")).length, 2);
+  assert.equal(ids.filter((id) => id.startsWith("lifer-")).length, 2);
+  assert.equal(new Set(ids).size, pool.length);
+});
+
+test("notable pool does not duplicate rescued candidates already in the top slice", () => {
+  const candidates = [
+    { id: "top-rescue", explicitTargetRescue: true, targetMatches: [], liferSpecies: [] }
+  ];
+  for (let i = 0; i < 11; i += 1) candidates.push({ id: `plain-${i}`, targetMatches: [], liferSpecies: [] });
+
+  const pool = ranking.selectNotableCandidates(candidates, { maxStops: 1 });
+  assert.equal(pool.length, 12);
+  assert.equal(pool.filter((candidate) => candidate.id === "top-rescue").length, 1);
+});

@@ -169,6 +169,33 @@
       .filter((hotspot) => hotspot.routeDistanceKm <= radiusKm);
   }
 
+  // Bounds the route-mode re-ranking pool while retaining rescued candidates.
+  // Every pool member gets a notable lookup so members stay comparable when
+  // the balance changes, so the pool is truncated — but candidates that were
+  // deliberately rescued must survive the cut or the rescue work is wasted:
+  // explicit target rescues are all kept (they are bounded upstream), and
+  // target-match / unseen-species extras are kept up to maxStops per kind.
+  function selectNotableCandidates(candidates, options = {}) {
+    const maxStops = Math.max(1, Math.floor(Number(options.maxStops) || 0) || 1);
+    const list = Array.from(candidates || []);
+    const top = list.slice(0, Math.max(maxStops * 2, 12));
+    const ids = new Set(top.map((candidate) => candidate.id));
+    const keep = (matches, limit) => {
+      let added = 0;
+      for (const candidate of list) {
+        if (added >= limit) break;
+        if (ids.has(candidate.id) || !matches(candidate)) continue;
+        ids.add(candidate.id);
+        top.push(candidate);
+        added += 1;
+      }
+    };
+    keep((candidate) => candidate.explicitTargetRescue, Infinity);
+    keep((candidate) => (candidate.targetMatches?.length ?? 0) > 0, maxStops);
+    keep((candidate) => (candidate.liferSpecies?.length ?? 0) > 0, maxStops);
+    return top;
+  }
+
   function detourImpact(viaRoute, baseRoute) {
     return {
       addedMinutes: Math.max(
@@ -288,6 +315,7 @@
     personalValueScore,
     practicalityScore,
     richnessPrior,
-    sampleRouteForCoverage
+    sampleRouteForCoverage,
+    selectNotableCandidates
   });
 }(globalThis));
