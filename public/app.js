@@ -93,6 +93,7 @@ const els = {
   radiusKm: document.querySelector("#radiusKm"),
   radiusKmLabel: document.querySelector("#radiusKmLabel"),
   maxStops: document.querySelector("#maxStops"),
+  departTimeField: document.querySelector("#departTimeField"),
   departTime: document.querySelector("#departTime"),
   orderToggle: document.querySelector("#orderToggle"),
   orderByScore: document.querySelector("#orderByScore"),
@@ -422,7 +423,10 @@ function applySharedSearch(shared) {
   if (shared.recentDays) els.recentDays.value = shared.recentDays;
   if (shared.radiusKm) els.radiusKm.value = shared.radiusKm;
   if (shared.maxStops) els.maxStops.value = shared.maxStops;
-  if (shared.departTime) els.departTime.value = shared.departTime;
+  // Applied unconditionally: a shared link that omits the optional departure
+  // time should clear any restored preference so the recipient sees the trip
+  // the sender shared, not arrival warnings from their own previous state.
+  els.departTime.value = shared.departTime || "";
   if (shared.targets) els.targets.value = shared.targets;
   state.pendingPinnedIds = shared.pins || [];
   updateInputSummaries();
@@ -559,6 +563,8 @@ function setSearchMode(mode, options = {}) {
   els.destination.required = !isAreaLike;
   els.maxDetourField.hidden = state.mode !== "route";
   els.maxDetour.disabled = isAreaLike;
+  els.departTimeField.hidden = state.mode !== "route";
+  els.departTime.disabled = isAreaLike;
   els.radiusKmLabel.textContent = isSpecies ? "Search radius" : isArea ? "Area radius" : "Corridor radius";
   els.submitLabel.textContent = isSpecies ? "Map Sightings" : isArea ? "Search Area" : "Find Stops";
   els.routeDistanceLabel.textContent = isSpecies ? "Search Radius" : isArea ? "Area Radius" : "Route Miles";
@@ -2107,12 +2113,35 @@ function setResultOrder(order) {
   }
 }
 
+// The departure time means clock time at the route origin. Without a
+// lat/lng-to-IANA-timezone database we approximate: when the browser's UTC
+// offset is plausible for the origin longitude (the common case — planning a
+// trip in your own region), the browser timezone IS the route timezone and is
+// used exactly, DST included. When it clearly is not (viewing a shared route
+// from another part of the world), fall back to a longitude-based offset so
+// departure, arrivals, and sunrise/sunset all stay in route-local time
+// instead of shifting by the viewer's offset.
+function routeTimeContext() {
+  const browserOffsetMinutes = -new Date().getTimezoneOffset();
+  const approxOffsetMinutes = timing?.approximateUtcOffsetMinutes?.(state.route?.origin?.lng);
+  if (!Number.isFinite(approxOffsetMinutes) || Math.abs(browserOffsetMinutes - approxOffsetMinutes) <= 90) {
+    return { offsetMinutes: browserOffsetMinutes, approximate: false };
+  }
+  return { offsetMinutes: approxOffsetMinutes, approximate: true };
+}
+
 function departureTimestamp() {
   const value = cleanTimeString(state.params?.departTime);
   if (!value) return null;
   const [hours, minutes] = value.split(":").map(Number);
-  const now = new Date();
-  return new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes).getTime();
+  const context = routeTimeContext();
+  if (!context.approximate) {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes).getTime();
+  }
+  const offsetMs = context.offsetMinutes * 60000;
+  const routeNow = new Date(Date.now() + offsetMs);
+  return Date.UTC(routeNow.getUTCFullYear(), routeNow.getUTCMonth(), routeNow.getUTCDate(), hours, minutes) - offsetMs;
 }
 
 function candidateTiming(candidate) {
@@ -2141,7 +2170,12 @@ function candidateTiming(candidate) {
 }
 
 function formatClock(ms) {
-  return new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const context = routeTimeContext();
+  if (!context.approximate) {
+    return new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  }
+  return new Date(ms + context.offsetMinutes * 60000)
+    .toLocaleTimeString([], { hour: "numeric", minute: "2-digit", timeZone: "UTC" });
 }
 
 function timingChipLabel(stopTiming) {
@@ -2160,7 +2194,8 @@ function timingSentence(stopTiming) {
   const sunPart = stopTiming.sun.polar
     ? ""
     : ` Sunrise ${formatClock(stopTiming.sun.sunriseMs)}, sunset ${formatClock(stopTiming.sun.sunsetMs)}.`;
-  return `You'd reach this stop around ${arrival} — ${stopTiming.assessment.note}. ${habitatName} is ${stopTiming.habitat.bestLabel}.${sunPart}`;
+  const zonePart = routeTimeContext().approximate ? " Times are approximate local time along the route." : "";
+  return `You'd reach this stop around ${arrival} — ${stopTiming.assessment.note}. ${habitatName} is ${stopTiming.habitat.bestLabel}.${sunPart}${zonePart}`;
 }
 
 function renderResultsIfPresent() {

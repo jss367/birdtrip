@@ -52,6 +52,16 @@
     };
   }
 
+  // Nautical-style UTC offset estimate for a longitude, in minutes east of
+  // UTC, rounded to the nearest hour. Civil timezones mostly track this within
+  // an hour (daylight saving and politically wide zones are the exceptions),
+  // which is enough to decide whether a viewer's clock plausibly matches the
+  // route's, and to anchor clock displays when it clearly does not.
+  function approximateUtcOffsetMinutes(lng) {
+    if (!Number.isFinite(lng)) return null;
+    return Math.round(lng / 15) * 60 || 0; // "|| 0" normalizes -0
+  }
+
   // Ordered by specificity: an "Owl Woods" is an owling spot before it is
   // woodland, and a "Marsh Lake" is a marsh before it is open water.
   const HABITAT_RULES = [
@@ -164,6 +174,7 @@
   }
 
   root.BirdtripTiming = Object.freeze({
+    approximateUtcOffsetMinutes,
     assessArrival,
     estimateArrivalMs,
     inferStopTiming,

@@ -43,6 +43,15 @@ test("sun times report polar night and midnight sun at high latitude", () => {
   assert.equal(summer.sunsetMs, null);
 });
 
+test("approximate UTC offset tracks longitude in whole hours", () => {
+  assert.equal(timing.approximateUtcOffsetMinutes(0), 0);
+  assert.equal(timing.approximateUtcOffsetMinutes(-112.074), -7 * 60); // Phoenix
+  assert.equal(timing.approximateUtcOffsetMinutes(151.21), 10 * 60); // Sydney
+  assert.equal(timing.approximateUtcOffsetMinutes(-7), 0); // rounds to nearest hour
+  assert.equal(timing.approximateUtcOffsetMinutes(undefined), null);
+  assert.equal(timing.approximateUtcOffsetMinutes(NaN), null);
+});
+
 test("habitat inference maps hotspot names to time-of-day windows", () => {
   assert.equal(timing.inferStopTiming("Sweetwater Wetlands").window, "dawn");
   assert.equal(timing.inferStopTiming("Tres Rios Marsh").habitat, "marsh");
