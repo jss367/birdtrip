@@ -751,6 +751,9 @@ async function loadSelectedTrip() {
       searchMode: trip.settings?.searchMode || trip.state?.params?.mode || state.mode
     };
     applyTripSettings(settings);
+    // Loading a saved trip replaces every shareable input programmatically,
+    // so any loaded /t/<slug> snapshot URL no longer matches — invalidate it.
+    refreshSharedUrlIfPresent();
     updateSetupStatus();
     updateInputSummaries();
     clearFieldErrors();
