@@ -256,6 +256,9 @@ function init() {
 
   els.form.addEventListener("submit", (event) => {
     event.preventDefault();
+    // Manually running the search adopts the current inputs as the user's
+    // own (runSearch persists them), so any shared-link locks lift here.
+    unlockAllSharedFields();
     runSearch();
   });
   els.modeButtons.forEach((button) => {
@@ -281,12 +284,19 @@ function init() {
     updateSetupStatus();
   });
   els.mapProvider.addEventListener("change", () => {
+    unlockSharedField("mapProvider");
     state.userSelectedProvider = true;
     setMapProvider(providerFromInput());
   });
   els.lifeListInput.addEventListener("change", handleLifeListFile);
   els.clearLifeListButton.addEventListener("click", clearLifeList);
-  els.maxDetour.addEventListener("input", updateInputSummaries);
+  els.maxDetour.addEventListener("input", () => {
+    unlockSharedField("maxDetour");
+    updateInputSummaries();
+  });
+  for (const field of ["recentDays", "radiusKm", "maxStops"]) {
+    els[field].addEventListener("input", () => unlockSharedField(field));
+  }
   els.shareTripButton.addEventListener("click", shareCurrentTrip);
   els.downloadReportButton.addEventListener("click", downloadHtmlReport);
   els.settingsButton.addEventListener("click", () => openSettingsModal());
@@ -413,7 +423,20 @@ function readSharedSearchFromUrl() {
 // Fields a bt=1 shared link explicitly supplied. Account hydration must not
 // overwrite these: the recipient should see the sender's trip, not their own
 // stored defaults. The life list and eBird token still hydrate normally.
+// Locked fields are display-only in the other direction too: buildProfilePatch
+// excludes them from account write-back. A field unlocks (becomes the user's
+// own data) when they explicitly edit it, or all at once when they explicitly
+// adopt the current inputs: running the search themselves, loading a saved
+// trip, or applying the sample.
 const sharedFieldLocks = new Set();
+
+function unlockSharedField(field) {
+  sharedFieldLocks.delete(field);
+}
+
+function unlockAllSharedFields() {
+  sharedFieldLocks.clear();
+}
 
 function applySharedSearch(shared) {
   setSearchMode(shared.mode, { persist: false });
@@ -619,6 +642,12 @@ function normalizeProfileColumns(profile) {
 
 function buildProfilePatch() {
   const lifeListEmpty = state.lifeList.species.size === 0;
+  // Fields a shared link populated (sharedFieldLocks) are display-only until
+  // the user explicitly edits or adopts them: carry the account's last synced
+  // value through instead of the live form value, so an unrelated later save
+  // (e.g. a life-list import) can't write the sender's route or targets into
+  // the recipient's account.
+  const synced = lastSyncedProfile || {};
   return {
     life_list: lifeListEmpty ? {} : {
       source: state.lifeList.source,
@@ -627,69 +656,112 @@ function buildProfilePatch() {
       species: Array.from(state.lifeList.species),
       displayNames: state.lifeList.displayNames
     },
-    targets: els.targets.value || "",
+    targets: sharedFieldLocks.has("targets")
+      ? (typeof synced.targets === "string" ? synced.targets : "")
+      : (els.targets.value || ""),
     ebird_token: els.rememberToken.checked ? (els.apiToken.value || null) : null,
     preferences: PREF_FIELDS.reduce((acc, field) => {
       if (ACCOUNT_OWNED_FIELDS.has(field)) return acc;
+      if (sharedFieldLocks.has(field)) {
+        // Echo the account's own value (or omit the key if it never stored
+        // one) so the diff against lastSyncedProfile sees no change.
+        const prev = (synced.preferences && typeof synced.preferences === "object")
+          ? synced.preferences[field] : undefined;
+        if (typeof prev === "string") acc[field] = prev;
+        return acc;
+      }
       acc[field] = els[field].value;
       return acc;
     }, {})
   };
 }
 
+// Serializes account writes: exactly one upsert is in flight at a time. A
+// write can outlast the debounce, and overlapping upserts could complete out
+// of order, letting an older payload clobber a newer one (and leave
+// lastSyncedProfile reflecting whichever response landed last).
+let profileUpsertChain = Promise.resolve();
+// True while a flush is queued on the chain but not yet started. One pending
+// flush is enough for any number of queued mutations: it rebuilds the patch
+// from live state when it actually runs, so they coalesce into it.
+let profileUpsertPending = false;
+
 function queueProfileUpsert() {
   if (suppressProfileUpsert) return;
   if (!window.birdtripAuth || !window.birdtripAuth.user) return;
   if (profileUpsertTimer) clearTimeout(profileUpsertTimer);
-  profileUpsertTimer = setTimeout(async () => {
+  profileUpsertTimer = setTimeout(() => {
     profileUpsertTimer = 0;
-    // Without a baseline (the profile fetch failed at sign-in), writing the
-    // browser cache wholesale could silently overwrite columns another device
-    // updated in the meantime. Retry reconciliation instead: it re-fetches
-    // the account, merges or hydrates against the fresh state, and queues its
-    // own write-back for anything that still differs. Only if the account is
-    // still unreachable does the write stay local.
-    if (!lastSyncedProfile) {
-      await runMergeAndHydrate();
-      if (!lastSyncedProfile) reportProfileUpsertFailure();
-      return;
-    }
-    const full = buildProfilePatch();
-    // Send only columns that changed since the last known server state so a
-    // stale browser can't overwrite columns another device updated.
-    const changed = {};
-    for (const column of Object.keys(full)) {
-      if (stableStringify(full[column]) !== stableStringify(lastSyncedProfile[column])) {
-        changed[column] = full[column];
-      }
-    }
-    if (!Object.keys(changed).length) {
-      // Local state already matches the account, so a first reconciliation
-      // (if one is pending) is complete without a write.
-      commitPendingSyncedUser();
-      return;
-    }
-    // The first write for an account with no profiles row is an insert: send
-    // every column so the row is created whole (a partial insert would leave
-    // the required columns to database defaults the client can't guarantee).
-    const patch = profileRowExists ? changed : full;
-    let result = null;
-    try {
-      result = await window.birdtripAuth.upsertProfile(patch);
-    } catch {
-      // upsertProfile catches internally; this guards anything unexpected so
-      // the failure warning below still fires instead of an unhandled rejection.
-      result = null;
-    }
-    if (!result || !result.ok) {
-      reportProfileUpsertFailure();
-    } else {
-      profileRowExists = true;
-      lastSyncedProfile = { ...lastSyncedProfile, ...patch };
-      profileUpsertFailed = false;
-      commitPendingSyncedUser();
-    }
+    if (profileUpsertPending) return;
+    profileUpsertPending = true;
+    profileUpsertChain = profileUpsertChain
+      .then(() => {
+        profileUpsertPending = false;
+        return flushProfileUpsert();
+      })
+      .catch(() => {
+        // flushProfileUpsert handles its own errors; this guards anything
+        // unexpected so a rejection can't poison the chain and silently
+        // stall every later write.
+        profileUpsertPending = false;
+        reportProfileUpsertFailure();
+      });
   }, PROFILE_UPSERT_DEBOUNCE_MS);
+}
+
+async function flushProfileUpsert() {
+  // The chain can start this long after the timer fired (queued behind a slow
+  // write); the user may have signed out or switched accounts since.
+  if (!window.birdtripAuth || !window.birdtripAuth.user) return;
+  // Without a baseline (the profile fetch failed at sign-in), writing the
+  // browser cache wholesale could silently overwrite columns another device
+  // updated in the meantime. Retry reconciliation instead: it re-fetches
+  // the account, merges or hydrates against the fresh state, and queues its
+  // own write-back for anything that still differs. (No deadlock with this
+  // chain: queueProfileUpsert only appends to it, never awaits it.) Only if
+  // the account is still unreachable does the write stay local.
+  if (!lastSyncedProfile) {
+    await runMergeAndHydrate();
+    if (!lastSyncedProfile) reportProfileUpsertFailure();
+    return;
+  }
+  const full = buildProfilePatch();
+  // Send only columns that changed since the last known server state so a
+  // stale browser can't overwrite columns another device updated.
+  const changed = {};
+  for (const column of Object.keys(full)) {
+    if (stableStringify(full[column]) !== stableStringify(lastSyncedProfile[column])) {
+      changed[column] = full[column];
+    }
+  }
+  if (!Object.keys(changed).length) {
+    // Local state already matches the account, so a first reconciliation
+    // (if one is pending) is complete without a write.
+    commitPendingSyncedUser();
+    return;
+  }
+  // The first write for an account with no profiles row is an insert: send
+  // every column so the row is created whole (a partial insert would leave
+  // the required columns to database defaults the client can't guarantee).
+  const patch = profileRowExists ? changed : full;
+  let result = null;
+  try {
+    result = await window.birdtripAuth.upsertProfile(patch);
+  } catch {
+    // upsertProfile catches internally; this guards anything unexpected so
+    // the failure warning below still fires instead of an unhandled rejection.
+    result = null;
+  }
+  if (!result || !result.ok) {
+    reportProfileUpsertFailure();
+  } else {
+    profileRowExists = true;
+    // Serialized writes apply in order, so advancing the baseline here always
+    // reflects the latest applied write, never a stale overlapping response.
+    lastSyncedProfile = { ...lastSyncedProfile, ...patch };
+    profileUpsertFailed = false;
+    commitPendingSyncedUser();
+  }
 }
 
 function reportProfileUpsertFailure() {
@@ -871,6 +943,10 @@ async function runMergeAndHydrate() {
       for (const c of conflicts) {
         decisions[c.key] = choices[c.key] || c.options[0].value;
       }
+      // Deciding a targets conflict in the dialog is an explicit user choice
+      // about the field, so a shared-link lock no longer applies: "use this
+      // browser" must be able to write back, "use account" must display.
+      if (conflicts.some((c) => c.key === "targets")) unlockSharedField("targets");
     }
 
     applyMergeDecisions(account, decisions);
@@ -1015,7 +1091,25 @@ function hydrateFromAccount(account) {
   }
   updateSetupStatus();
 
-  applyAccountProfile(account, { preferences: true });
+  // Preferences are canonical here too, including clears: a key present with
+  // an empty string is a value the user cleared on another device, so apply
+  // it (otherwise this browser's stale cache survives and the next save
+  // writes the deleted value back). An absent key means the account never
+  // stored the field, so the local value stands. applyPreferenceField still
+  // skips shared-link-locked fields.
+  const prefs = (account.preferences && typeof account.preferences === "object")
+    ? account.preferences : {};
+  for (const field of PREF_FIELDS) {
+    if (ACCOUNT_OWNED_FIELDS.has(field)) continue;
+    if (!Object.prototype.hasOwnProperty.call(prefs, field)) continue;
+    const value = prefs[field];
+    if (typeof value !== "string") continue;
+    // The provider select always holds a concrete value; an empty string
+    // would be malformed data, not a clear.
+    if (!value.length && field === "mapProvider") continue;
+    applyPreferenceField(field, value);
+  }
+  updateInputSummaries();
 }
 
 function applyAccountProfile(profile, which) {
@@ -1245,6 +1339,9 @@ async function loadSelectedTrip() {
       ...(trip.settings || {}),
       searchMode: trip.settings?.searchMode || trip.state?.params?.mode || state.mode
     };
+    // Loading their own saved trip replaces any shared-link values with the
+    // user's explicit choice, so the loaded values persist normally.
+    unlockAllSharedFields();
     applyTripSettings(settings);
     updateSetupStatus();
     updateInputSummaries();
@@ -1726,6 +1823,8 @@ function loadGoogleMapsScript(key) {
 }
 
 function useSampleRoute() {
+  // Explicitly replacing the inputs with the sample supersedes a shared trip.
+  unlockAllSharedFields();
   if (state.mode === "species") {
     els.origin.value = "Papago Park, Phoenix, AZ";
     els.speciesQuery.value = "Rosy-faced Lovebird";
@@ -3047,6 +3146,7 @@ async function useCurrentLocationForOrigin() {
     autocomplete.origin.activeIndex = -1;
     autocomplete.origin.lastQuery = displayName;
     hideAutocomplete("origin");
+    unlockSharedField("origin");
     updateInputSummaries();
     savePreferences();
   } catch (error) {
@@ -3076,6 +3176,7 @@ function setupLocationAutocomplete(field) {
   ctx.listEl = listEl;
 
   inputEl.addEventListener("input", () => {
+    unlockSharedField(field);
     ctx.resolved = null;
     const value = inputEl.value.trim();
     if (ctx.timer) clearTimeout(ctx.timer);
@@ -3252,6 +3353,7 @@ function selectAutocompleteItem(field, index) {
   hideAutocomplete(field);
   clearFieldErrors();
   if (inputEl === els.origin || inputEl === els.destination) {
+    unlockSharedField(field);
     savePreferences();
   }
 }
@@ -3279,6 +3381,7 @@ function setupSpeciesAutocomplete() {
   const ctx = speciesAutocomplete;
 
   inputEl.addEventListener("input", () => {
+    unlockSharedField("speciesQuery");
     state.species = null;
     clearSpeciesError();
     const value = inputEl.value.trim();
@@ -3427,6 +3530,7 @@ function selectSpeciesItem(index) {
   ctx.lastQuery = item.comName;
   clearSpeciesError();
   hideSpeciesAutocomplete();
+  unlockSharedField("speciesQuery");
   savePreferences();
 }
 
@@ -3474,6 +3578,7 @@ function serializeTargetRows() {
 
 function syncTargetsFromRows() {
   els.targets.value = serializeTargetRows();
+  unlockSharedField("targets");
   updateInputSummaries();
   // Every call site is a user edit in the target-row editor (typing, removal,
   // paste, autocomplete pick) — hydration writes els.targets directly and
