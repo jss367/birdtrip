@@ -193,6 +193,17 @@ test("response cache pruning removes expired and least-recent entries", () => {
   assert.deepEqual([...cache.keys()], ["newest"]);
 });
 
+test("response cache pruning enforces its total byte budget", () => {
+  const cache = new Map([
+    ["oldest", { expiresAt: 2000, sizeBytes: 4, value: "aaaa" }],
+    ["newest", { expiresAt: 2000, sizeBytes: 4, value: "bbbb" }]
+  ]);
+
+  pruneResponseCache(cache, 1000, 10, 5);
+
+  assert.deepEqual([...cache.keys()], ["newest"]);
+});
+
 test("rate limiter rejects excess requests and resets after its window", () => {
   const buckets = new Map();
   const options = { buckets, max: 2, windowMs: 1000, now: 5000 };

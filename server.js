@@ -10,6 +10,8 @@ const EBIRD_CACHE_TTL_MS = envInteger("EBIRD_CACHE_TTL_MS", CACHE_TTL_MS, 1000);
 const GEOCODING_CACHE_TTL_MS = envInteger("GEOCODING_CACHE_TTL_MS", 24 * 60 * 60 * 1000, 1000);
 const ROUTING_CACHE_TTL_MS = envInteger("ROUTING_CACHE_TTL_MS", CACHE_TTL_MS, 1000);
 const CACHE_MAX_ENTRIES = envInteger("CACHE_MAX_ENTRIES", 1000, 1);
+const CACHE_MAX_BYTES = envInteger("CACHE_MAX_BYTES", 32 * 1024 * 1024, 1);
+const CACHE_MAX_ENTRY_BYTES = envInteger("CACHE_MAX_ENTRY_BYTES", 2 * 1024 * 1024, 1);
 const API_RATE_LIMIT_WINDOW_MS = envInteger("API_RATE_LIMIT_WINDOW_MS", 60 * 1000, 1000);
 const API_RATE_LIMIT_MAX = envInteger("API_RATE_LIMIT_MAX", 300, 0);
 const API_RATE_LIMIT_MAX_CLIENTS = envInteger("API_RATE_LIMIT_MAX_CLIENTS", 10000, 1);
@@ -32,6 +34,7 @@ const GOOGLE_MAPS_SERVER_KEY = process.env.GOOGLE_MAPS_SERVER_KEY || process.env
 const cache = new Map();
 const pendingUpstreamRequests = new Map();
 const rateLimitBuckets = new Map();
+const rateLimitMetadata = new WeakMap();
 const seasonalityCache = new Map();
 const seasonalityBuilds = new Map();
 const seasonalityBuildQueue = [];
@@ -87,12 +90,31 @@ function sendError(res, status, message, details, code) {
   });
 }
 
-function pruneResponseCache(target = cache, now = Date.now(), maxEntries = CACHE_MAX_ENTRIES) {
+function responseCacheEntryBytes(entry) {
+  if (Number.isFinite(entry.sizeBytes)) return entry.sizeBytes;
+  const serialized = typeof entry.value === "string" ? entry.value : JSON.stringify(entry.value) || "";
+  return Buffer.byteLength(serialized);
+}
+
+function pruneResponseCache(
+  target = cache,
+  now = Date.now(),
+  maxEntries = CACHE_MAX_ENTRIES,
+  maxBytes = CACHE_MAX_BYTES
+) {
+  let totalBytes = 0;
   for (const [key, entry] of target) {
-    if (entry.expiresAt <= now) target.delete(key);
+    if (entry.expiresAt <= now) {
+      target.delete(key);
+    } else {
+      totalBytes += responseCacheEntryBytes(entry);
+    }
   }
-  while (target.size > maxEntries) {
-    target.delete(target.keys().next().value);
+  while (target.size > maxEntries || totalBytes > maxBytes) {
+    const oldestKey = target.keys().next().value;
+    const oldest = target.get(oldestKey);
+    totalBytes -= responseCacheEntryBytes(oldest);
+    target.delete(oldestKey);
   }
 }
 
@@ -110,9 +132,12 @@ function cached(key, now = Date.now()) {
 }
 
 function setCached(key, value, ttlMs) {
+  const serialized = typeof value === "string" ? value : JSON.stringify(value) || "";
+  const sizeBytes = Buffer.byteLength(serialized);
+  if (sizeBytes > CACHE_MAX_ENTRY_BYTES || sizeBytes > CACHE_MAX_BYTES) return value;
   pruneResponseCache();
   cache.delete(key);
-  cache.set(key, { expiresAt: Date.now() + ttlMs, value });
+  cache.set(key, { expiresAt: Date.now() + ttlMs, sizeBytes, value });
   pruneResponseCache();
   return value;
 }
@@ -167,23 +192,37 @@ function clientAddress(req, options = {}) {
   return req.socket.remoteAddress || "unknown";
 }
 
+function rateLimitState(buckets) {
+  let state = rateLimitMetadata.get(buckets);
+  if (state) return state;
+  const resetTimes = [...buckets.values()].map((entry) => entry.resetAt);
+  state = { nextExpiry: resetTimes.length ? Math.min(...resetTimes) : Infinity };
+  rateLimitMetadata.set(buckets, state);
+  return state;
+}
+
+function pruneExpiredRateLimitBuckets(buckets, state, now) {
+  if (state.nextExpiry > now) return;
+  let nextExpiry = Infinity;
+  for (const [bucketKey, entry] of buckets) {
+    if (entry.resetAt <= now) buckets.delete(bucketKey);
+    else nextExpiry = Math.min(nextExpiry, entry.resetAt);
+  }
+  state.nextExpiry = nextExpiry;
+}
+
 function consumeRateLimit(key, options = {}) {
   const buckets = options.buckets || rateLimitBuckets;
   const now = options.now ?? Date.now();
   const max = options.max ?? API_RATE_LIMIT_MAX;
   const windowMs = options.windowMs ?? API_RATE_LIMIT_WINDOW_MS;
   const maxClients = options.maxClients ?? API_RATE_LIMIT_MAX_CLIENTS;
+  const state = rateLimitState(buckets);
+  pruneExpiredRateLimitBuckets(buckets, state, now);
   let bucket = buckets.get(key);
-  if (bucket?.resetAt <= now) {
-    buckets.delete(key);
-    bucket = null;
-  }
   if (!bucket) {
-    for (const [bucketKey, entry] of buckets) {
-      if (entry.resetAt <= now) buckets.delete(bucketKey);
-    }
     if (buckets.size >= maxClients) {
-      const resetAt = Math.min(...[...buckets.values()].map((entry) => entry.resetAt));
+      const resetAt = state.nextExpiry;
       return {
         allowed: false,
         limit: max,
@@ -194,6 +233,7 @@ function consumeRateLimit(key, options = {}) {
     }
     bucket = { count: 0, resetAt: now + windowMs };
     buckets.set(key, bucket);
+    state.nextExpiry = Math.min(state.nextExpiry, bucket.resetAt);
   }
   const allowed = max === 0 || bucket.count < max;
   if (allowed) bucket.count += 1;
