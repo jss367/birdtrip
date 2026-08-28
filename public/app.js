@@ -359,7 +359,13 @@ async function initializeStartupMap(preferredProvider, sharedSearch) {
   }
   if (sharedSearch?.autoRun && hasRunnableSearchInputs()) {
     setStatus("Refreshing shared trip", "Loading the route and latest birding stops from this link.");
-    await runSearch({ persistPreferences: false });
+    // The visitor just opened a short /t/<slug> link and has changed nothing,
+    // so the hydration auto-run must not replace it with the long query URL.
+    // Any later user action (pinning, re-running a search) swaps it as usual.
+    await runSearch({
+      persistPreferences: false,
+      preserveSharedUrl: Boolean(sharedTripSlugFromLocation())
+    });
   }
 }
 
@@ -1281,7 +1287,7 @@ function clearResults() {
 }
 
 async function runSearch(options = {}) {
-  const { persistPreferences = true } = options;
+  const { persistPreferences = true, preserveSharedUrl = false } = options;
   if (persistPreferences) savePreferences();
   state.ebirdModalPrompted = false;
   setBusy(true);
@@ -1303,7 +1309,7 @@ async function runSearch(options = {}) {
       await runRouteSearch(params);
     }
     applyPendingSharedPins();
-    updateSharedUrlFromCurrentInputs({ autoRun: true });
+    if (!preserveSharedUrl) updateSharedUrlFromCurrentInputs({ autoRun: true });
   } catch (error) {
     setStatus("Search failed", error.message || "Something went wrong.");
     console.error(error);
@@ -1860,7 +1866,10 @@ async function createShareUrl() {
     const response = await fetch("/api/trips", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(buildShareTripData())
+      body: JSON.stringify(buildShareTripData()),
+      // Without a deadline a stalled insert would leave Share hanging with
+      // neither the short link nor the long-URL fallback.
+      signal: AbortSignal.timeout(8000)
     });
     if (!response.ok) throw new Error(`The share service responded ${response.status}`);
     const payload = await response.json();

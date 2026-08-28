@@ -79,7 +79,12 @@ function logApiRequest(req, res, url) {
       logUrl.searchParams.delete("lat");
       logUrl.searchParams.delete("lng");
     }
-    console.log(`[api] ${req.method} ${logUrl.pathname}${logUrl.search} ${res.statusCode} ${elapsed}ms`);
+    // The slug is the bearer credential for a shared trip, so it must not
+    // land in logs — mirror the lat/lng redaction above.
+    const logPathname = logUrl.pathname
+      .replace(/^\/api\/trips\/[^/]+/, "/api/trips/:slug")
+      .replace(/^\/t\/[^/]+/, "/t/:slug");
+    console.log(`[api] ${req.method} ${logPathname}${logUrl.search} ${res.statusCode} ${elapsed}ms`);
   });
 }
 
@@ -1333,6 +1338,7 @@ module.exports = {
   clientAddress,
   consumeRateLimit,
   fetchJson,
+  logApiRequest,
   nearestHotspotRegion,
   pruneResponseCache,
   pruneSeasonalityCache,
