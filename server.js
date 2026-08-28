@@ -1014,6 +1014,14 @@ async function handleApi(req, res, url) {
 
     if (url.pathname === "/api/trips") {
       if (req.method !== "POST") return sendError(res, 405, "Use POST to create a shared trip");
+      // application/json is not a CORS-simple content type, so requiring it
+      // forces cross-origin browsers into a preflight we never approve. That
+      // stops third-party pages from using visitors' browsers to fill the
+      // trip store with no-cors text/plain POSTs.
+      const contentType = String(req.headers["content-type"] || "");
+      if (!/^application\/json\b/i.test(contentType)) {
+        return sendError(res, 415, "Content-Type must be application/json");
+      }
       const store = requireTripStore();
       enforceTripCreateLimit(req);
       const data = await readJsonBody(req, TRIP_BODY_LIMIT_BYTES);

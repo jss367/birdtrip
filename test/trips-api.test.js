@@ -76,6 +76,25 @@ test("a shared trip round-trips through create and fetch", async () => {
   assert.equal(config.tripSharing.enabled, true);
 });
 
+test("cross-origin simple requests are rejected by content type", async () => {
+  setTripStore(fakeTripStore());
+  // A CORS-simple no-cors POST can only carry simple content types like
+  // text/plain; requiring application/json forces a preflight we never allow.
+  const simplePost = await fetch(`${baseUrl}/api/trips`, {
+    method: "POST",
+    headers: { "content-type": "text/plain" },
+    body: JSON.stringify({ origin: "San Diego" })
+  });
+  assert.equal(simplePost.status, 415);
+
+  const missingType = await fetch(`${baseUrl}/api/trips`, {
+    method: "POST",
+    headers: { "content-type": "" },
+    body: JSON.stringify({ origin: "San Diego" })
+  });
+  assert.equal(missingType.status, 415);
+});
+
 test("invalid trip payloads are rejected", async () => {
   setTripStore(fakeTripStore());
 
