@@ -140,6 +140,42 @@ test("cache admission rejects transient application errors and retains later suc
   }
 });
 
+test("concurrent callers with different timeout policies use separate fetches", async () => {
+  const originalFetch = global.fetch;
+  let calls = 0;
+  global.fetch = async (_url, options) => {
+    calls += 1;
+    if (options.signal) {
+      return new Promise((resolve, reject) => {
+        options.signal.addEventListener("abort", () => {
+          const error = new Error("aborted");
+          error.name = "AbortError";
+          reject(error);
+        }, { once: true });
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return {
+      ok: true,
+      text: async () => "[]"
+    };
+  };
+
+  try {
+    const url = `https://example.test/timeout-policy-${Date.now()}`;
+    const [unbounded, bounded] = await Promise.allSettled([
+      fetchJson(url),
+      fetchJson(url, {}, { timeoutMs: 5 })
+    ]);
+    assert.equal(unbounded.status, "fulfilled");
+    assert.equal(bounded.status, "rejected");
+    assert.equal(bounded.reason.status, 504);
+    assert.equal(calls, 2);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test("response cache pruning removes expired and least-recent entries", () => {
   const cache = new Map([
     ["expired", { expiresAt: 999, value: 1 }],

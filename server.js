@@ -265,15 +265,16 @@ function boundedNumber(value, fallback, min, max) {
 
 async function fetchJson(url, headers = {}, options = {}) {
   const cacheKey = upstreamCacheKey("GET", url, headers);
+  const timeoutMs = Number(options.timeoutMs) || 0;
+  const pendingKey = `${cacheKey} timeout=${timeoutMs}`;
   const shouldCache = options.cache !== false;
   const hit = shouldCache ? cached(cacheKey) : null;
   if (shouldCache && hit !== CACHE_MISS) return hit;
-  if (shouldCache && pendingUpstreamRequests.has(cacheKey)) {
-    return pendingUpstreamRequests.get(cacheKey);
+  if (shouldCache && pendingUpstreamRequests.has(pendingKey)) {
+    return pendingUpstreamRequests.get(pendingKey);
   }
 
   const request = (async () => {
-    const timeoutMs = Number(options.timeoutMs) || 0;
     const controller = timeoutMs > 0 ? new AbortController() : null;
     const timeout = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
     let response;
@@ -318,11 +319,11 @@ async function fetchJson(url, headers = {}, options = {}) {
     const cacheIf = typeof options.cacheIf === "function" ? options.cacheIf : () => true;
     return shouldCache && cacheIf(body) ? setCached(cacheKey, body, upstreamCacheTtl(url)) : body;
   })();
-  if (shouldCache) pendingUpstreamRequests.set(cacheKey, request);
+  if (shouldCache) pendingUpstreamRequests.set(pendingKey, request);
   try {
     return await request;
   } finally {
-    if (pendingUpstreamRequests.get(cacheKey) === request) pendingUpstreamRequests.delete(cacheKey);
+    if (pendingUpstreamRequests.get(pendingKey) === request) pendingUpstreamRequests.delete(pendingKey);
   }
 }
 
