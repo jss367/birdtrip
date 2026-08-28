@@ -2100,6 +2100,7 @@ function updateLifeListStatus() {
 function handleDepartTimeChange() {
   if (state.params) state.params.departTime = cleanTimeString(els.departTime.value);
   savePreferences();
+  refreshSharedUrlIfPresent();
   renderResultsIfPresent();
 }
 
