@@ -109,6 +109,24 @@ textarea:disabled {
   font-size: 0.9rem;
 }
 
+.brand-logo {
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--accent);
+  box-shadow: 0 10px 24px rgba(16, 185, 129, 0.22);
+}
+
+.brand-logo img {
+  display: block;
+  width: 72px;
+  height: 72px;
+  max-width: none;
+  transform: translate(-12px, -12px);
+}
+
 .header-actions {
   display: flex;
   align-items: center;
