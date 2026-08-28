@@ -536,9 +536,12 @@
       </div>
     </div>
   </div>
-  <script src="./ranking.js"></script>
-  <script src="./auth.js"></script>
-  <script src="./navigation-export.js"></script>
-  <script src="./app.js"></script>
+  <!-- Deferred so they execute after the deferred Supabase SDK in the head
+       (defer preserves document order); a parser-blocking app.js could call
+       auth.init() before the SDK ran and permanently disable sign-in. -->
+  <script defer src="./ranking.js"></script>
+  <script defer src="./auth.js"></script>
+  <script defer src="./navigation-export.js"></script>
+  <script defer src="./app.js"></script>
 </body>
 </html>

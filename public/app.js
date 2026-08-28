@@ -360,6 +360,9 @@ async function initializeStartupMap(preferredProvider, sharedSearch) {
   }
   if (sharedSearch?.autoRun && hasRunnableSearchInputs()) {
     setStatus("Refreshing shared trip", "Loading the route and latest birding stops from this link.");
+    // Let a signed-in user's profile hydration finish first so the search
+    // runs with the account's life list, targets, and eBird token.
+    await accountHydrationReady;
     await runSearch({ persistPreferences: false });
   }
 }
@@ -398,6 +401,11 @@ function readSharedSearchFromUrl() {
   return shared.origin ? shared : null;
 }
 
+// Fields a bt=1 shared link explicitly supplied. Account hydration must not
+// overwrite these: the recipient should see the sender's trip, not their own
+// stored defaults. The life list and eBird token still hydrate normally.
+const sharedFieldLocks = new Set();
+
 function applySharedSearch(shared) {
   setSearchMode(shared.mode, { persist: false });
   if (shared.origin) els.origin.value = shared.origin;
@@ -416,6 +424,13 @@ function applySharedSearch(shared) {
   if (shared.radiusKm) els.radiusKm.value = shared.radiusKm;
   if (shared.maxStops) els.maxStops.value = shared.maxStops;
   if (shared.targets) els.targets.value = shared.targets;
+  // Record which inputs the link set (origin, destination, and mapProvider are
+  // always explicitly managed above) so hydration leaves them alone.
+  sharedFieldLocks.add("origin").add("destination").add("mapProvider");
+  if (shared.mode === "species" && shared.species) sharedFieldLocks.add("speciesQuery");
+  for (const field of ["maxDetour", "recentDays", "radiusKm", "maxStops", "targets"]) {
+    if (shared[field]) sharedFieldLocks.add(field);
+  }
   state.pendingPinnedIds = shared.pins || [];
   updateInputSummaries();
   setStatus(
@@ -656,6 +671,12 @@ function queueProfileUpsert() {
 
 // Reentrancy guard: the auth listener can fire repeatedly during sign-in.
 let mergeAndHydrateInFlight = false;
+
+// Resolves once the current sign-in's merge/hydrate has finished (immediately
+// when nobody is signed in). The shared-link auto-run awaits this so a run=1
+// search doesn't start before the account life list, targets, and eBird token
+// are available.
+let accountHydrationReady = Promise.resolve();
 
 // Clears user-specific state from memory and localStorage on sign-out so a
 // shared browser doesn't leak the previous user's life list, targets, or
@@ -940,7 +961,9 @@ function hydrateFromAccount(account) {
     updateLifeListStatus();
   }
 
-  els.targets.value = typeof account.targets === "string" ? account.targets : "";
+  if (!sharedFieldLocks.has("targets")) {
+    els.targets.value = typeof account.targets === "string" ? account.targets : "";
+  }
 
   if (typeof account.ebird_token === "string" && account.ebird_token.length) {
     els.apiToken.value = account.ebird_token;
@@ -970,7 +993,8 @@ function applyAccountProfile(profile, which) {
     updateLifeListStatus();
   }
 
-  if (which.targets && typeof profile.targets === "string" && profile.targets.length) {
+  if (which.targets && typeof profile.targets === "string" && profile.targets.length
+      && !sharedFieldLocks.has("targets")) {
     els.targets.value = profile.targets;
   }
 
@@ -997,6 +1021,8 @@ function applyAccountProfile(profile, which) {
 // the old provider while autocomplete and links use the new one. The select
 // and state.provider update synchronously; the adapter swap finishes async.
 function applyPreferenceField(field, value) {
+  // Explicit shared-link fields outrank hydrated account defaults.
+  if (sharedFieldLocks.has(field)) return;
   if (field === "mapProvider") {
     setMapProvider(value, { persist: false }).catch((err) => {
       console.warn("Applying account map provider failed:", err && err.message);
@@ -1505,14 +1531,19 @@ async function loadAppConfig() {
       // session restored during init() (before this listener existed) still
       // triggers the initial merge/hydrate for returning signed-in users.
       let previousUserId = null;
-      window.birdtripAuth.onChange(async (user) => {
+      window.birdtripAuth.onChange((user) => {
         const nextUserId = user ? user.id : null;
         if (nextUserId === previousUserId) return;
         const wasSignedIn = Boolean(previousUserId);
         const isSignedIn = Boolean(nextUserId);
         previousUserId = nextUserId;
         if (isSignedIn) {
-          await runMergeAndHydrate();
+          // onChange fires synchronously with a restored session while
+          // loadAppConfig() is still awaited, so this promise is in place
+          // before waitForAppConfig() releases the startup auto-run.
+          accountHydrationReady = runMergeAndHydrate().catch((err) => {
+            console.warn("Account hydration failed:", err && err.message);
+          });
         } else if (wasSignedIn) {
           clearStateOnSignOut();
         }
