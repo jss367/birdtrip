@@ -774,6 +774,9 @@ function applyTripSettings(settings) {
   for (const field of PREF_FIELDS) {
     if (typeof settings[field] === "string" && els[field]) els[field].value = settings[field];
   }
+  // Trips saved before departTime existed carry no stored value; clear the
+  // field so a stale visible time is not silently applied when rerunning.
+  if (typeof settings.departTime !== "string") els.departTime.value = "";
   if (typeof settings.searchMode === "string") {
     setSearchMode(settings.searchMode, { persist: false });
   }
