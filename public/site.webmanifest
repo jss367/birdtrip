@@ -8,6 +8,12 @@
   "theme_color": "#10b981",
   "icons": [
     {
+      "src": "/birdtrip_logo.png",
+      "sizes": "1024x1024",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
       "src": "/favicon.svg",
       "sizes": "any",
       "type": "image/svg+xml",

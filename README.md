@@ -10,6 +10,17 @@ npm start
 
 Then open `http://localhost:4177`.
 
+## Verify
+
+Run the unit tests and lint checks before submitting changes:
+
+```sh
+npm test
+npm run lint
+```
+
+The unit tests cover route-corridor geometry, detour calculations, ranking scores, seasonal analysis, and server-side caching behavior.
+
 ## Launch
 
 See [DEPLOY.md](./DEPLOY.md) for production hosting, DNS, Docker, and environment-variable notes.
