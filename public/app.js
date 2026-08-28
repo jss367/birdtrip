@@ -4911,7 +4911,14 @@ function setMetricTooltip(element, text) {
 
 function renderMarkers() {
   if (!state.mapAdapter) return;
-  state.mapAdapter.setMarkers(state.results.concat(outOfRankPinnedStops()), state.selectedId, selectCandidate);
+  const markers = state.results.concat(outOfRankPinnedStops());
+  // Re-ranking can push the selected, unpinned stop out of the visible top N
+  // while its detail panel stays open (see updateVisibleDetails). Include it
+  // alongside the out-of-rank pins so its marker survives the rebuild.
+  const selected = state.selectedId && !markers.some((item) => item.id === state.selectedId)
+    ? candidateById(state.selectedId)
+    : null;
+  state.mapAdapter.setMarkers(selected ? markers.concat(selected) : markers, state.selectedId, selectCandidate);
 }
 
 function selectCandidate(id) {
@@ -6799,7 +6806,9 @@ function markerHtml(candidate, index, selectedId) {
     return `<div class="bird-marker marker-sighting ${candidate.id === selectedId ? "marker-selected" : ""}">${label}</div>`;
   }
   const pinnedIndex = state.pinnedIds.indexOf(candidate.id);
-  const label = pinnedIndex >= 0 ? `P${pinnedIndex + 1}` : index + 1;
+  // Unpinned candidates past the visible list (the selected out-of-rank stop)
+  // have no rank, so a rank-style number would be misleading.
+  const label = pinnedIndex >= 0 ? `P${pinnedIndex + 1}` : index < state.results.length ? index + 1 : "•";
   return `<div class="bird-marker ${markerClass(candidate)} ${candidate.id === selectedId ? "marker-selected" : ""}">${label}</div>`;
 }
 

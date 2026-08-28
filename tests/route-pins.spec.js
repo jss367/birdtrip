@@ -44,6 +44,26 @@ test("multiple out-of-rank pins keep unique species-preview ids", async ({ page 
   expect(new Set(ids).size).toBe(ids.length);
 });
 
+test("selected unpinned stop that drops out of rank keeps its map marker", async ({ page }) => {
+  await runRouteSearch(page, { maxStops: 5 });
+  await page.locator('.stop-card:has-text("Harbor Park") .stop-main').click();
+  await expect(page.locator("#detailsPanel")).toContainText("Harbor Park");
+  await expect(page.locator(".bird-marker")).toHaveCount(5);
+  // Slide left: Harbor Park (L4) drops to #6. Its card leaves the list while
+  // the detail panel stays open, so its marker must survive the rebuild —
+  // labelled as unranked, not with a phantom rank number.
+  await setSlider(page, "#balanceSliderResults", 0);
+  await expect(page.locator('.stop-card:has-text("Harbor Park")')).toHaveCount(0);
+  await expect(page.locator("#detailsPanel")).toContainText("Harbor Park");
+  await expect(page.locator(".bird-marker")).toHaveCount(6);
+  const selectedMarker = page.locator(".bird-marker.marker-selected");
+  await expect(selectedMarker).toHaveCount(1);
+  await expect(selectedMarker).toHaveText("•");
+  // The open details panel overlays the map, so bypass hit-testing.
+  await selectedMarker.dispatchEvent("click");
+  await expect(page.locator(".leaflet-popup")).toContainText("Harbor Park");
+});
+
 test("shared URL keeps a pin that is out-of-rank at the shared balance", async ({ page }) => {
   await runRouteSearch(page, { maxStops: 5 });
   await page.locator('.stop-card:has-text("Harbor Park") .stop-pin').click();
