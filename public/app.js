@@ -756,6 +756,7 @@ function readTripSettings() {
       recentDays: Number.isFinite(state.params.recentDays) ? String(state.params.recentDays) : els.recentDays.value,
       radiusKm: Number.isFinite(state.params.radiusKm) ? String(state.params.radiusKm) : els.radiusKm.value,
       maxStops: Number.isFinite(state.params.maxStops) ? String(state.params.maxStops) : els.maxStops.value,
+      departTime: typeof state.params.departTime === "string" ? state.params.departTime : els.departTime.value,
       targets: Array.isArray(state.params.targets) ? state.params.targets.join("\n") : els.targets.value,
       speciesQuery: typeof state.params.speciesQuery === "string" ? state.params.speciesQuery : els.speciesQuery.value,
       searchMode: typeof state.params.mode === "string" ? state.params.mode : state.mode
