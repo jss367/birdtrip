@@ -5926,11 +5926,16 @@ function buildReportMarkup() {
     return `<div><dt>${escapeHtml(label)}</dt><dd>${renderedValue}</dd></div>`;
   };
 
+  const departureMs = isArea ? null : departureTimestamp();
+  const departParam = departureMs
+    ? param("Leave at", `${formatClock(departureMs)}${routeTimeContext().approximate ? " (approximate local time along the route)" : ""}`)
+    : "";
   const paramsBlock = `
     <h2>Search parameters</h2>
     <dl class="report-params">
       ${param(isArea ? "Location" : "Origin", p.origin)}
       ${isArea ? "" : param("Destination", p.destination)}
+      ${departParam}
       ${param("Map service", providerLabel(p.mapProvider))}
       ${isArea ? "" : param("Max added", `${p.maxDetour} min`)}
       ${param(isArea ? "Area radius" : "Corridor radius", `${p.radiusKm} km`)}
