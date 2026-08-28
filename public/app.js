@@ -532,6 +532,25 @@ const SYNCED_USER_KEY = "routeBirdingSyncedUser";
 let profileUpsertTimer = 0;
 let profileUpsertFailed = false;
 
+// Set by the first-reconciliation merge; committed to SYNCED_USER_KEY only
+// once the merged profile is confirmed to match the account (successful
+// upsert, or nothing left to write). If the write fails, the marker stays
+// unset so the next load re-runs the merge instead of treating the stale
+// account as canonical and wiping the locally imported data.
+let pendingSyncedUserId = null;
+
+function commitPendingSyncedUser() {
+  if (!pendingSyncedUserId) return;
+  const user = window.birdtripAuth && window.birdtripAuth.user;
+  if (!user || user.id !== pendingSyncedUserId) return;
+  try {
+    localStorage.setItem(SYNCED_USER_KEY, pendingSyncedUserId);
+  } catch {
+    // Storage unavailable; the merge flow will simply run again next session.
+  }
+  pendingSyncedUserId = null;
+}
+
 // Set by hydrate/merge to suppress the write-through that would otherwise
 // echo just-fetched account data back to the account.
 let suppressProfileUpsert = false;
@@ -606,7 +625,12 @@ function queueProfileUpsert() {
           patch[column] = full[column];
         }
       }
-      if (!Object.keys(patch).length) return;
+      if (!Object.keys(patch).length) {
+        // Local state already matches the account, so a first reconciliation
+        // (if one is pending) is complete without a write.
+        commitPendingSyncedUser();
+        return;
+      }
     }
     let result = null;
     try {
@@ -625,6 +649,7 @@ function queueProfileUpsert() {
     } else {
       lastSyncedProfile = { ...(lastSyncedProfile || full), ...patch };
       profileUpsertFailed = false;
+      commitPendingSyncedUser();
     }
   }, PROFILE_UPSERT_DEBOUNCE_MS);
 }
@@ -638,6 +663,7 @@ let mergeAndHydrateInFlight = false;
 // (map provider, radius, recent days, etc.) survive.
 function clearStateOnSignOut() {
   lastSyncedProfile = null;
+  pendingSyncedUserId = null;
   // Forget the reconciliation marker: data added anonymously after an explicit
   // sign-out should go through the merge flow on the next sign-in.
   try {
@@ -655,6 +681,9 @@ function clearStateOnSignOut() {
   els.targets.value = "";
   els.apiToken.value = "";
   els.rememberToken.checked = false;
+  // Also drop the sessionStorage copy of the token, or reloading this tab
+  // would restore the previous user's eBird credential on a shared browser.
+  saveSessionApiToken();
   updateLifeListStatus();
   updateInputSummaries();
   updateSetupStatus();
@@ -787,11 +816,9 @@ async function runMergeAndHydrate() {
 
     applyMergeDecisions(account, decisions);
 
-    try {
-      localStorage.setItem(SYNCED_USER_KEY, userIdAtStart);
-    } catch {
-      // Storage unavailable; the merge flow will simply run again next session.
-    }
+    // Don't persist the reconciliation marker yet: it becomes durable only
+    // after the write-back below confirms the account holds the merged state.
+    pendingSyncedUserId = userIdAtStart;
     suppressProfileUpsert = true;
     try { savePreferences(); } finally { suppressProfileUpsert = false; }
     // Write the merged state back to the account (covers keep-local and union cases).
@@ -843,7 +870,7 @@ function applyMergeDecisions(account, decisions) {
       if (ACCOUNT_OWNED_FIELDS.has(field)) continue;
       const value = account.preferences[field];
       if (typeof value === "string" && value.length) {
-        els[field].value = value;
+        applyPreferenceField(field, value);
       }
     }
   }
@@ -957,12 +984,26 @@ function applyAccountProfile(profile, which) {
     for (const field of PREF_FIELDS) {
       const value = profile.preferences[field];
       if (typeof value === "string" && value.length) {
-        els[field].value = value;
+        applyPreferenceField(field, value);
       }
     }
   }
 
   updateInputSummaries();
+}
+
+// mapProvider owns real state (state.provider + the map adapter) through
+// setMapProvider(); assigning the <select> directly would leave searches on
+// the old provider while autocomplete and links use the new one. The select
+// and state.provider update synchronously; the adapter swap finishes async.
+function applyPreferenceField(field, value) {
+  if (field === "mapProvider") {
+    setMapProvider(value, { persist: false }).catch((err) => {
+      console.warn("Applying account map provider failed:", err && err.message);
+    });
+    return;
+  }
+  els[field].value = value;
 }
 
 function setSearchMode(mode, options = {}) {
@@ -2274,8 +2315,19 @@ async function shareCurrentTrip() {
 
 function updateSharedUrlFromCurrentInputs(options = {}) {
   const url = buildShareUrl(options);
-  window.history.replaceState(null, "", url);
+  window.history.replaceState(null, "", preserveAuthFlag(url));
   return url;
+}
+
+// The auth opt-in lives in the query string, so in-page history rewrites must
+// carry it forward or a reload would silently skip Supabase session init and
+// hide the account UI. Copied public share links intentionally omit it, which
+// is why this applies only at the replaceState call sites.
+function preserveAuthFlag(urlString) {
+  if (new URLSearchParams(window.location.search).get("auth") !== "1") return urlString;
+  const url = new URL(urlString, window.location.href);
+  url.searchParams.set("auth", "1");
+  return url.toString();
 }
 
 function clearSharedUrl() {
@@ -2283,7 +2335,7 @@ function clearSharedUrl() {
   if (url.searchParams.get("bt") !== SHARE_URL_VERSION) return;
   url.search = "";
   url.hash = "";
-  window.history.replaceState(null, "", url);
+  window.history.replaceState(null, "", preserveAuthFlag(url.toString()));
 }
 
 function refreshSharedUrlIfPresent() {
