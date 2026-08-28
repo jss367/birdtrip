@@ -28,6 +28,30 @@ GOOGLE_MAPS_SERVER_KEY=...
 
 If `EBIRD_API_KEY` is unset, visitors can paste their own eBird token in the app. For a public launch, a server-side token makes the first run smoother, but monitor eBird API usage and quotas.
 
+### Caching and rate limiting
+
+The server uses a bounded in-memory cache for successful upstream responses and coalesces concurrent identical requests. Defaults can be tuned with:
+
+```sh
+# General and service-specific cache lifetimes, in milliseconds.
+CACHE_TTL_MS=600000
+EBIRD_CACHE_TTL_MS=600000
+GEOCODING_CACHE_TTL_MS=86400000
+ROUTING_CACHE_TTL_MS=600000
+CACHE_MAX_ENTRIES=1000
+CACHE_MAX_BYTES=33554432
+CACHE_MAX_ENTRY_BYTES=2097152
+
+# Per-client API request limit. Set API_RATE_LIMIT_MAX=0 to disable it.
+API_RATE_LIMIT_MAX=300
+API_RATE_LIMIT_WINDOW_MS=60000
+API_RATE_LIMIT_MAX_CLIENTS=10000
+```
+
+The cache is local to one server process and is emptied on restart. Multi-instance deployments should use a shared cache and distributed rate limiter if limits must apply across every instance.
+
+Set `TRUST_PROXY=true` only when the app runs behind a trusted reverse proxy that replaces or safely appends `X-Forwarded-For`. `TRUST_PROXY_HOPS` selects the number of trusted entries from the right side of that header; it defaults to `1`, while a Render deployment behind one additional content delivery network proxy should use `2`. This lets the limiter identify the originating client instead of combining unrelated visitors into a proxy-wide bucket. The included Render blueprint enables one trusted proxy hop.
+
 ## Render Blueprint
 
 This repo includes `render.yaml`, which defines a Render web service named `birdtrip` on the free plan with:
@@ -69,5 +93,6 @@ Then open `http://localhost:4177`.
 ## Production Notes
 
 - The default OpenStreetMap setup uses public Nominatim, OSRM, and tile endpoints. That is fine for demos and personal use, but a public site should move to providers with explicit usage terms and quotas.
+- In-memory caching and per-instance rate limiting reduce repeated traffic, but they do not change upstream service terms or coordinate limits across multiple app instances.
 - Do not expose unrestricted Google keys. Restrict the browser key by hostname and the server key by API and deployment environment.
 - The app does not store user data on the server. Optional token persistence is browser-local only.
