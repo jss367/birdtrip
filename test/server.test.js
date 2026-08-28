@@ -115,6 +115,31 @@ test("concurrent cacheable upstream requests share one fetch and cache null resp
   }
 });
 
+test("cache admission rejects transient application errors and retains later success", async () => {
+  const originalFetch = global.fetch;
+  let calls = 0;
+  global.fetch = async () => {
+    calls += 1;
+    return {
+      ok: true,
+      text: async () => JSON.stringify(calls === 1
+        ? { status: "OVER_QUERY_LIMIT" }
+        : { status: "OK", results: [] })
+    };
+  };
+
+  try {
+    const url = `https://example.test/cache-admission-${Date.now()}`;
+    const options = { cacheIf: (body) => body.status === "OK" };
+    assert.equal((await fetchJson(url, {}, options)).status, "OVER_QUERY_LIMIT");
+    assert.equal((await fetchJson(url, {}, options)).status, "OK");
+    assert.equal((await fetchJson(url, {}, options)).status, "OK");
+    assert.equal(calls, 2);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test("response cache pruning removes expired and least-recent entries", () => {
   const cache = new Map([
     ["expired", { expiresAt: 999, value: 1 }],

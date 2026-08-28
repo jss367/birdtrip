@@ -315,7 +315,8 @@ async function fetchJson(url, headers = {}, options = {}) {
       throw error;
     }
 
-    return shouldCache ? setCached(cacheKey, body, upstreamCacheTtl(url)) : body;
+    const cacheIf = typeof options.cacheIf === "function" ? options.cacheIf : () => true;
+    return shouldCache && cacheIf(body) ? setCached(cacheKey, body, upstreamCacheTtl(url)) : body;
   })();
   if (shouldCache) pendingUpstreamRequests.set(cacheKey, request);
   try {
@@ -423,7 +424,9 @@ async function geocodeGoogle(q) {
   const endpoint = new URL("https://maps.googleapis.com/maps/api/geocode/json");
   endpoint.searchParams.set("address", q);
   endpoint.searchParams.set("key", requireGoogleServerKey());
-  const result = await fetchJson(endpoint.toString());
+  const result = await fetchJson(endpoint.toString(), {}, {
+    cacheIf: (body) => body?.status === "OK" || body?.status === "ZERO_RESULTS"
+  });
   if (result.status !== "OK" && result.status !== "ZERO_RESULTS") {
     const error = new Error(result.error_message || result.status || "Google geocoding failed");
     error.status = 502;
@@ -462,7 +465,9 @@ async function reverseGeocodeGoogle(lat, lng) {
   const endpoint = new URL("https://maps.googleapis.com/maps/api/geocode/json");
   endpoint.searchParams.set("latlng", `${lat},${lng}`);
   endpoint.searchParams.set("key", requireGoogleServerKey());
-  const result = await fetchJson(endpoint.toString());
+  const result = await fetchJson(endpoint.toString(), {}, {
+    cacheIf: (body) => body?.status === "OK" || body?.status === "ZERO_RESULTS"
+  });
   if (result.status !== "OK" && result.status !== "ZERO_RESULTS") {
     const error = new Error(result.error_message || result.status || "Google reverse geocoding failed");
     error.status = 502;
