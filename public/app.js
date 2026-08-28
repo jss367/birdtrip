@@ -40,7 +40,10 @@ const state = {
     },
     ebird: {
       serverConfigured: false
-    }
+    },
+    // null means "not checked yet"; sharing still tries the server and falls
+    // back to a long query-parameter link if the endpoint is unavailable.
+    tripSharing: { enabled: null }
   },
   configReady: null
 };
@@ -224,9 +227,9 @@ function legacyMigrationMonth(search) {
   return "";
 }
 
-function init() {
+async function init() {
   if (redirectLegacyMigrationLink()) return;
-  const sharedSearch = readSharedSearchFromUrl();
+  const sharedSearch = await resolveSharedSearch();
   const saved = restorePreferences();
   state.savedTrips = readSavedTrips();
   state.mode = normalizeMode(sharedSearch?.mode || saved.searchMode);
@@ -369,23 +372,68 @@ async function reapplyStartupProvider(preferredProvider) {
 function readSharedSearchFromUrl() {
   const search = new URLSearchParams(window.location.search);
   if (search.get("bt") !== SHARE_URL_VERSION) return null;
-
-  const mode = normalizeMode(search.get("mode"));
-  const shared = {
-    mode,
-    origin: cleanSharedText(search.get("origin"), 160),
-    destination: cleanSharedText(search.get("destination"), 160),
-    species: cleanSharedText(search.get("species"), 80),
-    mapProvider: search.get("mapProvider") === "google" ? "google" : "osm",
-    maxDetour: cleanSharedNumber(search.get("maxDetour"), 0, 240),
-    recentDays: cleanSharedNumber(search.get("recentDays"), 1, 30),
-    radiusKm: cleanSharedNumber(search.get("radiusKm"), 1, 50),
-    maxStops: cleanSharedNumber(search.get("maxStops"), 3, 20),
-    targets: cleanSharedTargets(search.get("targets"), 1200),
-    pins: cleanSharedIdList(search.getAll("pin"), 5),
+  return sanitizeSharedSearch({
+    mode: search.get("mode"),
+    origin: search.get("origin"),
+    destination: search.get("destination"),
+    species: search.get("species"),
+    mapProvider: search.get("mapProvider"),
+    maxDetour: search.get("maxDetour"),
+    recentDays: search.get("recentDays"),
+    radiusKm: search.get("radiusKm"),
+    maxStops: search.get("maxStops"),
+    targets: search.get("targets"),
+    pins: search.getAll("pin"),
     autoRun: search.get("run") === "1"
+  });
+}
+
+// Both share channels (query parameters and server-stored trips) funnel
+// through the same sanitizer, so stored blobs get no more trust than URLs.
+function sanitizeSharedSearch(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const shared = {
+    mode: normalizeMode(raw.mode),
+    origin: cleanSharedText(raw.origin, 160),
+    destination: cleanSharedText(raw.destination, 160),
+    species: cleanSharedText(raw.species, 80),
+    mapProvider: raw.mapProvider === "google" ? "google" : "osm",
+    maxDetour: cleanSharedNumber(raw.maxDetour, 0, 240),
+    recentDays: cleanSharedNumber(raw.recentDays, 1, 30),
+    radiusKm: cleanSharedNumber(raw.radiusKm, 1, 50),
+    maxStops: cleanSharedNumber(raw.maxStops, 3, 20),
+    targets: cleanSharedTargets(raw.targets, 1200),
+    pins: cleanSharedIdList(Array.isArray(raw.pins) ? raw.pins.map(String) : [], 5),
+    autoRun: raw.autoRun === true
   };
   return shared.origin ? shared : null;
+}
+
+function sharedTripSlugFromLocation() {
+  const match = window.location.pathname.match(/^\/t\/([A-Za-z0-9]{8,64})\/?$/);
+  return match ? match[1] : null;
+}
+
+async function resolveSharedSearch() {
+  const slug = sharedTripSlugFromLocation();
+  if (!slug) return readSharedSearchFromUrl();
+  try {
+    const response = await fetch(`/api/trips/${encodeURIComponent(slug)}`);
+    if (!response.ok) {
+      throw new Error(`The shared trip request failed (${response.status})`);
+    }
+    const payload = await response.json();
+    const shared = sanitizeSharedSearch(payload?.data);
+    if (!shared) throw new Error("The shared trip data was unreadable");
+    return shared;
+  } catch (error) {
+    console.error(error);
+    setStatus(
+      "Shared trip unavailable",
+      "This link may have expired — unopened shared trips are removed after 90 days. Start a new search below."
+    );
+    return null;
+  }
 }
 
 function applySharedSearch(shared) {
@@ -1765,7 +1813,7 @@ async function shareCurrentTrip() {
     return;
   }
 
-  const shareUrl = updateSharedUrlFromCurrentInputs({ autoRun: true });
+  const shareUrl = await createShareUrl();
   // Intentionally omit `text` — share targets that don't fully support Web Share
   // concatenate text + url into one blob, which auto-linkers then fold back into
   // the URL and corrupt the query string (e.g. run=1 becomes run=1 Birdtrip…).
@@ -1794,6 +1842,27 @@ async function shareCurrentTrip() {
   }
 }
 
+// Prefer a short server-stored link (/t/<slug>); fall back to the legacy
+// long query-parameter URL when the share service is disabled or down.
+async function createShareUrl() {
+  const fallbackUrl = updateSharedUrlFromCurrentInputs({ autoRun: true });
+  if (state.config.tripSharing?.enabled === false) return fallbackUrl;
+  try {
+    const response = await fetch("/api/trips", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(buildShareTripData())
+    });
+    if (!response.ok) throw new Error(`The share service responded ${response.status}`);
+    const payload = await response.json();
+    if (!payload?.slug) throw new Error("The share service returned no link");
+    return new URL(`/t/${payload.slug}`, window.location.href).toString();
+  } catch (error) {
+    console.error(error);
+    return fallbackUrl;
+  }
+}
+
 function updateSharedUrlFromCurrentInputs(options = {}) {
   const url = buildShareUrl(options);
   window.history.replaceState(null, "", url);
@@ -1802,36 +1871,62 @@ function updateSharedUrlFromCurrentInputs(options = {}) {
 
 function clearSharedUrl() {
   const url = new URL(window.location.href);
-  if (url.searchParams.get("bt") !== SHARE_URL_VERSION) return;
+  if (url.searchParams.get("bt") !== SHARE_URL_VERSION && !sharedTripSlugFromLocation()) return;
+  url.pathname = "/";
   url.search = "";
   url.hash = "";
   window.history.replaceState(null, "", url);
 }
 
 function refreshSharedUrlIfPresent() {
-  if (new URLSearchParams(window.location.search).get("bt") !== SHARE_URL_VERSION) return;
+  // A /t/<slug> link is an immutable snapshot; once the trip changes, swap the
+  // address bar to a live query-parameter URL so copying it stays accurate.
+  const hasShareParams = new URLSearchParams(window.location.search).get("bt") === SHARE_URL_VERSION;
+  if (!hasShareParams && !sharedTripSlugFromLocation()) return;
   updateSharedUrlFromCurrentInputs({ autoRun: Boolean(state.params) });
+}
+
+function buildShareTripData() {
+  const data = {
+    version: 1,
+    mode: state.mode,
+    origin: els.origin.value.trim(),
+    mapProvider: providerFromInput(),
+    maxDetour: clamp(Number(els.maxDetour.value || 60), 0, 240),
+    recentDays: clamp(Number(els.recentDays.value || 14), 1, 30),
+    radiusKm: clamp(Number(els.radiusKm.value || 25), 1, 50),
+    maxStops: clamp(Number(els.maxStops.value || 10), 3, 20),
+    autoRun: true
+  };
+  if (state.mode === "route") data.destination = els.destination.value.trim();
+  if (state.mode === "species" && els.speciesQuery.value.trim()) {
+    data.species = els.speciesQuery.value.trim();
+  }
+  if (els.targets.value.trim()) data.targets = els.targets.value.trim();
+  const pins = state.pinnedIds.slice(0, 5);
+  if (pins.length) data.pins = pins;
+  return data;
 }
 
 function buildShareUrl(options = {}) {
   const { autoRun = false } = options;
+  const data = buildShareTripData();
   const url = new URL(window.location.href);
+  url.pathname = "/";
   url.search = "";
   url.hash = "";
   url.searchParams.set("bt", SHARE_URL_VERSION);
-  url.searchParams.set("mode", state.mode);
-  url.searchParams.set("origin", els.origin.value.trim());
-  if (state.mode === "route") url.searchParams.set("destination", els.destination.value.trim());
-  if (state.mode === "species" && els.speciesQuery.value.trim()) {
-    url.searchParams.set("species", els.speciesQuery.value.trim());
-  }
-  url.searchParams.set("mapProvider", providerFromInput());
-  url.searchParams.set("maxDetour", String(clamp(Number(els.maxDetour.value || 60), 0, 240)));
-  url.searchParams.set("recentDays", String(clamp(Number(els.recentDays.value || 14), 1, 30)));
-  url.searchParams.set("radiusKm", String(clamp(Number(els.radiusKm.value || 25), 1, 50)));
-  url.searchParams.set("maxStops", String(clamp(Number(els.maxStops.value || 10), 3, 20)));
-  if (els.targets.value.trim()) url.searchParams.set("targets", els.targets.value.trim());
-  for (const id of state.pinnedIds.slice(0, 5)) url.searchParams.append("pin", id);
+  url.searchParams.set("mode", data.mode);
+  url.searchParams.set("origin", data.origin);
+  if (data.mode === "route") url.searchParams.set("destination", data.destination || "");
+  if (data.species) url.searchParams.set("species", data.species);
+  url.searchParams.set("mapProvider", data.mapProvider);
+  url.searchParams.set("maxDetour", String(data.maxDetour));
+  url.searchParams.set("recentDays", String(data.recentDays));
+  url.searchParams.set("radiusKm", String(data.radiusKm));
+  url.searchParams.set("maxStops", String(data.maxStops));
+  if (data.targets) url.searchParams.set("targets", data.targets);
+  for (const id of data.pins || []) url.searchParams.append("pin", id);
   if (autoRun) url.searchParams.set("run", "1");
   return url.toString();
 }
@@ -6518,4 +6613,4 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
-init();
+init().catch((error) => console.error(error));
