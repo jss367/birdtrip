@@ -1098,15 +1098,19 @@ if (require.main === module) {
   });
   if (tripStore) {
     // Warm the schema and sweep expired trips at boot; failures leave the
-    // rest of the app working and the trip endpoints retrying lazily.
-    tripStore
+    // rest of the app working and the trip endpoints retrying lazily. The
+    // hourly timer keeps retention honest even when no new trips are being
+    // created; unref so it never holds the process open.
+    const runTripSweep = () => tripStore
       .sweepExpired()
       .then((removed) => {
         if (removed > 0) console.log(`[trips] removed ${removed} expired shared trips`);
       })
       .catch((error) => {
-        console.error(`[trips] startup sweep failed: ${error.message}`);
+        console.error(`[trips] retention sweep failed: ${error.message}`);
       });
+    runTripSweep();
+    setInterval(runTripSweep, 60 * 60 * 1000).unref();
   }
 }
 
