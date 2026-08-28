@@ -14,5 +14,7 @@ services:
         value: production
       - key: TRUST_PROXY
         value: true
+      - key: TRUST_PROXY_HOPS
+        value: 1
       - key: EBIRD_API_KEY
         sync: false

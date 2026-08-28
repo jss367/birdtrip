@@ -48,7 +48,7 @@ API_RATE_LIMIT_MAX_CLIENTS=10000
 
 The cache is local to one server process and is emptied on restart. Multi-instance deployments should use a shared cache and distributed rate limiter if limits must apply across every instance.
 
-Set `TRUST_PROXY=true` only when the app runs behind a trusted reverse proxy that replaces or safely appends `X-Forwarded-For`. This lets the limiter identify the originating client instead of the proxy. The included Render blueprint enables it.
+Set `TRUST_PROXY=true` only when the app runs behind a trusted reverse proxy that replaces or safely appends `X-Forwarded-For`. `TRUST_PROXY_HOPS` selects the number of trusted entries from the right side of that header; it defaults to `1`, while a Render deployment behind one additional content delivery network proxy should use `2`. This lets the limiter identify the originating client instead of combining unrelated visitors into a proxy-wide bucket. The included Render blueprint enables one trusted proxy hop.
 
 ## Render Blueprint
 

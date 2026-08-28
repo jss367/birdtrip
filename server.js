@@ -14,6 +14,7 @@ const API_RATE_LIMIT_WINDOW_MS = envInteger("API_RATE_LIMIT_WINDOW_MS", 60 * 100
 const API_RATE_LIMIT_MAX = envInteger("API_RATE_LIMIT_MAX", 300, 0);
 const API_RATE_LIMIT_MAX_CLIENTS = envInteger("API_RATE_LIMIT_MAX_CLIENTS", 10000, 1);
 const TRUST_PROXY = /^(1|true|yes)$/i.test(process.env.TRUST_PROXY || "");
+const TRUST_PROXY_HOPS = envInteger("TRUST_PROXY_HOPS", 1, 1);
 const SEASONALITY_TTL_MS = 24 * 60 * 60 * 1000;
 const SEASONALITY_CACHE_MAX_ENTRIES = 100;
 const SEASONALITY_SAMPLE_DAYS = [5, 15, 25];
@@ -149,13 +150,15 @@ function upstreamCacheTtl(url) {
   return CACHE_TTL_MS;
 }
 
-function clientAddress(req) {
-  if (TRUST_PROXY) {
+function clientAddress(req, options = {}) {
+  const trustProxy = options.trustProxy ?? TRUST_PROXY;
+  const trustedHops = options.trustedHops ?? TRUST_PROXY_HOPS;
+  if (trustProxy) {
     const forwarded = String(req.headers["x-forwarded-for"] || "")
       .split(",")
       .map((part) => part.trim())
       .filter(Boolean);
-    if (forwarded.length) return forwarded[forwarded.length - 1];
+    if (forwarded.length) return forwarded[Math.max(0, forwarded.length - trustedHops)];
   }
   return req.socket.remoteAddress || "unknown";
 }
@@ -167,19 +170,29 @@ function consumeRateLimit(key, options = {}) {
   const windowMs = options.windowMs ?? API_RATE_LIMIT_WINDOW_MS;
   const maxClients = options.maxClients ?? API_RATE_LIMIT_MAX_CLIENTS;
   let bucket = buckets.get(key);
-  if (!bucket || bucket.resetAt <= now) {
-    bucket = { count: 0, resetAt: now + windowMs };
+  if (bucket?.resetAt <= now) {
     buckets.delete(key);
+    bucket = null;
+  }
+  if (!bucket) {
+    for (const [bucketKey, entry] of buckets) {
+      if (entry.resetAt <= now) buckets.delete(bucketKey);
+    }
+    if (buckets.size >= maxClients) {
+      const resetAt = Math.min(...[...buckets.values()].map((entry) => entry.resetAt));
+      return {
+        allowed: false,
+        limit: max,
+        remaining: 0,
+        resetAt,
+        retryAfterSeconds: Math.max(1, Math.ceil((resetAt - now) / 1000))
+      };
+    }
+    bucket = { count: 0, resetAt: now + windowMs };
     buckets.set(key, bucket);
   }
   const allowed = max === 0 || bucket.count < max;
   if (allowed) bucket.count += 1;
-  if (buckets.size > maxClients) {
-    for (const [bucketKey, entry] of buckets) {
-      if (entry.resetAt <= now || buckets.size > maxClients) buckets.delete(bucketKey);
-      if (buckets.size <= maxClients) break;
-    }
-  }
   return {
     allowed,
     limit: max,
@@ -1139,6 +1152,7 @@ if (require.main === module) {
 module.exports = {
   acquireSeasonalityBuildSlot,
   buildSeasonality,
+  clientAddress,
   consumeRateLimit,
   fetchJson,
   nearestHotspotRegion,

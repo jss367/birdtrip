@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const {
   acquireSeasonalityBuildSlot,
   buildSeasonality,
+  clientAddress,
   consumeRateLimit,
   fetchJson,
   nearestHotspotRegion,
@@ -205,6 +206,32 @@ test("rate limiter rejects excess requests and resets after its window", () => {
   const reset = consumeRateLimit("client", { ...options, now: 6000 });
   assert.equal(reset.allowed, true);
   assert.equal(reset.remaining, 1);
+});
+
+test("trusted proxy hop count selects the client before the known proxy chain", () => {
+  const req = {
+    headers: { "x-forwarded-for": "203.0.113.10, 198.51.100.20" },
+    socket: { remoteAddress: "192.0.2.30" }
+  };
+
+  assert.equal(clientAddress(req, { trustProxy: false }), "192.0.2.30");
+  assert.equal(clientAddress(req, { trustProxy: true, trustedHops: 1 }), "198.51.100.20");
+  assert.equal(clientAddress(req, { trustProxy: true, trustedHops: 2 }), "203.0.113.10");
+});
+
+test("rate limiter rejects new clients instead of evicting active buckets at capacity", () => {
+  const buckets = new Map();
+  const options = { buckets, max: 2, windowMs: 1000, maxClients: 2, now: 5000 };
+
+  assert.equal(consumeRateLimit("first", options).allowed, true);
+  assert.equal(consumeRateLimit("second", options).allowed, true);
+  assert.equal(consumeRateLimit("overflow", options).allowed, false);
+  assert.equal(buckets.has("overflow"), false);
+  assert.equal(consumeRateLimit("first", options).allowed, true);
+  assert.equal(consumeRateLimit("first", options).allowed, false);
+
+  assert.equal(consumeRateLimit("overflow", { ...options, now: 6000 }).allowed, true);
+  assert.equal(buckets.has("overflow"), true);
 });
 
 test("concurrent cold seasonality requests share one upstream build", async () => {
