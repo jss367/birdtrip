@@ -4772,8 +4772,10 @@ function renderResults() {
     heading.className = "out-of-rank-heading";
     heading.textContent = "Pinned — outside current top results";
     els.resultsList.appendChild(heading);
-    outOfRankPinned.forEach((candidate) => {
-      els.resultsList.appendChild(buildStopCard(candidate, state.results.length, { outOfRank: true, scale }));
+    outOfRankPinned.forEach((candidate, offset) => {
+      // Give each out-of-rank card a distinct index so candidateSpeciesPreview
+      // derives unique tooltip IDs (duplicate IDs break aria-describedby).
+      els.resultsList.appendChild(buildStopCard(candidate, state.results.length + offset, { outOfRank: true, scale }));
     });
   }
 
