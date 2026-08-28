@@ -4,6 +4,7 @@ const state = {
   route: null,
   routeName: "",
   results: [],
+  resultOrder: "score",
   selectedId: null,
   savedTrips: [],
   comparisonIds: [],
@@ -46,6 +47,7 @@ const state = {
 };
 
 const ranking = window.BirdtripRanking;
+const timing = window.BirdtripTiming;
 const SCORING_VERSION = 2;
 const DISCOVERY_QUERY_RADIUS_KM = 200;
 const ACTIVITY_QUERY_RADIUS_KM = 50;
@@ -90,6 +92,10 @@ const els = {
   radiusKm: document.querySelector("#radiusKm"),
   radiusKmLabel: document.querySelector("#radiusKmLabel"),
   maxStops: document.querySelector("#maxStops"),
+  departTime: document.querySelector("#departTime"),
+  orderToggle: document.querySelector("#orderToggle"),
+  orderByScore: document.querySelector("#orderByScore"),
+  orderByArrival: document.querySelector("#orderByArrival"),
   ebirdAccessStatus: document.querySelector("#ebirdAccessStatus"),
   apiToken: document.querySelector("#apiToken"),
   rememberToken: document.querySelector("#rememberToken"),
@@ -183,6 +189,7 @@ const PREF_FIELDS = [
   "recentDays",
   "radiusKm",
   "maxStops",
+  "departTime",
   "targets",
   "speciesQuery"
 ];
@@ -304,6 +311,9 @@ function init() {
     event.preventDefault();
     saveCurrentTrip();
   });
+  els.orderByScore.addEventListener("click", () => setResultOrder("score"));
+  els.orderByArrival.addEventListener("click", () => setResultOrder("arrival"));
+  els.departTime.addEventListener("change", handleDepartTimeChange);
   els.clearComparisonButton.addEventListener("click", clearComparison);
   els.clearItinerary.addEventListener("click", clearPinnedStops);
   els.previewBirdingRouteButton.addEventListener("click", previewBestBirdingRoute);
@@ -381,6 +391,7 @@ function readSharedSearchFromUrl() {
     recentDays: cleanSharedNumber(search.get("recentDays"), 1, 30),
     radiusKm: cleanSharedNumber(search.get("radiusKm"), 1, 50),
     maxStops: cleanSharedNumber(search.get("maxStops"), 3, 20),
+    departTime: cleanTimeString(search.get("departTime")),
     targets: cleanSharedTargets(search.get("targets"), 1200),
     pins: cleanSharedIdList(search.getAll("pin"), 5),
     autoRun: search.get("run") === "1"
@@ -405,6 +416,7 @@ function applySharedSearch(shared) {
   if (shared.recentDays) els.recentDays.value = shared.recentDays;
   if (shared.radiusKm) els.radiusKm.value = shared.radiusKm;
   if (shared.maxStops) els.maxStops.value = shared.maxStops;
+  if (shared.departTime) els.departTime.value = shared.departTime;
   if (shared.targets) els.targets.value = shared.targets;
   state.pendingPinnedIds = shared.pins || [];
   updateInputSummaries();
@@ -433,6 +445,11 @@ function cleanSharedIdList(values, maxItems) {
     .map((item) => item.trim())
     .filter((item) => /^[\w:.,-]{1,80}$/.test(item))
     .slice(0, maxItems);
+}
+
+function cleanTimeString(value) {
+  const text = String(value || "").trim();
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(text) ? text : "";
 }
 
 function cleanSharedNumber(value, min, max) {
@@ -788,6 +805,7 @@ function serializeCandidate(candidate) {
     liferSpecies: candidate.liferSpecies,
     nearestSample: candidate.nearestSample,
     routeDistanceKm: candidate.routeDistanceKm,
+    routeProgress: candidate.routeProgress,
     targetMatches: candidate.targetMatches,
     viaRoute: candidate.viaRoute,
     addedMinutes: candidate.addedMinutes,
@@ -955,6 +973,7 @@ function restoreSelectedStop() {
 }
 
 function renderEmptyResults(icon, message) {
+  els.orderToggle.hidden = true;
   els.resultsList.className = "results-list empty";
   els.resultsList.innerHTML = `<div class="empty-state"><i data-lucide="${icon}"></i><p>${escapeHtml(message)}</p></div>`;
 }
@@ -1199,6 +1218,7 @@ function clearResults() {
   clearFieldErrors();
   clearWarning();
   els.report.innerHTML = "";
+  els.orderToggle.hidden = true;
   els.resultsList.className = "results-list empty";
   els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="binoculars"></i><p>Results will appear here after the first search.</p></div>';
   els.resultContext.textContent = state.mode === "species"
@@ -1732,6 +1752,7 @@ function readParams() {
     recentDays: clamp(Number(els.recentDays.value || 14), 1, 30),
     radiusKm: clamp(Number(els.radiusKm.value || 25), 1, 50),
     maxStops: clamp(Number(els.maxStops.value || 10), 3, 20),
+    departTime: cleanTimeString(els.departTime.value),
     mapProvider: state.provider,
     token: els.apiToken.value.trim(),
     speciesQuery: els.speciesQuery.value.trim(),
@@ -1830,6 +1851,7 @@ function buildShareUrl(options = {}) {
   url.searchParams.set("recentDays", String(clamp(Number(els.recentDays.value || 14), 1, 30)));
   url.searchParams.set("radiusKm", String(clamp(Number(els.radiusKm.value || 25), 1, 50)));
   url.searchParams.set("maxStops", String(clamp(Number(els.maxStops.value || 10), 3, 20)));
+  if (cleanTimeString(els.departTime.value)) url.searchParams.set("departTime", cleanTimeString(els.departTime.value));
   if (els.targets.value.trim()) url.searchParams.set("targets", els.targets.value.trim());
   for (const id of state.pinnedIds.slice(0, 5)) url.searchParams.append("pin", id);
   if (autoRun) url.searchParams.set("run", "1");
@@ -2056,6 +2078,82 @@ function updateLifeListStatus() {
   const fileName = state.lifeList.fileName ? ` from ${state.lifeList.fileName}` : "";
   els.lifeListStatus.textContent = `${count} ${source}species imported${fileName}.`;
   els.clearLifeListButton.disabled = false;
+}
+
+function handleDepartTimeChange() {
+  if (state.params) state.params.departTime = cleanTimeString(els.departTime.value);
+  savePreferences();
+  renderResultsIfPresent();
+}
+
+function setResultOrder(order) {
+  if (state.resultOrder === order) return;
+  state.resultOrder = order;
+  const byArrival = order === "arrival";
+  els.orderByScore.classList.toggle("is-active", !byArrival);
+  els.orderByArrival.classList.toggle("is-active", byArrival);
+  els.orderByScore.setAttribute("aria-pressed", String(!byArrival));
+  els.orderByArrival.setAttribute("aria-pressed", String(byArrival));
+  if (state.results.length) {
+    renderResults();
+    if (window.lucide) window.lucide.createIcons();
+  }
+}
+
+function departureTimestamp() {
+  const value = cleanTimeString(state.params?.departTime);
+  if (!value) return null;
+  const [hours, minutes] = value.split(":").map(Number);
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes).getTime();
+}
+
+function candidateTiming(candidate) {
+  if (!timing || state.params?.mode !== "route") return null;
+  const departureMs = departureTimestamp();
+  const durationSeconds = state.route?.durationSeconds;
+  if (!departureMs || !Number.isFinite(durationSeconds) || !Number.isFinite(candidate.routeProgress)) return null;
+  const arrivalMs = timing.estimateArrivalMs({
+    departureMs,
+    routeProgress: candidate.routeProgress,
+    routeDurationSeconds: durationSeconds,
+    addedMinutes: candidate.addedMinutes
+  });
+  const sun = timing.sunTimes(arrivalMs, candidate.lat, candidate.lng);
+  if (!Number.isFinite(arrivalMs) || !sun) return null;
+  const habitat = timing.inferStopTiming(candidate.name);
+  const assessment = timing.assessArrival({
+    arrivalMs,
+    sunriseMs: sun.sunriseMs,
+    sunsetMs: sun.sunsetMs,
+    polar: sun.polar,
+    window: habitat.window
+  });
+  if (!assessment) return null;
+  return { arrivalMs, sun, habitat, assessment };
+}
+
+function formatClock(ms) {
+  return new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+function timingChipLabel(stopTiming) {
+  switch (stopTiming.assessment.quality) {
+    case "prime": return "prime time";
+    case "good": return "good timing";
+    case "fair": return "ok timing";
+    case "dark": return "in the dark";
+    default: return stopTiming.habitat.bestLabel;
+  }
+}
+
+function timingSentence(stopTiming) {
+  const arrival = formatClock(stopTiming.arrivalMs);
+  const habitatName = stopTiming.habitat.habitat === "general" ? "This stop" : `This ${stopTiming.habitat.habitat} stop`;
+  const sunPart = stopTiming.sun.polar
+    ? ""
+    : ` Sunrise ${formatClock(stopTiming.sun.sunriseMs)}, sunset ${formatClock(stopTiming.sun.sunsetMs)}.`;
+  return `You'd reach this stop around ${arrival} — ${stopTiming.assessment.note}. ${habitatName} is ${stopTiming.habitat.bestLabel}.${sunPart}`;
 }
 
 function renderResultsIfPresent() {
@@ -4484,6 +4582,7 @@ function renderResults() {
   els.resultsList.innerHTML = "";
 
   if (!state.results.length) {
+    els.orderToggle.hidden = true;
     els.resultsList.className = "results-list empty";
     els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="search-x"></i><p>No stops matched the current constraints.</p></div>';
     if (window.lucide) window.lucide.createIcons();
@@ -4491,7 +4590,13 @@ function renderResults() {
   }
 
   const scale = scoreScale(state.results);
-  state.results.forEach((candidate, index) => {
+  const orderableByArrival = !isArea && state.results.some((candidate) => Number.isFinite(candidate.routeProgress));
+  els.orderToggle.hidden = !orderableByArrival;
+  const byArrival = orderableByArrival && state.resultOrder === "arrival";
+  const displayResults = byArrival
+    ? [...state.results].sort((a, b) => (Number.isFinite(a.routeProgress) ? a.routeProgress : 1) - (Number.isFinite(b.routeProgress) ? b.routeProgress : 1))
+    : state.results;
+  displayResults.forEach((candidate, index) => {
     const node = els.resultTemplate.content.cloneNode(true);
     const card = node.querySelector(".stop-card");
     card.dataset.id = candidate.id;
@@ -4499,7 +4604,9 @@ function renderResults() {
     if (isPinned(candidate.id)) card.classList.add("is-pinned");
     const rank = node.querySelector(".rank");
     rank.textContent = String(index + 1);
-    rank.title = `Rank ${index + 1} of ${state.results.length} by score`;
+    rank.title = byArrival
+      ? `Stop ${index + 1} of ${state.results.length} in drive order`
+      : `Rank ${index + 1} of ${state.results.length} by score`;
     node.querySelector(".stop-name").textContent = candidate.name;
     node.querySelector(".stop-preview").textContent = speciesPreview(candidate);
     node.querySelector(".stop-chips").innerHTML = candidateChips(candidate, index);
@@ -4577,7 +4684,7 @@ function renderResults() {
     dir.setAttribute("aria-label", `Directions to ${candidate.name}`);
     ebird.setAttribute("aria-label", `${candidate.name} on eBird`);
     const mainButton = node.querySelector(".stop-main");
-    mainButton.setAttribute("aria-label", `View ${candidate.name}, rank ${index + 1} of ${state.results.length}, score ${candidate.score} of ${scale.max}`);
+    mainButton.setAttribute("aria-label", `View ${candidate.name}, ${byArrival ? "stop" : "rank"} ${index + 1} of ${state.results.length}, score ${candidate.score} of ${scale.max}`);
     mainButton.addEventListener("click", () => selectCandidate(candidate.id));
     setupCandidateSpeciesPreviews(card);
     els.resultsList.appendChild(node);
@@ -4626,6 +4733,7 @@ function renderDetails(candidate) {
     : candidate.species.size
       ? `These are reports from the selected ${state.params?.recentDays || 14}-day window, not encounter predictions.`
       : `No species reports were returned for this hotspot in the selected ${state.params?.recentDays || 14}-day window.`;
+  const stopTiming = candidateTiming(candidate);
 
   els.detailsContent.innerHTML = `
     <h3>${escapeHtml(candidate.name)}</h3>
@@ -4635,6 +4743,13 @@ function renderDetails(candidate) {
       <p>${escapeHtml(candidateReasonText(candidate, isArea))}</p>
       <p><small>${escapeHtml(evidenceNote)}</small></p>
     </section>
+    ${stopTiming ? `
+      <section class="reason-line timing-line timing-${stopTiming.assessment.quality}">
+        <h4>Arrival Timing</h4>
+        <p>${escapeHtml(timingSentence(stopTiming))}</p>
+        <p><small>Estimated from your departure time plus driving along the route; time spent birding at earlier stops is not included.</small></p>
+      </section>
+    ` : ""}
     <div class="detail-grid">
       <div><b>${candidate.species.size}</b><small>recent species</small></div>
       <div><b>${candidate.observations.length}</b><small>records</small></div>
@@ -5062,6 +5177,10 @@ function candidateChips(candidate, index) {
     }));
   }
   if (isHotspot(candidate)) chips.push('<span class="stop-chip chip-hotspot">top hotspot</span>');
+  const stopTiming = candidateTiming(candidate);
+  if (stopTiming) {
+    chips.push(`<span class="stop-chip chip-time-${stopTiming.assessment.quality}" title="${escapeHtml(timingSentence(stopTiming))}">~${escapeHtml(formatClock(stopTiming.arrivalMs))} · ${escapeHtml(timingChipLabel(stopTiming))}</span>`);
+  }
   return chips.join("");
 }
 
@@ -5705,11 +5824,13 @@ function buildReportMarkup() {
         const notable = prioritizedNotableReports(candidate, 12);
         const unseenNearbyCount = unseenNotableSpecies(candidate).length;
         const links = candidateLinks(candidate);
+        const stopTiming = candidateTiming(candidate);
         return `
           <div class="report-stop">
             <h3>${index + 1}. ${escapeHtml(candidate.name)}</h3>
             <p class="report-stop-meta">
               Score ${candidate.score} ·
+              ${stopTiming ? `arrive ~${escapeHtml(formatClock(stopTiming.arrivalMs))} (${escapeHtml(timingChipLabel(stopTiming))}) ·` : ""}
               ${isArea
                 ? `~${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi from center ·`
                 : `+${Math.round(candidate.addedMinutes)} min · +${candidate.addedMiles.toFixed(1)} mi detour · ~${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi off route ·`}

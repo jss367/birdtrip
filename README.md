@@ -2,6 +2,8 @@
 
 A route-first birding planner for [birdtrip.org](https://birdtrip.org). Birdtrip finds birding stops along a driving route within a maximum detour budget, then ranks them using recent eBird observations, notable sightings, target species, and route impact.
 
+Setting an optional departure time estimates when you would reach each stop and flags time-of-day mismatches — for example, arriving at a marsh at 2 PM when it is best at dawn. Sunrise and sunset are computed locally from the stop's coordinates; no extra API is needed. Ranked results can also be reordered into drive order.
+
 ## Run
 
 ```sh

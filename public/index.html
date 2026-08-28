@@ -174,6 +174,11 @@
                 <small>max</small>
               </div>
             </label>
+            <label id="departTimeField" class="depart-time-field">
+              <span>Leave at</span>
+              <input id="departTime" name="departTime" type="time">
+              <small class="field-hint">Optional. Estimates arrival at each stop and flags bad timing, e.g. reaching a marsh at 2 PM when it is best at dawn.</small>
+            </label>
           </div>
         </section>
 
@@ -292,6 +297,10 @@
           <div>
             <h2 id="resultsTitle">Ranked Stops</h2>
             <p id="resultContext">No route searched yet.</p>
+          </div>
+          <div class="order-toggle" id="orderToggle" role="group" aria-label="Result order" hidden>
+            <button type="button" id="orderByScore" class="is-active" aria-pressed="true">By score</button>
+            <button type="button" id="orderByArrival" aria-pressed="false">Drive order</button>
           </div>
           <div class="legend" id="resultLegend">
             <span><b class="tier high"></b>Top hotspot</span>
@@ -489,6 +498,7 @@
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
   <script src="./ranking.js"></script>
+  <script src="./timing.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>
