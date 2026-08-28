@@ -19,7 +19,9 @@
     Object.freeze({
       key: "warblers",
       label: "Warblers",
-      pattern: /\b(?:warbler|ovenbird|waterthrush|redstart|parula|yellowthroat|chat)\b/i,
+      // "Redstart" and "chat" also name Old World flycatchers (Common Redstart,
+      // Sooty Chat), so only the wood-warbler species are listed explicitly.
+      pattern: /\b(?:warbler|ovenbird|waterthrush|american redstart|painted redstart|slate-throated redstart|collared redstart|whitestart|parula|yellowthroat|yellow-breasted chat)\b/i,
       description: "Wood-warblers, including waterthrushes, Ovenbird, and Yellow-breasted Chat."
     }),
     Object.freeze({
@@ -31,7 +33,7 @@
     Object.freeze({
       key: "shorebirds",
       label: "Shorebirds",
-      pattern: /\b(?:sandpiper|plover|dowitcher|yellowlegs|godwit|curlew|whimbrel|turnstone|sanderling|dunlin|snipe|woodcock|phalarope|avocet|stilt|killdeer|willet|knot|oystercatcher|surfbird)\b/i,
+      pattern: /\b(?:sandpiper|plover|lapwing|dowitcher|yellowlegs|godwit|curlew|whimbrel|turnstone|sanderling|dunlin|snipe|woodcock|phalarope|avocet|stilt|killdeer|willet|knot|oystercatcher|surfbird)\b/i,
       description: "Sandpipers, plovers, and their relatives."
     }),
     Object.freeze({
