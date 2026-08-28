@@ -552,8 +552,14 @@ function queueProfileUpsert() {
   if (profileUpsertTimer) clearTimeout(profileUpsertTimer);
   profileUpsertTimer = setTimeout(async () => {
     profileUpsertTimer = 0;
-    const patch = buildProfilePatch();
-    const result = await window.birdtripAuth.upsertProfile(patch);
+    let result = null;
+    try {
+      result = await window.birdtripAuth.upsertProfile(buildProfilePatch());
+    } catch {
+      // upsertProfile catches internally; this guards anything unexpected so
+      // the failure warning below still fires instead of an unhandled rejection.
+      result = null;
+    }
     if (!result || !result.ok) {
       if (!profileUpsertFailed) {
         addWarning("Couldn't save to your account - still saved in this browser.");
