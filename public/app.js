@@ -257,6 +257,12 @@ async function init() {
     event.preventDefault();
     runSearch();
   });
+  // Editing any shareable input invalidates a loaded /t/<slug> snapshot URL:
+  // swap the address bar to a live query URL so copying it keeps the edits.
+  // Only real user events fire these; programmatic hydration sets .value
+  // directly and leaves the short URL intact.
+  els.form.addEventListener("input", refreshSharedUrlIfPresent);
+  els.form.addEventListener("change", refreshSharedUrlIfPresent);
   els.modeButtons.forEach((button) => {
     button.addEventListener("click", () => setSearchMode(button.dataset.mode));
   });
@@ -622,6 +628,7 @@ function setSearchMode(mode, options = {}) {
   updateInputSummaries();
   renderInsights();
   if (persist) savePreferences();
+  if (persist) refreshSharedUrlIfPresent();
   if (window.lucide) window.lucide.createIcons();
 }
 
