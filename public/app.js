@@ -406,10 +406,16 @@ function readSharedSearchFromUrl() {
   });
 }
 
+// Server-stored trips can carry far longer target lists than a URL, so the
+// write side (buildShareTripData) and the stored-read side share this cap;
+// only the legacy query-parameter channel keeps the tight 1200 limit.
+const STORED_TARGETS_MAX_LENGTH = 10000;
+
 // Both share channels (query parameters and server-stored trips) funnel
 // through the same sanitizer, so stored blobs get no more trust than URLs.
-function sanitizeSharedSearch(raw) {
+function sanitizeSharedSearch(raw, options = {}) {
   if (!raw || typeof raw !== "object") return null;
+  const { targetsMaxLength = 1200 } = options;
   const shared = {
     mode: normalizeMode(raw.mode),
     origin: cleanSharedText(raw.origin, 160),
@@ -420,7 +426,7 @@ function sanitizeSharedSearch(raw) {
     recentDays: cleanSharedNumber(raw.recentDays, 1, 30),
     radiusKm: cleanSharedNumber(raw.radiusKm, 1, 50),
     maxStops: cleanSharedNumber(raw.maxStops, 3, 20),
-    targets: cleanSharedTargets(raw.targets, 1200),
+    targets: cleanSharedTargets(raw.targets, targetsMaxLength),
     pins: cleanSharedIdList(Array.isArray(raw.pins) ? raw.pins.map(String) : [], 5),
     autoRun: raw.autoRun === true
   };
@@ -443,7 +449,7 @@ async function resolveSharedSearch() {
       throw new Error(`The shared trip request failed (${response.status})`);
     }
     const payload = await response.json();
-    const shared = sanitizeSharedSearch(payload?.data);
+    const shared = sanitizeSharedSearch(payload?.data, { targetsMaxLength: STORED_TARGETS_MAX_LENGTH });
     if (!shared) throw new Error("The shared trip data was unreadable");
     return shared;
   } catch (error) {
@@ -487,13 +493,22 @@ function cleanSharedText(value, maxLength) {
 }
 
 function cleanSharedTargets(value, maxLength) {
-  return String(value || "")
+  // Truncate at line boundaries: cutting mid-line would leave a partial
+  // species name that matches nothing (or the wrong bird).
+  const lines = String(value || "")
     .replace(/\r\n?/g, "\n")
     .split("\n")
     .map((line) => line.replace(/\s+/g, " ").trim())
-    .filter(Boolean)
-    .join("\n")
-    .slice(0, maxLength);
+    .filter(Boolean);
+  const kept = [];
+  let length = 0;
+  for (const line of lines) {
+    const next = length + (kept.length ? 1 : 0) + line.length;
+    if (next > maxLength) break;
+    kept.push(line);
+    length = next;
+  }
+  return kept.join("\n");
 }
 
 function cleanSharedIdList(values, maxItems) {
@@ -1932,7 +1947,10 @@ function buildShareTripData() {
   if (state.mode === "species" && els.speciesQuery.value.trim()) {
     data.species = els.speciesQuery.value.trim();
   }
-  if (els.targets.value.trim()) data.targets = els.targets.value.trim();
+  // Cap at the same length the stored-trip reader accepts, so what a
+  // recipient loads is exactly what the creator shared.
+  const targets = cleanSharedTargets(els.targets.value, STORED_TARGETS_MAX_LENGTH);
+  if (targets) data.targets = targets;
   const pins = state.pinnedIds.slice(0, 5);
   if (pins.length) data.pins = pins;
   return data;
