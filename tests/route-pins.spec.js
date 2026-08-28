@@ -19,6 +19,31 @@ test("pinned stop outside the top results stays visible in its own section", asy
   await expect(page.locator("#comparisonContent")).toContainText("Harbor Park");
 });
 
+test("multiple out-of-rank pins keep unique species-preview ids", async ({ page }) => {
+  await runRouteSearch(page, { maxStops: 5 });
+  // A one-species life list gives every stop a "not on your list" preview
+  // chip without reshuffling ranks: all stops have >=10 unseen species, so
+  // the personal bonus caps out equally everywhere.
+  await page.setInputFiles("#lifeListInput", {
+    name: "life-list.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from("Common Name\nNonexistent Bird\n")
+  });
+  await expect(page.locator(".stop-card .chip-lifer").first()).toBeVisible();
+  // Pin Harbor Park and Near Pond, then slide left: the convMult-0 top 5 is
+  // L8, L6, L1, L3, L2, so both pins drop into the out-of-rank section.
+  await page.locator('.stop-card:has-text("Harbor Park") .stop-pin').click();
+  await page.locator('.stop-card:has-text("Near Pond") .stop-pin').click();
+  await setSlider(page, "#balanceSliderResults", 0);
+  const outOfRank = page.locator(".stop-card.is-out-of-rank");
+  await expect(outOfRank).toHaveCount(2);
+  // Each out-of-rank card must carry its own tooltip id so aria-describedby
+  // never resolves to another stop's species list.
+  await expect(outOfRank.locator('[id$="-lifer-preview"]')).toHaveCount(2);
+  const ids = await page.locator('.results-list [id$="-preview"]').evaluateAll((nodes) => nodes.map((node) => node.id));
+  expect(new Set(ids).size).toBe(ids.length);
+});
+
 test("shared URL keeps a pin that is out-of-rank at the shared balance", async ({ page }) => {
   await runRouteSearch(page, { maxStops: 5 });
   await page.locator('.stop-card:has-text("Harbor Park") .stop-pin').click();
