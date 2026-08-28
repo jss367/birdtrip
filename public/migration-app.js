@@ -47,8 +47,12 @@
     if (window.lucide) window.lucide.createIcons();
   }
 
-  function setStatus(message) {
-    if (els.status) els.status.textContent = message || "";
+  function setStatus(message, options = {}) {
+    if (!els.status) return;
+    els.status.textContent = message || "";
+    // Clipboard-fallback URLs must stay fully visible and copyable; the
+    // default status style truncates at 340px.
+    els.status.classList.toggle("is-expanded", Boolean(options.expanded));
   }
 
   function storedApiToken() {
@@ -352,7 +356,7 @@
         <p>${escapeHtml(timing.group.description)} Built from the share of sampled dates each species was reported in this area — real reports, not live radar.</p>
       </div>
       ${chartHtml(timing)}
-      ${timing.migrantCount
+      ${timing.migrantCount || timing.buckets.irregular.length
         ? `<div class="seasonal-grid">${sections}</div>`
         : `<div class="empty-state"><i data-lucide="bird"></i><p>No migratory species in this group stood out here. Try another group or a nearby location.</p></div>`}
       ${leftovers.length ? `<p class="timing-more timing-leftovers">Not shown: ${escapeHtml(leftovers.join(" and "))}.</p>` : ""}`;
@@ -487,7 +491,7 @@
       await copyTextToClipboard(window.location.href);
       setStatus("Link copied.");
     } catch {
-      setStatus(window.location.href);
+      setStatus(window.location.href, { expanded: true });
     }
   });
 
