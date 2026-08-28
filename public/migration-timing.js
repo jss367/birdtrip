@@ -80,10 +80,15 @@
   }
 
   // Statuses are judged on the species' own peak (normalized presence), so a
-  // sparse-but-regular migrant reads the same as an abundant one.
-  function classifyStatus(presence, seasons) {
+  // sparse-but-regular migrant reads the same as an abundant one. Sampling is
+  // only a few dates per month, so rates are coarse (multiples of 1/sampled);
+  // when the caller knows how many sampled days the species was actually seen
+  // (totalDays), scarcity is judged on that count instead of on a rate
+  // threshold the sampling resolution could never produce.
+  function classifyStatus(presence, seasons, totalDays) {
     const max = Math.max(...presence, 0);
-    if (max < 0.2) return "scarce";
+    if (max <= 0) return "scarce";
+    if (Number.isFinite(totalDays) ? totalDays < 3 : max < 0.2) return "scarce";
     const norm = normalizedPresence(presence);
     const means = {};
     for (const season of seasons) {
@@ -91,7 +96,9 @@
     }
     const { winter, spring, summer, fall } = means;
     if (Math.min(winter, spring, summer, fall) >= 0.4) return "resident";
-    if (summer <= 0.35 && winter <= 0.35) return "passage";
+    // Passage needs actual spring or fall occurrence; a single peak month in
+    // one of those seasons yields a mean of 1/3, so 0.3 keeps it in.
+    if (summer <= 0.35 && winter <= 0.35 && Math.max(spring, fall) >= 0.3) return "passage";
     if (summer >= 0.5 && winter <= 0.3) return "summer";
     if (winter >= 0.5 && summer <= 0.3) return "winter";
     return "irregular";
@@ -191,7 +198,10 @@
       if (groupKey !== "all" && classifyGroup(species.comName) !== groupKey) continue;
       groupTotal += 1;
       const presence = seasonal.presenceRates(species.months, sampledDays);
-      const status = classifyStatus(presence, seasons);
+      const totalDays = Array.isArray(species.months)
+        ? species.months.reduce((sum, count) => sum + (Number(count) || 0), 0)
+        : NaN;
+      const status = classifyStatus(presence, seasons, totalDays);
       if (status === "resident") {
         residentCount += 1;
         continue;

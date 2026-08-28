@@ -60,6 +60,17 @@ test("status classification covers the main occurrence shapes", () => {
 
   const scarce = [0, 0.1, 0, 0, 0, 0, 0, 0, 0.1, 0, 0, 0];
   assert.equal(timing.classifyStatus(scarce, SEASONS), "scarce");
+
+  // Real sampling is ~3 dates per month, so rates are never below 1/3;
+  // scarcity there is judged on how few sampled days the bird was seen.
+  const twoDays = [0, 0, 0, 1 / 3, 0, 0, 0, 0, 1 / 3, 0, 0, 0];
+  assert.equal(timing.classifyStatus(twoDays, SEASONS, 2), "scarce");
+  assert.equal(timing.classifyStatus(twoDays, SEASONS, 4), "passage");
+
+  // A bird seen only in one summer month has no spring or fall evidence,
+  // so it must not be labeled as passing through.
+  const julyOnly = [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0];
+  assert.equal(timing.classifyStatus(julyOnly, SEASONS, 3), "irregular");
 });
 
 test("movement for seasonal residents peaks at arrival and departure", () => {
@@ -111,20 +122,29 @@ test("buildMigrationTiming filters by group and excludes residents from movement
       comName: "American Robin",
       sciName: "Turdus migratorius",
       months: monthsFromRates([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])
+    },
+    {
+      speciesCode: "cerwar",
+      comName: "Cerulean Warbler",
+      sciName: "Setophaga cerulea",
+      // Seen on only two sampled days all year: too scarce to judge.
+      months: [0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0]
     }
   ];
 
   const warblers = timing.buildMigrationTiming(species, FULL_SAMPLING, { latitude: 38, group: "warblers" });
-  assert.equal(warblers.groupTotal, 2);
+  assert.equal(warblers.groupTotal, 3);
   assert.equal(warblers.migrantCount, 2);
   assert.equal(warblers.buckets.passage.length, 1);
   assert.equal(warblers.buckets.passage[0].speciesCode, "magwar");
   assert.equal(warblers.buckets.summer.length, 1);
+  assert.equal(warblers.scarceCount, 1); // cerulean's two reports are not enough
   assert.equal(warblers.residentCount, 0); // robin is not a warbler
 
   const all = timing.buildMigrationTiming(species, FULL_SAMPLING, { latitude: 38, group: "all" });
-  assert.equal(all.groupTotal, 3);
+  assert.equal(all.groupTotal, 4);
   assert.equal(all.migrantCount, 2);
+  assert.equal(all.scarceCount, 1);
   assert.equal(all.residentCount, 1); // robin counted but contributes no movement
 
   const mayIndex = 4;
