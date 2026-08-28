@@ -52,8 +52,8 @@ Single table, one row per user.
 ```sql
 create table profiles (
   user_id        uuid primary key references auth.users(id) on delete cascade,
-  life_list      jsonb        not null default '[]'::jsonb,
-  targets        jsonb        not null default '[]'::jsonb,
+  life_list      jsonb        not null default '{}'::jsonb,
+  targets        text         not null default '',
   ebird_token    text,
   preferences    jsonb        not null default '{}'::jsonb,
   updated_at     timestamptz  not null default now()
@@ -62,8 +62,8 @@ create table profiles (
 
 Shapes:
 
-- `life_list`: array of `{common, scientific, code}`, mirroring the existing importer output.
-- `targets`: array of `{common}`, parsed once from the free-text input on save.
+- `life_list`: object `{source, fileName, importedAt, species: [...], displayNames: [...]}` — the app's existing importer output stored verbatim (YAGNI over a normalized array of `{common, scientific, code}`).
+- `targets`: plain text matching the free-text textarea value, stored as-is rather than parsed into JSON (YAGNI).
 - `preferences`: `{maxAddedMinutes, corridorKmRadius, recentDays, maxStops, mapProvider}`.
 - `ebird_token`: plain text. Encrypted at rest by Supabase. Same threat model as today's localStorage value.
 
