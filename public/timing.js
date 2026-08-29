@@ -121,19 +121,19 @@
       habitat: "marsh",
       window: "dawn",
       bestLabel: "best at dawn",
-      pattern: /marsh|wetlands?\b|swamp|slough|bog\b|fen\b|cienega|ciénega|estuar|riparian|oxbow|bosque|billabong/i
+      pattern: /\bmarsh(es|lands?)?\b|wetlands?\b|\bswamps?\b|slough|bog\b|fen\b|cienega|ciénega|estuar|riparian|oxbow|bosque|billabong/i
     },
     {
       habitat: "open water",
       window: "daylight",
       bestLabel: "good through the day",
-      pattern: /lake|reservoir|ponds?\b|lagoon|\bbay\b|harbou?r|beach|jetty|pier\b|mudflat|tidal|salt ?flat|sewage|water treatment|\bwtp\b|\bstp\b|impoundment|inlet|seawatch|shorebird/i
+      pattern: /\blake|reservoir|ponds?\b|lagoon|\bbay\b|harbou?r|beach|jetty|\bpiers?\b|mudflat|tidal|salt ?flat|sewage|water treatment|\bwtp\b|\bstp\b|impoundment|inlet|seawatch|shorebird/i
     },
     {
       habitat: "woodland",
       window: "dawn",
       bestLabel: "best in early morning",
-      pattern: /forest|woods?\b|woodland|grove|canyon|arboretum|botanic|gardens?\b|cemetery|campus|greenway|nature (center|centre)|sanctuary|preserve|refuge|trail/i
+      pattern: /forest|woods?\b|woodland|grove|canyon|arboretum|botanic|gardens?\b|cemetery|campus|greenway|nature (center|centre)|sanctuary|preserve|refuge|\btrail(head)?s?\b/i
     }
   ];
 

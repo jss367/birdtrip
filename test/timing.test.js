@@ -172,6 +172,21 @@ test("habitat inference maps hotspot names to time-of-day windows", () => {
   assert.equal(timing.inferStopTiming("").habitat, "general");
 });
 
+test("habitat keywords only match whole words, not place-name substrings", () => {
+  assert.equal(timing.inferStopTiming("Marshall Park").habitat, "general");
+  assert.equal(timing.inferStopTiming("Swampscott Town Hall").habitat, "general");
+  assert.equal(timing.inferStopTiming("Napier Overlook").habitat, "general");
+  assert.equal(timing.inferStopTiming("Riverside Trailer Park").habitat, "general");
+  assert.equal(timing.inferStopTiming("Blakely Island").habitat, "general");
+  // Genuine habitat forms still match.
+  assert.equal(timing.inferStopTiming("Great Marshes Overlook").habitat, "marsh");
+  assert.equal(timing.inferStopTiming("Marshlands Conservancy").habitat, "marsh");
+  assert.equal(timing.inferStopTiming("Cypress Swamp Boardwalk").habitat, "marsh");
+  assert.equal(timing.inferStopTiming("Lakeview Overlook").habitat, "open water");
+  assert.equal(timing.inferStopTiming("Municipal Pier").habitat, "open water");
+  assert.equal(timing.inferStopTiming("Canal Trailhead").habitat, "woodland");
+});
+
 test("arrival estimates increase with route progress and include half the detour", () => {
   const base = {
     departureMs: Date.UTC(2026, 5, 1, 13),
