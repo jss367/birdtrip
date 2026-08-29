@@ -3,38 +3,36 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Illustrative annual bird migration patterns across the United States, by bird group and month.">
+  <meta name="description" content="Enter a location and see when migrating birds actually move through it, month by month, from a year of eBird reports.">
   <meta name="theme-color" content="#10b981">
   <link rel="canonical" href="https://birdtrip.org/migration.html">
   <meta property="og:site_name" content="Birdtrip">
-  <meta property="og:title" content="Birdtrip Migration Map">
-  <meta property="og:description" content="Animate illustrative generalized migration patterns across the United States, month by month.">
+  <meta property="og:title" content="Birdtrip Migration Timing">
+  <meta property="og:description" content="Enter a location and see when migrating birds actually move through it, month by month, from a year of eBird reports.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://birdtrip.org/migration.html">
   <meta property="og:image" content="https://birdtrip.org/birdtrip_logo.png">
   <meta property="og:image:alt" content="Birdtrip logo">
   <meta name="twitter:card" content="summary">
-  <meta name="twitter:title" content="Birdtrip Migration Map">
-  <meta name="twitter:description" content="Animate illustrative generalized migration patterns across the United States, month by month.">
+  <meta name="twitter:title" content="Birdtrip Migration Timing">
+  <meta name="twitter:description" content="Enter a location and see when migrating birds actually move through it, month by month, from a year of eBird reports.">
   <meta name="twitter:image" content="https://birdtrip.org/birdtrip_logo.png">
   <meta name="twitter:image:alt" content="Birdtrip logo">
-  <title>Birdtrip Migration Map</title>
+  <title>Birdtrip Migration Timing</title>
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="./birdtrip_logo.png">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
   <link rel="stylesheet" href="./styles.css">
 </head>
-<body class="migration-page">
-  <div class="migration-shell">
-    <header class="app-header migration-header">
+<body class="seasonal-page">
+  <div class="seasonal-shell">
+    <header class="app-header seasonal-header">
       <a class="app-brand migration-brand-link" href="./">
         <div class="brand-logo" aria-hidden="true">
           <img src="./birdtrip_logo_header.png" alt="" width="72" height="72">
         </div>
         <div>
           <h1>Birdtrip</h1>
-          <p>Migration Map</p>
+          <p>Migration Timing</p>
         </div>
       </a>
       <div class="header-actions">
@@ -43,59 +41,67 @@
           <i data-lucide="share-2"></i>
           Share
         </button>
-        <button type="button" id="downloadReportButton" class="ghost-button">
-          <i data-lucide="file-down"></i>
-          Download HTML
-        </button>
       </div>
     </header>
 
-    <main class="migration-layout">
-      <section class="migration-map-region">
-        <div id="map"></div>
-        <div id="migrationTimelineBar" class="migration-timeline-bar">
-          <button type="button" id="migrationPlayButton" class="migration-play-button">
-            <i data-lucide="play"></i>
-            <span>Play</span>
-          </button>
-          <div class="migration-timeline-main">
-            <div class="migration-timeline-status">
-              <b id="migrationMonthLabel">April</b>
-              <span id="migrationPhaseLabel">Peak spring movement</span>
+    <main class="seasonal-layout">
+      <section class="seasonal-search-panel">
+        <form id="timingForm" class="seasonal-search timing-search">
+          <label class="seasonal-search-field">
+            <span>Location</span>
+            <div class="autocomplete">
+              <input id="timingLocation" name="timingLocation" autocomplete="off" autocapitalize="words"
+                spellcheck="false" placeholder="e.g. Richmond, VA" required
+                role="combobox" aria-autocomplete="list" aria-expanded="false"
+                aria-controls="timingSuggestions" aria-haspopup="listbox">
+              <ul class="autocomplete-list" id="timingSuggestions" role="listbox" hidden></ul>
             </div>
-            <input id="migrationMonth" name="migrationMonth" type="range" min="0" max="11" value="3" aria-label="Migration month">
-            <div id="migrationTimeline" class="migration-months" aria-label="Migration months"></div>
-          </div>
-        </div>
-      </section>
-
-      <section class="migration-results-region">
-        <div class="results-header">
-          <div>
-            <h2>Migration Map</h2>
-            <p id="resultContext">Illustrative generalized patterns; not live radar.</p>
-          </div>
-          <label class="migration-group-picker">
+          </label>
+          <label class="seasonal-search-field">
             <span>Bird group</span>
-            <select id="migrationGroup" name="migrationGroup">
-              <option value="all">All nocturnal migrants</option>
-              <option value="warblers">Warblers and songbirds</option>
+            <select id="timingGroup" name="timingGroup" class="timing-group-select">
+              <option value="all">All migrants</option>
+              <option value="warblers">Warblers</option>
               <option value="waterfowl">Waterfowl</option>
               <option value="shorebirds">Shorebirds</option>
               <option value="raptors">Raptors</option>
               <option value="hummingbirds">Hummingbirds</option>
             </select>
           </label>
+          <button type="submit" id="timingSubmit" class="seasonal-submit">
+            <i data-lucide="wind"></i>
+            Show migration timing
+          </button>
+        </form>
+        <p class="field-hint seasonal-search-hint">
+          Species are classified from their sampled-date occurrence across a year of local eBird reports: birds passing through, arriving for summer, or arriving for winter. This is day-level occurrence, not checklist frequency, and not live radar.
+        </p>
+      </section>
+
+      <section class="seasonal-results-region">
+        <div class="results-header">
+          <div>
+            <h2>Migration timing</h2>
+            <p id="resultContext">When migrants actually move through a place, from real reports.</p>
+          </div>
         </div>
-        <div class="results-list migration-results" id="resultsList"></div>
+        <div id="timingResults" class="seasonal-results">
+          <div class="empty-state">
+            <i data-lucide="wind"></i>
+            <p>Enter a city or place to see when its warblers, waterfowl, and other migrants are on the move.</p>
+          </div>
+        </div>
       </section>
     </main>
   </div>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
-  <script src="./migration-map.js"></script>
+  <div id="timingTooltip" class="seasonal-tooltip" hidden></div>
+
+  <script src="https://unpkg.com/lucide@1.33.0/dist/umd/lucide.min.js"
+    integrity="sha384-tCQ4YYVYKuOFYH+pnSIPOS3PaT3+5AmX2okMauzDJlLLxkQfJfSwmgpZPceZWs1F"
+    crossorigin="anonymous"></script>
+  <script src="./seasonal.js"></script>
+  <script src="./migration-timing.js"></script>
   <script src="./migration-app.js"></script>
 </body>
 </html>
