@@ -234,8 +234,8 @@ test("notable pool keeps rescued candidates beyond the visible set", () => {
   const pool = ranking.selectNotableCandidates(candidates, { maxStops: 3 });
   const ids = new Set(pool.map((candidate) => candidate.id));
 
-  // Without balance utilities the union is the single caller-ordered
-  // visible set (maxStops = 3 plain candidates), plus the rescues.
+  // Without balance utilities the union is a single ID-ordered visible
+  // set (maxStops = 3 plain candidates), plus the rescues.
   assert.equal(pool.length, 6);
   assert.ok(ids.has("rescue-target"));
   assert.ok(ids.has("rescue-match"));
@@ -264,17 +264,22 @@ test("notable pool bounds organic rescue extras but keeps all explicit rescues",
   assert.equal(new Set(ids).size, pool.length);
 });
 
-test("notable pool without balance utilities truncates in the caller's order", () => {
+test("notable pool without balance utilities truncates by the ID tie-break", () => {
   const candidates = [];
   for (let i = 0; i < 20; i += 1) candidates.push({ id: `ranked-${i}`, targetMatches: [], liferSpecies: [] });
 
   const pool = ranking.selectNotableCandidates(candidates, { maxStops: 3 });
 
-  // A single all-ties ordering: the union is exactly the caller-ordered
-  // visible set — the first maxStops = 3 of the input.
+  // A single all-ties ordering: the union is exactly the visible set the
+  // shared comparator produces — the top maxStops = 3 under the ID
+  // tie-break compareByRankUtility applies (localeCompare, so ranked-10
+  // sorts before ranked-2).
   assert.deepEqual(
     pool.map((candidate) => candidate.id),
-    candidates.slice(0, 3).map((candidate) => candidate.id)
+    [...candidates]
+      .sort((a, b) => String(a.id).localeCompare(String(b.id)))
+      .slice(0, 3)
+      .map((candidate) => candidate.id)
   );
 });
 
@@ -410,15 +415,43 @@ test("all-levels pool keeps every level's full visible set, not a capped share",
   }
 });
 
+test("all-levels pool breaks ties with the visible ranking's ID tie-break", () => {
+  // Regression for the caller-order tie-break: two candidates tie on
+  // rankUtility at the birding endpoint (convMult 0), a level that is NOT
+  // the active one. The caller's order is the ACTIVE level's ranking
+  // (Recommended, convMult 1), which puts z-marsh first — but the visible
+  // ranking breaks the tie by candidate ID and shows a-marsh at the
+  // birding endpoint. With maxStops = 1, a caller-order tie-break would
+  // keep only z-marsh, so the level's visible winner a-marsh would be
+  // missing from the pool, breaking "pool contains each level's visible
+  // set" exactly at ties.
+  const tieWinner = { id: "a-marsh", birdPoints: 50, practicality: 5, targetMatches: [], liferSpecies: [] };
+  const tieLoser = { id: "z-marsh", birdPoints: 50, practicality: 10, targetMatches: [], liferSpecies: [] };
+
+  // The active-level (Recommended) caller order puts z-marsh first...
+  const callerOrder = rankAt([tieWinner, tieLoser], 1);
+  assert.deepEqual(callerOrder.map((candidate) => candidate.id), ["z-marsh", "a-marsh"]);
+  // ...both tie at the birding endpoint...
+  assert.equal(utilityAt(0)(tieWinner), utilityAt(0)(tieLoser));
+  // ...where the visible ranking's ID tie-break shows a-marsh first.
+  assert.equal(rankAt([tieWinner, tieLoser], 0)[0].id, "a-marsh");
+
+  const pool = ranking.selectNotableCandidates(callerOrder, { maxStops: 1, balanceUtilities });
+
+  // The ID-tie-break winner is in the pool and visible at that level.
+  assert.ok(pool.some((candidate) => candidate.id === "a-marsh"));
+  assert.equal(rankAt(pool, 0)[0].id, "a-marsh");
+});
+
 test("notable pool does not duplicate rescued candidates already in the top slice", () => {
   const candidates = [
-    { id: "top-rescue", explicitTargetRescue: true, targetMatches: [], liferSpecies: [] }
+    { id: "a-top-rescue", explicitTargetRescue: true, targetMatches: [], liferSpecies: [] }
   ];
   for (let i = 0; i < 11; i += 1) candidates.push({ id: `plain-${i}`, targetMatches: [], liferSpecies: [] });
 
-  // maxStops = 1 keeps only the caller-ordered top candidate, which is
+  // maxStops = 1 keeps only the ID-tie-break top candidate, which is
   // itself the explicit rescue — it must appear exactly once.
   const pool = ranking.selectNotableCandidates(candidates, { maxStops: 1 });
   assert.equal(pool.length, 1);
-  assert.equal(pool.filter((candidate) => candidate.id === "top-rescue").length, 1);
+  assert.equal(pool.filter((candidate) => candidate.id === "a-top-rescue").length, 1);
 });

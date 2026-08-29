@@ -1520,7 +1520,9 @@ async function runRouteSearch(params) {
   // slider moves by construction, with no fixed cap on the union. This is
   // pure retention over the already-evaluated candidates: it changes what
   // is KEPT for notable lookups, not how many detours are evaluated. The
-  // active-balance sort only orders ties and rescue extras.
+  // active-balance sort only orders rescue extras; within each level,
+  // utility ties break by candidate ID, exactly as compareByRankUtility
+  // does, so the pool and the visible ranking cannot diverge at ties.
   scoreCandidates(eligible, params);
   eligible.sort(compareByRankUtility);
   const balanceUtilities = BALANCE_LEVELS

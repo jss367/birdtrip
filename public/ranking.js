@@ -188,8 +188,11 @@
   // smaller. (Earlier schemes truncated the union under a fixed cap, which
   // could displace a level's own top-maxStops candidates; a capped
   // round-robin still gave each level only ~cap/#levels guaranteed slots.)
-  // Without balanceUtilities there is a single all-ties ordering, so the
-  // pool is the caller-ordered top maxStops plus rescues.
+  // Each level's ordering breaks utility ties by candidate ID — the same
+  // tie-break the visible ranking (compareByRankUtility) uses — so pool
+  // selection and visible ranking cannot disagree on which tie member is
+  // shown. Without balanceUtilities there is a single all-ties ordering,
+  // so the pool is the ID-ordered top maxStops plus rescues.
   function selectNotableCandidates(candidates, options = {}) {
     const maxStops = Math.max(1, Math.floor(Number(options.maxStops) || 0) || 1);
     const list = Array.from(candidates || []);
@@ -199,11 +202,16 @@
     const top = [];
     const ids = new Set();
     for (const utility of utilities) {
-      // One ordering per selectable level; ties (and the no-utility
-      // fallback, where every utility is 0) preserve the caller's order.
+      // One ordering per selectable level, using the SAME comparator the
+      // visible ranking applies (compareByRankUtility): utility descending,
+      // then candidate ID. Breaking ties by caller order instead would
+      // diverge from the visible ranking exactly at ties — the caller's
+      // order is the ACTIVE level's — so the pool could retain the wrong
+      // tie member and drop the one deriveVisibleResults would show.
       const visible = list
-        .map((candidate, index) => ({ candidate, index, utility: Number(utility(candidate)) || 0 }))
-        .sort((a, b) => (b.utility - a.utility) || (a.index - b.index))
+        .map((candidate) => ({ candidate, utility: Number(utility(candidate)) || 0 }))
+        .sort((a, b) => (b.utility - a.utility)
+          || String(a.candidate.id).localeCompare(String(b.candidate.id)))
         .slice(0, maxStops);
       for (const entry of visible) {
         if (ids.has(entry.candidate.id)) continue;
