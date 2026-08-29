@@ -572,6 +572,8 @@ function savePreferences() {
 }
 
 const PROFILE_UPSERT_DEBOUNCE_MS = 750;
+// Pause before the one retry of the failed startup profile fetch.
+const PROFILE_FETCH_RETRY_DELAY_MS = 1500;
 // Marks that this browser has already reconciled its anonymous data with a
 // given account, so later sessions hydrate from the account instead of
 // re-running the merge (which would resurrect data deleted on other devices).
@@ -822,6 +824,31 @@ function clearStateOnSignOut() {
   try { savePreferences(); } finally { suppressProfileUpsert = false; }
 }
 
+// The session dropped without the user asking for it (failed token refresh or
+// restore). Unlike an explicit sign-out this is not a privacy handoff: keep
+// the locally cached life list, targets, and token - they may hold edits that
+// never reached the account - and fall back to anonymous mode. Only the sync
+// bookkeeping is reset; clearing SYNCED_USER_KEY makes the next sign-in
+// reconcile through the merge flow instead of treating the account as
+// canonical and wiping those unsynced local edits.
+function handleInvoluntarySessionLoss() {
+  lastSyncedProfile = null;
+  profileRowExists = false;
+  pendingSyncedUserId = null;
+  // Drop any write still debouncing: it can't complete without a session.
+  if (profileUpsertTimer) {
+    clearTimeout(profileUpsertTimer);
+    profileUpsertTimer = 0;
+  }
+  try {
+    localStorage.removeItem(SYNCED_USER_KEY);
+  } catch {
+    // Storage unavailable; worst case the next sign-in skips the merge dialog.
+  }
+  addWarning("You were signed out because your session expired. Your data is still in this browser - sign in again to sync it.");
+  renderWarnings();
+}
+
 const MERGE_OPTIONS_LIST_CONFLICT = [
   { value: "use-account", label: "Use account" },
   { value: "keep-local", label: "Use this browser" },
@@ -838,9 +865,20 @@ async function runMergeAndHydrate() {
   const userIdAtStart = window.birdtripAuth.user.id;
   mergeAndHydrateInFlight = true;
   try {
-    const account = await window.birdtripAuth.getProfile();
+    let account = await window.birdtripAuth.getProfile();
     // The user may have signed out (or switched accounts) while we were awaiting.
     if (!window.birdtripAuth.user || window.birdtripAuth.user.id !== userIdAtStart) return;
+    if (!account) {
+      // A transient failure of this sole startup fetch would otherwise leave
+      // stale browser cache in place for the whole session for a user who
+      // never mutates anything (the later retry in flushProfileUpsert only
+      // runs once a mutation queues a write). Retry once after a short delay
+      // before falling back to browser state.
+      await new Promise((resolve) => setTimeout(resolve, PROFILE_FETCH_RETRY_DELAY_MS));
+      if (!window.birdtripAuth.user || window.birdtripAuth.user.id !== userIdAtStart) return;
+      account = await window.birdtripAuth.getProfile();
+      if (!window.birdtripAuth.user || window.birdtripAuth.user.id !== userIdAtStart) return;
+    }
     if (!account) {
       addWarning("Couldn't load your account data - using browser state for now.");
       renderWarnings();
@@ -1088,6 +1126,10 @@ function hydrateFromAccount(account) {
     // (rememberToken unchecked) was never account state, so it survives.
     els.apiToken.value = "";
     els.rememberToken.checked = false;
+    // Also drop the sessionStorage copy: with rememberToken now unchecked,
+    // restorePreferences() would otherwise resurrect the deleted credential
+    // from sessionStorage on the next reload of this tab.
+    saveSessionApiToken();
   }
   updateSetupStatus();
 
@@ -1687,7 +1729,17 @@ async function loadAppConfig() {
             console.warn("Account hydration failed:", err && err.message);
           });
         } else if (wasSignedIn) {
-          clearStateOnSignOut();
+          // Only a user-requested sign-out is a privacy handoff that wipes
+          // local data. A null session from a failed token refresh/restore
+          // must not erase the cached life list, targets, and token (which
+          // may hold unsynced edits).
+          const explicit = Boolean(window.birdtripAuth.explicitSignOut);
+          window.birdtripAuth.explicitSignOut = false;
+          if (explicit) {
+            clearStateOnSignOut();
+          } else {
+            handleInvoluntarySessionLoss();
+          }
         }
       });
     }

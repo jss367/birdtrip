@@ -12,6 +12,11 @@
     client: null,
     session: null,
     user: null,
+    // True while a user-requested sign-out is in flight or has just completed.
+    // Listeners consult this to tell an explicit sign-out (privacy-wipe local
+    // data) apart from involuntary session loss such as a failed token
+    // refresh (keep local data). app.js resets it after consuming it.
+    explicitSignOut: false,
     listeners: new Set()
   };
 
@@ -77,12 +82,17 @@
     // data via the sign-out listener) while the persisted Supabase session is
     // still valid, so a reload on a shared browser would restore the account.
     let error = null;
+    // Set before awaiting: Supabase emits SIGNED_OUT through onAuthStateChange
+    // while the call is still in flight, and the listeners must already know
+    // that null session is user-requested.
+    auth.explicitSignOut = true;
     try {
       ({ error } = await auth.client.auth.signOut());
     } catch (err) {
       error = err;
     }
     if (error) {
+      auth.explicitSignOut = false;
       console.warn("Sign-out failed:", error && error.message);
       showAuthStatus(`Sign-out failed: ${(error && error.message) || "please try again"}`);
       return;
