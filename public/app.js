@@ -1513,21 +1513,23 @@ async function runRouteSearch(params) {
   // the filter is belt-and-suspenders.
   const eligible = practical.filter((candidate) => candidate.addedMinutes <= params.maxDetour);
   // Notable reports do not feed the score, so candidates can be fully scored
-  // now that detour impact is known. Pool selection is the union of the top
-  // candidates under BOTH balance endpoints (full birding and full
-  // convenience): every slider position is a monotone blend of the two
-  // endpoint weightings, so covering both extremes guarantees each position
-  // — including the one the user searched with — keeps its strongest
-  // candidates in the max(2 * maxStops, 12) pool that later slider moves
-  // re-rank. The active-balance sort only orders ties and rescue extras.
+  // now that detour impact is known. Pool selection is the round-robin union
+  // of the top candidates under the rankUtility ordering at EVERY selectable
+  // balance level — the slider offers only the discrete BALANCE_LEVELS
+  // presets, so covering each level's ordering directly guarantees that
+  // every position the user can select keeps its strongest candidates in
+  // the max(2 * maxStops, 12) pool that later slider moves re-rank.
+  // (Endpoints alone were not enough: linear blends bound scores, not
+  // ranks, so a candidate can peak at an intermediate level.) The
+  // active-balance sort only orders ties and rescue extras.
   scoreCandidates(eligible, params);
   eligible.sort(compareByRankUtility);
-  const endpointUtilities = [BALANCE_LEVELS[0], BALANCE_LEVELS[BALANCE_LEVELS.length - 1]]
+  const balanceUtilities = BALANCE_LEVELS
     .map((level) => (candidate) => (Number(candidate.birdPoints) || 0)
       + level.convMult * (Number(candidate.scoreParts?.practicality) || 0));
   const pool = ranking.selectNotableCandidates(eligible, {
     maxStops: params.maxStops,
-    endpointUtilities
+    balanceUtilities
   });
   setStatus("Adding notable birds", "Checking nearby notable reports for the strongest practical candidates.");
   await fetchNotablesPerCandidate(pool, params);

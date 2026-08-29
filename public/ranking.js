@@ -177,20 +177,22 @@
   // target-match / unseen-species extras are kept up to maxStops per kind.
   //
   // Truncating under any single ordering is incomplete at some slider
-  // position, so options.endpointUtilities may supply one utility function
-  // per balance endpoint (full birding, full convenience). The pool is then
-  // the round-robin union of the top candidates under each endpoint ordering,
-  // up to the same cap. Every intermediate balance is a monotone blend of the
-  // endpoints, so a candidate strong enough to be shown at any slider
-  // position is strong at one endpoint or the other — covering both extremes
-  // covers every position in between. Without endpointUtilities the pool is
-  // the caller-ordered head of the list, as before.
+  // position, so options.balanceUtilities may supply one utility function
+  // per SELECTABLE balance level (the slider is a finite set of presets).
+  // The pool is the round-robin union of the top candidates under each
+  // level's ordering, up to the same cap. Because every position the user
+  // can select has its own ordering in the union, the pool contains each
+  // level's top candidates by construction — the guarantee is exact, not
+  // inferred from the endpoints. (Endpoint-only coverage was insufficient:
+  // linear blends bound scores, not ranks, so a candidate can rank below
+  // the cut at both endpoints yet first at an intermediate level.) Without
+  // balanceUtilities the pool is the caller-ordered head of the list.
   function selectNotableCandidates(candidates, options = {}) {
     const maxStops = Math.max(1, Math.floor(Number(options.maxStops) || 0) || 1);
     const cap = Math.max(maxStops * 2, 12);
     const list = Array.from(candidates || []);
-    const utilities = Array.isArray(options.endpointUtilities) && options.endpointUtilities.length
-      ? options.endpointUtilities
+    const utilities = Array.isArray(options.balanceUtilities) && options.balanceUtilities.length
+      ? options.balanceUtilities
       : [() => 0];
     // One ordering per endpoint; ties (and the no-utility fallback, where
     // every utility is 0) preserve the caller's order.

@@ -263,7 +263,7 @@ test("notable pool bounds organic rescue extras but keeps all explicit rescues",
   assert.equal(new Set(ids).size, pool.length);
 });
 
-test("notable pool without endpoint utilities truncates in the caller's order", () => {
+test("notable pool without balance utilities truncates in the caller's order", () => {
   const candidates = [];
   for (let i = 0; i < 20; i += 1) candidates.push({ id: `ranked-${i}`, targetMatches: [], liferSpecies: [] });
 
@@ -276,20 +276,21 @@ test("notable pool without endpoint utilities truncates in the caller's order", 
   );
 });
 
-// Mirrors runRouteSearch's endpoint-union pool selection: rankUtility at any
-// slider position is birdPoints + convMult * practicality, a monotone blend of
-// the two endpoints (convMult 0 = "Prioritize birding", convMult 5 = "Less
-// driving"). The pool interleaves the top candidates under both endpoint
-// orderings, so no single-order truncation can strand a candidate that some
-// slider position would rank on top.
+// Mirrors runRouteSearch's all-levels pool selection: rankUtility at any
+// slider position is birdPoints + convMult * practicality, and the slider
+// offers only the discrete BALANCE_LEVELS presets (convMult 0, 0.5, 1, 2, 5).
+// The pool interleaves the top candidates under the ordering at every
+// selectable level, so each position the user can pick has its top
+// candidates in the pool by construction.
 const utilityAt = (convMult) => (candidate) => candidate.birdPoints + convMult * candidate.practicality;
-const endpointUtilities = [utilityAt(0), utilityAt(5)];
+const BALANCE_CONV_MULTS = [0, 0.5, 1, 2, 5];
+const balanceUtilities = BALANCE_CONV_MULTS.map(utilityAt);
 const rankAt = (candidates, convMult) => [...candidates].sort((a, b) => (
   utilityAt(convMult)(b) - utilityAt(convMult)(a)
   || String(a.id).localeCompare(String(b.id))
 ));
 
-test("endpoint-union pool keeps birding-favored stops from a birding-start search", () => {
+test("all-levels pool keeps birding-favored stops from a birding-start search", () => {
   const candidates = [
     { id: "remote-reserve", birdPoints: 50, practicality: 0, targetMatches: [], liferSpecies: [] }
   ];
@@ -300,12 +301,12 @@ test("endpoint-union pool keeps birding-favored stops from a birding-start searc
   // Cap is max(2 * maxStops, 12) = 12; the 13 candidates exceed it. The
   // reserve loses at Recommended and beyond (50 < 20 + 40) but wins the
   // birding endpoint, so the union keeps it wherever the search started.
-  const pool = ranking.selectNotableCandidates(rankAt(candidates, 0), { maxStops: 3, endpointUtilities });
+  const pool = ranking.selectNotableCandidates(rankAt(candidates, 0), { maxStops: 3, balanceUtilities });
   assert.ok(pool.some((candidate) => candidate.id === "remote-reserve"));
   assert.equal(rankAt(pool, 0)[0].id, "remote-reserve");
 });
 
-test("endpoint-union pool keeps a birding outlier from a Recommended-start search", () => {
+test("all-levels pool keeps a birding outlier from a Recommended-start search", () => {
   // Mirror case: the search ran at Recommended (convMult 1), so the caller's
   // order buries the remote outlier behind 12 convenient stops — under
   // single-order truncation it would be discarded permanently and sliding to
@@ -320,12 +321,39 @@ test("endpoint-union pool keeps a birding outlier from a Recommended-start searc
   const recommendedOrder = rankAt(candidates, 1);
   assert.equal(recommendedOrder[recommendedOrder.length - 1].id, "remote-reserve");
 
-  const pool = ranking.selectNotableCandidates(recommendedOrder, { maxStops: 3, endpointUtilities });
+  const pool = ranking.selectNotableCandidates(recommendedOrder, { maxStops: 3, balanceUtilities });
   assert.ok(pool.some((candidate) => candidate.id === "remote-reserve"));
   // Re-ranked at "Prioritize birding", the rescued outlier is the top result.
   assert.equal(rankAt(pool, 0)[0].id, "remote-reserve");
   // The convenience endpoint still holds its own extreme's favorites.
   assert.ok(rankAt(pool, 5)[0].id.startsWith("roadside-"));
+});
+
+test("all-levels pool keeps a candidate that peaks only at an intermediate level", () => {
+  // Regression for the endpoint-only union: linear blends bound scores, not
+  // ranks, so a candidate can rank 7th at BOTH endpoints yet 1st at an
+  // intermediate level. With cap 12, six birding-heavy and six
+  // convenience-heavy stops fill an endpoint-only pool and the balanced stop
+  // — the top result at Recommended (convMult 1) — would be discarded.
+  // Drawing from every selectable level's ordering keeps it by construction.
+  const candidates = [];
+  for (let i = 0; i < 6; i += 1) {
+    candidates.push({ id: `birding-${i}`, birdPoints: 60, practicality: 0, targetMatches: [], liferSpecies: [] });
+  }
+  for (let i = 0; i < 6; i += 1) {
+    candidates.push({ id: `convenient-${i}`, birdPoints: 0, practicality: 40, targetMatches: [], liferSpecies: [] });
+  }
+  candidates.push({ id: "balanced", birdPoints: 50, practicality: 20, targetMatches: [], liferSpecies: [] });
+
+  // 7th at both endpoints, so an endpoint-only union (cap 12) drops it...
+  assert.equal(rankAt(candidates, 0)[6].id, "balanced");
+  assert.equal(rankAt(candidates, 5)[6].id, "balanced");
+  // ...yet it is the single best stop at Recommended.
+  assert.equal(rankAt(candidates, 1)[0].id, "balanced");
+
+  const pool = ranking.selectNotableCandidates(candidates, { maxStops: 3, balanceUtilities });
+  assert.ok(pool.some((candidate) => candidate.id === "balanced"));
+  assert.equal(rankAt(pool, 1)[0].id, "balanced");
 });
 
 test("notable pool does not duplicate rescued candidates already in the top slice", () => {
