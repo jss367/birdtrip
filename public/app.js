@@ -2168,11 +2168,32 @@ function departureTimestamp() {
   const context = routeTimeContext();
   if (!context.approximate) {
     const now = new Date();
+    // On a spring-forward date the requested wall time may not exist (02:30 on
+    // the skip day); the multi-argument Date constructor silently normalizes
+    // it forward (to 03:30). That normalized instant is the only real instant
+    // near the request, so it is used as-is; departureDstSkipNote() discloses
+    // the shift wherever timing estimates are shown.
     return new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes).getTime();
   }
   const offsetMs = context.offsetMinutes * 60000;
   const routeNow = new Date(Date.now() + offsetMs);
   return Date.UTC(routeNow.getUTCFullYear(), routeNow.getUTCMonth(), routeNow.getUTCDate(), hours, minutes) - offsetMs;
+}
+
+// Non-empty exactly when today's spring-forward transition skips the requested
+// departure wall time: the constructed Date's clock is compared against the
+// parsed input, and on mismatch the note names the departure the estimates
+// really use. The approximate (fixed-offset) branch of departureTimestamp()
+// never normalizes, so no check is needed there. Leading space matches the
+// sentence-part convention in timingSentence().
+function departureDstSkipNote() {
+  const value = cleanTimeString(state.params?.departTime);
+  if (!value || routeTimeContext().approximate) return "";
+  const [hours, minutes] = value.split(":").map(Number);
+  const now = new Date();
+  const date = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes);
+  if (date.getHours() === hours && date.getMinutes() === minutes) return "";
+  return ` Daylight saving time skips a ${value} departure today, so estimates leave at ${formatClock(date.getTime())}.`;
 }
 
 function candidateTiming(candidate) {
@@ -2269,7 +2290,7 @@ function timingSentence(stopTiming) {
     : ` Sunrise ${formatClock(stopTiming.sun.sunriseMs, stopTimeContext(stopTiming.lng, stopTiming.sun.sunriseMs))},` +
       ` sunset ${formatClock(stopTiming.sun.sunsetMs, stopTimeContext(stopTiming.lng, stopTiming.sun.sunsetMs))}.`;
   const zonePart = context.approximate ? " Times are approximate local time at this stop." : "";
-  return `You'd reach this stop around ${arrival} — ${stopTiming.assessment.note}. ${habitatName} is ${stopTiming.habitat.bestLabel}.${sunPart}${zonePart}`;
+  return `You'd reach this stop around ${arrival} — ${stopTiming.assessment.note}. ${habitatName} is ${stopTiming.habitat.bestLabel}.${sunPart}${zonePart}${departureDstSkipNote()}`;
 }
 
 function renderResultsIfPresent() {
