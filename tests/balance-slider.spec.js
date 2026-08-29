@@ -38,6 +38,24 @@ test("share URL includes non-default balance and omits the default", async ({ pa
   expect(sharedDefault).not.toContain("balance=");
 });
 
+test("slider URL update keeps the submitted search after unsubmitted edits", async ({ page }) => {
+  await runAreaSearch(page);
+  // A completed search stamps the URL with the submitted inputs plus run=1.
+  expect(page.url()).toContain("origin=Test+Center%2C+Barcelona");
+  expect(page.url()).toContain("run=1");
+  // Edit the origin WITHOUT re-submitting, then move the slider: the URL must
+  // patch only the balance param, not rebuild from the live form fields —
+  // otherwise the share/reload URL would auto-run a search the displayed
+  // results don't reflect.
+  await page.fill("#origin", "Edited Elsewhere");
+  await setSlider(page, "#balanceSliderResults", 0);
+  const url = page.url();
+  expect(url).toContain("balance=0");
+  expect(url).toContain("origin=Test+Center%2C+Barcelona");
+  expect(url).toContain("run=1");
+  expect(url).not.toContain("Edited");
+});
+
 test("moving right reduces the average distance of top results", async ({ page }) => {
   await runAreaSearch(page);
   const averageDistance = async () => {

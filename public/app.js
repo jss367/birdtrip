@@ -5,6 +5,10 @@ const state = {
   routeName: "",
   results: [],
   candidatePool: [],
+  // A restored saved trip's selected stop can sit outside the serialized
+  // visible results (out-of-rank); it is rehydrated here so candidateById can
+  // resolve it the same way the live UI resolves out-of-rank pool candidates.
+  restoredSelectedStop: null,
   balance: 2,
   balanceLocked: false,
   selectedId: null,
@@ -790,11 +794,19 @@ function applyTripSettings(settings) {
 }
 
 function serializeTripState() {
+  // The selected stop can be an out-of-rank pool candidate (unpinned, outside
+  // the truncated visible results). Persist it alongside the results so
+  // restoring the trip can rebuild its detail panel and marker instead of
+  // silently clearing the selection.
+  const selectedCandidate = state.selectedId ? candidateById(state.selectedId) : null;
+  const selectedOutOfRank = selectedCandidate
+    && !state.results.some((item) => item.id === selectedCandidate.id);
   return {
     routeName: state.routeName,
     route: state.route,
     results: state.results.map(serializeCandidate),
     selectedId: state.selectedId,
+    selectedStop: selectedOutOfRank ? serializeCandidate(selectedCandidate) : null,
     warnings: state.warnings,
     params: state.params ? { ...state.params, token: "" } : null,
     origin: state.origin,
@@ -864,6 +876,16 @@ function restoreTripState(trip) {
   state.balanceLocked = true;
   applyBalance(state.results);
   state.selectedId = savedState.selectedId || null;
+  // Rehydrate a selected stop saved from outside the visible results so the
+  // restore path routes it through the same out-of-rank handling as the live
+  // UI (candidateById fallback -> detail panel + unranked marker).
+  state.restoredSelectedStop = isObjectRecord(savedState.selectedStop)
+    && savedState.selectedStop.id
+    && savedState.selectedStop.id === state.selectedId
+    && !state.results.some((item) => item.id === state.selectedId)
+    ? hydrateCandidate(savedState.selectedStop)
+    : null;
+  if (state.restoredSelectedStop) applyBalance([state.restoredSelectedStop]);
   state.warnings = Array.isArray(savedState.warnings) ? savedState.warnings : [];
   state.params = isObjectRecord(savedState.params)
     ? { ...savedState.params, mapProvider: state.provider, token: els.apiToken.value.trim() }
@@ -1023,7 +1045,9 @@ function isObjectRecord(value) {
 
 function restoreSelectedStop() {
   if (!state.selectedId) return;
-  const candidate = state.results.find((item) => item.id === state.selectedId);
+  // Resolve through candidateById so a restored out-of-rank selected stop
+  // (kept in state.restoredSelectedStop) reopens like any other selection.
+  const candidate = candidateById(state.selectedId);
   if (!candidate) {
     state.selectedId = null;
     return;
@@ -1263,6 +1287,7 @@ function resetAutocomplete(field) {
 function clearResults() {
   state.results = [];
   state.candidatePool = [];
+  state.restoredSelectedStop = null;
   state.balanceLocked = false;
   syncBalanceControls();
   state.route = null;
@@ -1910,8 +1935,20 @@ function clearSharedUrl() {
 }
 
 function refreshSharedUrlIfPresent() {
-  if (new URLSearchParams(window.location.search).get("bt") !== SHARE_URL_VERSION) return;
-  updateSharedUrlFromCurrentInputs({ autoRun: Boolean(state.params) });
+  // Callers here change ranking state only (balance, pins), so patch just
+  // those params onto the existing URL. Rebuilding from live form fields
+  // would capture edits the user has not re-submitted, yielding a run=1 URL
+  // for a search the displayed results don't reflect.
+  const url = new URL(window.location.href);
+  if (url.searchParams.get("bt") !== SHARE_URL_VERSION) return;
+  if (state.balance !== DEFAULT_BALANCE) {
+    url.searchParams.set("balance", String(state.balance));
+  } else {
+    url.searchParams.delete("balance");
+  }
+  url.searchParams.delete("pin");
+  for (const id of state.pinnedIds.slice(0, 5)) url.searchParams.append("pin", id);
+  window.history.replaceState(null, "", url);
 }
 
 function buildShareUrl(options = {}) {
@@ -2182,8 +2219,21 @@ function renderResultsIfPresent() {
 function applyLifeListToCurrentResults() {
   // Restored trips have no candidate pool — re-scoring their truncated visible
   // results would silently reorder the saved trip. A fresh search picks the
-  // life list up ("Run search again for full reranking").
-  if (state.balanceLocked) return;
+  // life list up ("Run search again for full reranking"). The ranking stays
+  // locked, but lifer metadata (chips, reasons, details, report) must still
+  // track the imported list rather than the one saved with the trip.
+  if (state.balanceLocked) {
+    const lifeList = new Set(state.lifeList.species);
+    const restored = state.restoredSelectedStop
+      ? state.results.concat(state.restoredSelectedStop)
+      : state.results;
+    for (const candidate of restored) {
+      candidate.liferSpecies = lifeList.size
+        ? Array.from(candidate.species.values()).filter((obs) => !isSeenObservation(obs, lifeList))
+        : [];
+    }
+    return;
+  }
   const pool = state.candidatePool.length ? state.candidatePool : state.results;
   if (!pool.length) return;
   const params = {
@@ -2354,6 +2404,7 @@ function cleanSpeciesName(value) {
 function clearSearchArtifacts() {
   state.results = [];
   state.candidatePool = [];
+  state.restoredSelectedStop = null;
   state.balanceLocked = false;
   syncBalanceControls();
   state.selectedId = null;
@@ -4159,7 +4210,7 @@ function deriveVisibleResults() {
 function candidateById(id) {
   return state.candidatePool.find((item) => item.id === id)
     || state.results.find((item) => item.id === id)
-    || null;
+    || (state.restoredSelectedStop?.id === id ? state.restoredSelectedStop : null);
 }
 
 function setBalance(index, options = {}) {
