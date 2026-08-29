@@ -1161,6 +1161,9 @@ async function setMapProvider(provider, options = {}) {
       els.mapProvider.value = "osm";
       updateProviderHint();
       await initializeMap("osm", { preserveData });
+      // The fallback changes the control programmatically (no change event),
+      // so re-sync any live share URL that already serialized google.
+      refreshSharedUrlIfPresent();
     } else {
       throw error;
     }
