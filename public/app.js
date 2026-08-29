@@ -600,6 +600,11 @@ function savePreferences() {
 function setSearchMode(mode, options = {}) {
   const { persist = true } = options;
   const previousMode = state.mode;
+  // Capture the share marker now: clearResults() below may call
+  // clearSharedUrl(), after which the end-of-function refresh would see
+  // neither a slug nor bt=1 and skip serializing the new mode.
+  const hadSharedUrl = new URLSearchParams(window.location.search).get("bt") === SHARE_URL_VERSION
+    || Boolean(sharedTripSlugFromLocation());
   state.mode = normalizeMode(mode);
   const isArea = state.mode === "area";
   const isSpecies = state.mode === "species";
@@ -644,7 +649,7 @@ function setSearchMode(mode, options = {}) {
   updateInputSummaries();
   renderInsights();
   if (persist) savePreferences();
-  if (persist) refreshSharedUrlIfPresent();
+  if (persist && hadSharedUrl) updateSharedUrlFromCurrentInputs({ autoRun: Boolean(state.params) });
   if (window.lucide) window.lucide.createIcons();
 }
 
@@ -767,15 +772,17 @@ async function loadSelectedTrip() {
       searchMode: trip.settings?.searchMode || trip.state?.params?.mode || state.mode
     };
     applyTripSettings(settings);
-    // Loading a saved trip replaces every shareable input programmatically,
-    // so any loaded /t/<slug> snapshot URL no longer matches — invalidate it.
-    refreshSharedUrlIfPresent();
     updateSetupStatus();
     updateInputSummaries();
     clearFieldErrors();
     clearWarning();
     await setMapProvider(settings.mapProvider || state.provider, { persist: false, preserveData: false });
     restoreTripState(trip);
+    // Loading a saved trip replaces every shareable input programmatically,
+    // so any loaded /t/<slug> snapshot URL no longer matches — invalidate it
+    // only after restoreTripState has set the trip's pins, or the rebuilt URL
+    // would serialize the previous trip's pinnedIds.
+    refreshSharedUrlIfPresent();
     savePreferences();
     els.tripName.value = trip.name;
     renderSavedTrips(trip.id);
