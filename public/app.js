@@ -261,8 +261,8 @@ async function init() {
   // swap the address bar to a live query URL so copying it keeps the edits.
   // Only real user events fire these; programmatic hydration sets .value
   // directly and leaves the short URL intact.
-  els.form.addEventListener("input", refreshSharedUrlIfPresent);
-  els.form.addEventListener("change", refreshSharedUrlIfPresent);
+  els.form.addEventListener("input", scheduleSharedUrlRefresh);
+  els.form.addEventListener("change", scheduleSharedUrlRefresh);
   els.modeButtons.forEach((button) => {
     button.addEventListener("click", () => setSearchMode(button.dataset.mode));
   });
@@ -410,12 +410,13 @@ function readSharedSearchFromUrl() {
 // write side (buildShareTripData) and the stored-read side share this cap;
 // only the legacy query-parameter channel keeps the tight 1200 limit.
 const STORED_TARGETS_MAX_LENGTH = 10000;
+const URL_TARGETS_MAX_LENGTH = 1200;
 
 // Both share channels (query parameters and server-stored trips) funnel
 // through the same sanitizer, so stored blobs get no more trust than URLs.
 function sanitizeSharedSearch(raw, options = {}) {
   if (!raw || typeof raw !== "object") return null;
-  const { targetsMaxLength = 1200 } = options;
+  const { targetsMaxLength = URL_TARGETS_MAX_LENGTH } = options;
   const shared = {
     mode: normalizeMode(raw.mode),
     origin: cleanSharedText(raw.origin, 160),
@@ -1855,6 +1856,27 @@ async function shareCurrentTrip() {
     return;
   }
 
+  // Without Web Share, hand the clipboard a PROMISE for the URL so the write
+  // starts inside the click's transient user activation — awaiting a slow or
+  // timing-out trip POST first can outlive that window, and some browsers
+  // then refuse the write entirely.
+  if (!navigator.share && navigator.clipboard?.write && window.ClipboardItem) {
+    try {
+      const urlPromise = createShareUrl();
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          "text/plain": urlPromise.then((url) => new Blob([url], { type: "text/plain" }))
+        })
+      ]);
+      setStatus("Link copied", "Copied a share link that refreshes this trip when opened.");
+      return;
+    } catch (error) {
+      if (error?.name === "AbortError") return;
+      console.error(error);
+      // Fall through to the await-then-share path below.
+    }
+  }
+
   const shareUrl = await createShareUrl();
   // Intentionally omit `text` — share targets that don't fully support Web Share
   // concatenate text + url into one blob, which auto-linkers then fold back into
@@ -1880,7 +1902,9 @@ async function shareCurrentTrip() {
   } catch (error) {
     if (error?.name === "AbortError") return;
     console.error(error);
-    setStatus("Share failed", "The share link could not be copied.");
+    // Activation may have expired during the network wait; surface the link
+    // itself so one manual copy still succeeds.
+    setStatus("Copy this share link", shareUrl);
   }
 }
 
@@ -1908,9 +1932,29 @@ async function createShareUrl() {
   }
 }
 
+// Safari throttles history state calls (~100 per 30s window and throws
+// SecurityError beyond it), so keystroke-driven refreshes are debounced and
+// every replaceState is allowed to fail without breaking the interaction.
+let sharedUrlRefreshTimer = null;
+function scheduleSharedUrlRefresh() {
+  if (sharedUrlRefreshTimer) clearTimeout(sharedUrlRefreshTimer);
+  sharedUrlRefreshTimer = setTimeout(() => {
+    sharedUrlRefreshTimer = null;
+    refreshSharedUrlIfPresent();
+  }, 250);
+}
+
+function replaceHistoryUrl(url) {
+  try {
+    window.history.replaceState(null, "", url);
+  } catch (error) {
+    console.warn(`Address bar update skipped: ${error.message}`);
+  }
+}
+
 function updateSharedUrlFromCurrentInputs(options = {}) {
   const url = buildShareUrl(options);
-  window.history.replaceState(null, "", url);
+  replaceHistoryUrl(url);
   return url;
 }
 
@@ -1920,7 +1964,7 @@ function clearSharedUrl() {
   url.pathname = "/";
   url.search = "";
   url.hash = "";
-  window.history.replaceState(null, "", url);
+  replaceHistoryUrl(url);
 }
 
 function refreshSharedUrlIfPresent() {
@@ -1976,7 +2020,13 @@ function buildShareUrl(options = {}) {
   url.searchParams.set("recentDays", String(data.recentDays));
   url.searchParams.set("radiusKm", String(data.radiusKm));
   url.searchParams.set("maxStops", String(data.maxStops));
-  if (data.targets) url.searchParams.set("targets", data.targets);
+  // The stored channel allows 10k of targets, but a query URL is read back
+  // through the 1200-character legacy cap — re-cap here so the fallback link
+  // round-trips exactly (and stays within practical URL length limits).
+  if (data.targets) {
+    const urlTargets = cleanSharedTargets(data.targets, URL_TARGETS_MAX_LENGTH);
+    if (urlTargets) url.searchParams.set("targets", urlTargets);
+  }
   for (const id of data.pins || []) url.searchParams.append("pin", id);
   if (autoRun) url.searchParams.set("run", "1");
   return url.toString();
