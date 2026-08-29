@@ -1513,14 +1513,13 @@ async function runRouteSearch(params) {
   // the filter is belt-and-suspenders.
   const eligible = practical.filter((candidate) => candidate.addedMinutes <= params.maxDetour);
   // Notable reports do not feed the score, so candidates can be fully scored
-  // now that detour impact is known. Pool selection is the round-robin union
-  // of the top candidates under the rankUtility ordering at EVERY selectable
-  // balance level — the slider offers only the discrete BALANCE_LEVELS
-  // presets, so covering each level's ordering directly guarantees that
-  // every position the user can select keeps its strongest candidates in
-  // the max(2 * maxStops, 12) pool that later slider moves re-rank.
-  // (Endpoints alone were not enough: linear blends bound scores, not
-  // ranks, so a candidate can peak at an intermediate level.) The
+  // now that detour impact is known. The pool is exactly the union of the
+  // top maxStops under the rankUtility ordering at EVERY selectable balance
+  // level (the slider offers only the discrete BALANCE_LEVELS presets),
+  // plus rescued candidates — so each level's visible set survives later
+  // slider moves by construction, with no fixed cap on the union. This is
+  // pure retention over the already-evaluated candidates: it changes what
+  // is KEPT for notable lookups, not how many detours are evaluated. The
   // active-balance sort only orders ties and rescue extras.
   scoreCandidates(eligible, params);
   eligible.sort(compareByRankUtility);
@@ -3988,12 +3987,15 @@ async function evaluateDetours(candidates, origin, destination, baseDurationSeco
   const practical = [];
   const ordered = orderRoutingCandidates(candidates, params);
   const initialCount = Math.min(ordered.length, Math.max(params.maxStops, 15), MAX_INITIAL_DETOURS);
-  // The re-ranking pool wants max(2 × maxStops, 12) practical members so
-  // balance changes can promote candidates from outside the top maxStops.
-  // Keep evaluating past the first round until that target is met, still
-  // capped by MAX_TOTAL_DETOURS to bound route-API usage — at high maxStops
-  // the pool may stay smaller than the target.
-  const poolTarget = Math.max(params.maxStops * 2, 12);
+  // Evaluation-breadth target, separate from pool retention: keep
+  // evaluating past the first round until max(2 × maxStops, 12) practical
+  // members exist, so balance changes have candidates from outside the top
+  // maxStops to promote. The pool itself is the per-level union selected
+  // later (selectNotableCandidates), which only retains already-evaluated
+  // candidates and costs no extra route calls. Still capped by
+  // MAX_TOTAL_DETOURS to bound route-API usage — at high maxStops the
+  // practical set may stay smaller than the target.
+  const refillTarget = Math.max(params.maxStops * 2, 12);
   let attempted = 0;
   let failed = 0;
 
@@ -4025,10 +4027,10 @@ async function evaluateDetours(candidates, origin, destination, baseDurationSeco
   };
 
   await evaluateRange(0, initialCount);
-  if (practical.length < poolTarget && attempted < Math.min(ordered.length, MAX_TOTAL_DETOURS)) {
+  if (practical.length < refillTarget && attempted < Math.min(ordered.length, MAX_TOTAL_DETOURS)) {
     const refillEnd = Math.min(ordered.length, MAX_TOTAL_DETOURS);
     setStatus("Checking more detours", `The first round found ${practical.length} stops within budget; checking additional candidates.`);
-    await evaluateRange(attempted, refillEnd, poolTarget);
+    await evaluateRange(attempted, refillEnd, refillTarget);
   }
   if (failed) {
     addWarning(`${failed} of ${attempted} detour estimates failed and those stops were skipped.`);

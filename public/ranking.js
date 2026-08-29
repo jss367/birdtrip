@@ -176,45 +176,39 @@
   // explicit target rescues are all kept (they are bounded upstream), and
   // target-match / unseen-species extras are kept up to maxStops per kind.
   //
-  // Truncating under any single ordering is incomplete at some slider
-  // position, so options.balanceUtilities may supply one utility function
-  // per SELECTABLE balance level (the slider is a finite set of presets).
-  // The pool is the round-robin union of the top candidates under each
-  // level's ordering, up to the same cap. Because every position the user
-  // can select has its own ordering in the union, the pool contains each
-  // level's top candidates by construction — the guarantee is exact, not
-  // inferred from the endpoints. (Endpoint-only coverage was insufficient:
-  // linear blends bound scores, not ranks, so a candidate can rank below
-  // the cut at both endpoints yet first at an intermediate level.) Without
-  // balanceUtilities the pool is the caller-ordered head of the list.
+  // deriveVisibleResults shows the top maxStops of the pool at the current
+  // balance level, so the pool must contain the top maxStops under EVERY
+  // selectable level (the slider is a finite set of presets, one utility
+  // function per level in options.balanceUtilities). The pool is exactly
+  // that: for each level, take its top maxStops under that level's
+  // ordering; the pool is the deduplicated union, plus rescue retention.
+  // This is definitionally sufficient — each level's visible set is in the
+  // pool verbatim — and there is no fixed cap: the union's worst case is
+  // #levels * maxStops, and overlap between levels usually keeps it far
+  // smaller. (Earlier schemes truncated the union under a fixed cap, which
+  // could displace a level's own top-maxStops candidates; a capped
+  // round-robin still gave each level only ~cap/#levels guaranteed slots.)
+  // Without balanceUtilities there is a single all-ties ordering, so the
+  // pool is the caller-ordered top maxStops plus rescues.
   function selectNotableCandidates(candidates, options = {}) {
     const maxStops = Math.max(1, Math.floor(Number(options.maxStops) || 0) || 1);
-    const cap = Math.max(maxStops * 2, 12);
     const list = Array.from(candidates || []);
     const utilities = Array.isArray(options.balanceUtilities) && options.balanceUtilities.length
       ? options.balanceUtilities
       : [() => 0];
-    // One ordering per endpoint; ties (and the no-utility fallback, where
-    // every utility is 0) preserve the caller's order.
-    const orderings = utilities.map((utility) => list
-      .map((candidate, index) => ({ candidate, index, utility: Number(utility(candidate)) || 0 }))
-      .sort((a, b) => (b.utility - a.utility) || (a.index - b.index))
-      .map((entry) => entry.candidate));
     const top = [];
     const ids = new Set();
-    const cursors = orderings.map(() => 0);
-    let advanced = true;
-    while (top.length < cap && advanced) {
-      advanced = false;
-      for (let o = 0; o < orderings.length && top.length < cap; o += 1) {
-        const ordering = orderings[o];
-        while (cursors[o] < ordering.length && ids.has(ordering[cursors[o]].id)) cursors[o] += 1;
-        if (cursors[o] >= ordering.length) continue;
-        const candidate = ordering[cursors[o]];
-        ids.add(candidate.id);
-        top.push(candidate);
-        cursors[o] += 1;
-        advanced = true;
+    for (const utility of utilities) {
+      // One ordering per selectable level; ties (and the no-utility
+      // fallback, where every utility is 0) preserve the caller's order.
+      const visible = list
+        .map((candidate, index) => ({ candidate, index, utility: Number(utility(candidate)) || 0 }))
+        .sort((a, b) => (b.utility - a.utility) || (a.index - b.index))
+        .slice(0, maxStops);
+      for (const entry of visible) {
+        if (ids.has(entry.candidate.id)) continue;
+        ids.add(entry.candidate.id);
+        top.push(entry.candidate);
       }
     }
     const keep = (matches, limit) => {

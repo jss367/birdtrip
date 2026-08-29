@@ -222,7 +222,7 @@ test("all-time richness prior preserves ordering without a hard cap", () => {
   assert.ok(ranking.richnessPrior(400) > ranking.richnessPrior(100));
 });
 
-test("notable pool keeps rescued candidates beyond the truncation cap", () => {
+test("notable pool keeps rescued candidates beyond the visible set", () => {
   const candidates = [];
   for (let i = 0; i < 20; i += 1) candidates.push({ id: `plain-${i}`, targetMatches: [], liferSpecies: [] });
   candidates.push(
@@ -234,8 +234,9 @@ test("notable pool keeps rescued candidates beyond the truncation cap", () => {
   const pool = ranking.selectNotableCandidates(candidates, { maxStops: 3 });
   const ids = new Set(pool.map((candidate) => candidate.id));
 
-  // Cap is max(2 * maxStops, 12) = 12 plain candidates, plus the rescues.
-  assert.equal(pool.length, 15);
+  // Without balance utilities the union is the single caller-ordered
+  // visible set (maxStops = 3 plain candidates), plus the rescues.
+  assert.equal(pool.length, 6);
   assert.ok(ids.has("rescue-target"));
   assert.ok(ids.has("rescue-match"));
   assert.ok(ids.has("rescue-lifer"));
@@ -269,19 +270,20 @@ test("notable pool without balance utilities truncates in the caller's order", (
 
   const pool = ranking.selectNotableCandidates(candidates, { maxStops: 3 });
 
-  // Cap is max(2 * maxStops, 12) = 12: exactly the first 12 of the input.
+  // A single all-ties ordering: the union is exactly the caller-ordered
+  // visible set — the first maxStops = 3 of the input.
   assert.deepEqual(
     pool.map((candidate) => candidate.id),
-    candidates.slice(0, 12).map((candidate) => candidate.id)
+    candidates.slice(0, 3).map((candidate) => candidate.id)
   );
 });
 
 // Mirrors runRouteSearch's all-levels pool selection: rankUtility at any
 // slider position is birdPoints + convMult * practicality, and the slider
 // offers only the discrete BALANCE_LEVELS presets (convMult 0, 0.5, 1, 2, 5).
-// The pool interleaves the top candidates under the ordering at every
-// selectable level, so each position the user can pick has its top
-// candidates in the pool by construction.
+// The pool is exactly the union of every selectable level's top maxStops
+// (its visible set) plus rescues, so each position the user can pick has
+// its full visible set in the pool by construction.
 const utilityAt = (convMult) => (candidate) => candidate.birdPoints + convMult * candidate.practicality;
 const BALANCE_CONV_MULTS = [0, 0.5, 1, 2, 5];
 const balanceUtilities = BALANCE_CONV_MULTS.map(utilityAt);
@@ -298,9 +300,9 @@ test("all-levels pool keeps birding-favored stops from a birding-start search", 
     candidates.push({ id: `roadside-${i}`, birdPoints: 20, practicality: 40, targetMatches: [], liferSpecies: [] });
   }
 
-  // Cap is max(2 * maxStops, 12) = 12; the 13 candidates exceed it. The
-  // reserve loses at Recommended and beyond (50 < 20 + 40) but wins the
-  // birding endpoint, so the union keeps it wherever the search started.
+  // The reserve loses at Recommended and beyond (50 < 20 + 40) but wins
+  // the birding endpoint, so the union keeps it wherever the search
+  // started.
   const pool = ranking.selectNotableCandidates(rankAt(candidates, 0), { maxStops: 3, balanceUtilities });
   assert.ok(pool.some((candidate) => candidate.id === "remote-reserve"));
   assert.equal(rankAt(pool, 0)[0].id, "remote-reserve");
@@ -332,10 +334,10 @@ test("all-levels pool keeps a birding outlier from a Recommended-start search", 
 test("all-levels pool keeps a candidate that peaks only at an intermediate level", () => {
   // Regression for the endpoint-only union: linear blends bound scores, not
   // ranks, so a candidate can rank 7th at BOTH endpoints yet 1st at an
-  // intermediate level. With cap 12, six birding-heavy and six
-  // convenience-heavy stops fill an endpoint-only pool and the balanced stop
-  // — the top result at Recommended (convMult 1) — would be discarded.
-  // Drawing from every selectable level's ordering keeps it by construction.
+  // intermediate level. Six birding-heavy and six convenience-heavy stops
+  // fill an endpoint-only pool and the balanced stop — the top result at
+  // Recommended (convMult 1) — would be discarded. Drawing every
+  // selectable level's visible set keeps it by construction.
   const candidates = [];
   for (let i = 0; i < 6; i += 1) {
     candidates.push({ id: `birding-${i}`, birdPoints: 60, practicality: 0, targetMatches: [], liferSpecies: [] });
@@ -356,13 +358,67 @@ test("all-levels pool keeps a candidate that peaks only at an intermediate level
   assert.equal(rankAt(pool, 1)[0].id, "balanced");
 });
 
+test("all-levels pool keeps every level's full visible set, not a capped share", () => {
+  // Regression for the capped round-robin union: with 5 levels and a
+  // max(2 * maxStops, 12) cap, each level was guaranteed only ~cap/5
+  // slots, so a level's own top maxStops — the exact set
+  // deriveVisibleResults shows there — could be displaced. Here, with
+  // maxStops = 5 and 13 candidates (cap would be 12), the fifth-ranked
+  // "Less driving" (convMult 5) candidate is the one round-robin
+  // interleaving exhausts the cap before reaching: the other levels'
+  // orderings fill all 12 slots (birdy and filler stops for the three
+  // birding-leaning levels, freeway stops for Leaning convenience and
+  // Less driving) while its own level's cursor is still inside its top
+  // four. The uncapped per-level union keeps it by construction.
+  const candidates = [];
+  for (let i = 0; i < 4; i += 1) {
+    candidates.push({ id: `birdy-${i}`, birdPoints: 100, practicality: 0, targetMatches: [], liferSpecies: [] });
+  }
+  for (let i = 0; i < 4; i += 1) {
+    candidates.push({ id: `freeway-${i}`, birdPoints: 30, practicality: 40, targetMatches: [], liferSpecies: [] });
+  }
+  for (let i = 0; i < 2; i += 1) {
+    candidates.push({ id: `filler-${i}`, birdPoints: 75, practicality: 0, targetMatches: [], liferSpecies: [] });
+  }
+  for (let i = 0; i < 2; i += 1) {
+    candidates.push({ id: `minor-${i}`, birdPoints: 50, practicality: 5, targetMatches: [], liferSpecies: [] });
+  }
+  candidates.push({ id: "fifth-at-less-driving", birdPoints: 20, practicality: 35, targetMatches: [], liferSpecies: [] });
+
+  // The candidate ranks 5th at Less driving (only the four freeway stops
+  // score higher: 230 > 195) and outside the top five everywhere else.
+  assert.equal(rankAt(candidates, 5)[4].id, "fifth-at-less-driving");
+  for (const convMult of [0, 0.5, 1, 2]) {
+    assert.ok(rankAt(candidates, convMult)
+      .slice(0, 5)
+      .every((candidate) => candidate.id !== "fifth-at-less-driving"));
+  }
+
+  const pool = ranking.selectNotableCandidates(candidates, { maxStops: 5, balanceUtilities });
+
+  // It survives and is visible in the top five at Less driving.
+  assert.ok(pool.some((candidate) => candidate.id === "fifth-at-less-driving"));
+  assert.equal(rankAt(pool, 5)[4].id, "fifth-at-less-driving");
+  // The pool is exactly the union of the five visible sets — ten distinct
+  // candidates here — with no padding back up to a fixed floor.
+  assert.equal(pool.length, 10);
+  const ids = new Set(pool.map((candidate) => candidate.id));
+  for (const convMult of BALANCE_CONV_MULTS) {
+    for (const candidate of rankAt(candidates, convMult).slice(0, 5)) {
+      assert.ok(ids.has(candidate.id));
+    }
+  }
+});
+
 test("notable pool does not duplicate rescued candidates already in the top slice", () => {
   const candidates = [
     { id: "top-rescue", explicitTargetRescue: true, targetMatches: [], liferSpecies: [] }
   ];
   for (let i = 0; i < 11; i += 1) candidates.push({ id: `plain-${i}`, targetMatches: [], liferSpecies: [] });
 
+  // maxStops = 1 keeps only the caller-ordered top candidate, which is
+  // itself the explicit rescue — it must appear exactly once.
   const pool = ranking.selectNotableCandidates(candidates, { maxStops: 1 });
-  assert.equal(pool.length, 12);
+  assert.equal(pool.length, 1);
   assert.equal(pool.filter((candidate) => candidate.id === "top-rescue").length, 1);
 });
