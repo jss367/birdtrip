@@ -359,7 +359,8 @@ function requestClientIp(req) {
 function enforceTripCreateLimit(req) {
   const now = Date.now();
   const ip = requestClientIp(req);
-  const recent = (tripCreatesByIp.get(ip) || []).filter(
+  const existing = tripCreatesByIp.get(ip);
+  const recent = (existing || []).filter(
     (time) => now - time < TRIP_CREATE_WINDOW_MS
   );
   if (recent.length >= TRIP_CREATE_LIMIT) {
@@ -367,13 +368,21 @@ function enforceTripCreateLimit(req) {
     error.status = 429;
     throw error;
   }
-  recent.push(now);
-  tripCreatesByIp.set(ip, recent);
-  if (tripCreatesByIp.size > 10000) {
+  // Mirror the general API limiter's hard client cap: prune expired buckets,
+  // and if the map is still full, refuse NEW clients rather than growing
+  // without bound under rotating addresses.
+  if (existing === undefined && tripCreatesByIp.size >= API_RATE_LIMIT_MAX_CLIENTS) {
     for (const [key, times] of tripCreatesByIp) {
       if (!times.some((time) => now - time < TRIP_CREATE_WINDOW_MS)) tripCreatesByIp.delete(key);
     }
+    if (tripCreatesByIp.size >= API_RATE_LIMIT_MAX_CLIENTS) {
+      const error = new Error("The share service is busy; try again later");
+      error.status = 429;
+      throw error;
+    }
   }
+  recent.push(now);
+  tripCreatesByIp.set(ip, recent);
 }
 
 function requireTripStore() {
