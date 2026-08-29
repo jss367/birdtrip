@@ -2,6 +2,7 @@ const http = require("http");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+const { createTripStore, SLUG_PATTERN } = require("./lib/trip-store");
 
 const PORT = Number(process.env.PORT || 4177);
 const PUBLIC_DIR = path.join(__dirname, "public");
@@ -31,6 +32,14 @@ const DEFAULT_MAP_PROVIDER = MAP_PROVIDERS.has(process.env.MAP_PROVIDER)
   : "osm";
 const GOOGLE_MAPS_BROWSER_KEY = process.env.GOOGLE_MAPS_BROWSER_KEY || process.env.GOOGLE_MAPS_API_KEY || "";
 const GOOGLE_MAPS_SERVER_KEY = process.env.GOOGLE_MAPS_SERVER_KEY || process.env.GOOGLE_MAPS_API_KEY || "";
+const TRIP_BODY_LIMIT_BYTES = 150 * 1024;
+const TRIP_CREATE_LIMIT = 30;
+const TRIP_CREATE_WINDOW_MS = 60 * 60 * 1000;
+const SHARED_TRIP_PAGE_PATTERN = /^\/t\/[A-Za-z0-9]{8,64}\/?$/;
+let tripStore = process.env.DATABASE_URL
+  ? createTripStore({ connectionString: process.env.DATABASE_URL })
+  : null;
+const tripCreatesByIp = new Map();
 const cache = new Map();
 const pendingUpstreamRequests = new Map();
 const rateLimitBuckets = new Map();
@@ -70,7 +79,12 @@ function logApiRequest(req, res, url) {
       logUrl.searchParams.delete("lat");
       logUrl.searchParams.delete("lng");
     }
-    console.log(`[api] ${req.method} ${logUrl.pathname}${logUrl.search} ${res.statusCode} ${elapsed}ms`);
+    // The slug is the bearer credential for a shared trip, so it must not
+    // land in logs — mirror the lat/lng redaction above.
+    const logPathname = logUrl.pathname
+      .replace(/^\/api\/trips\/[^/]+/, "/api/trips/:slug")
+      .replace(/^\/t\/[^/]+/, "/t/:slug");
+    console.log(`[api] ${req.method} ${logPathname}${logUrl.search} ${res.statusCode} ${elapsed}ms`);
   });
 }
 
@@ -293,6 +307,92 @@ function acquireSeasonalityBuildSlot() {
     return Promise.reject(error);
   }
   return new Promise((resolve) => seasonalityBuildQueue.push(resolve));
+}
+
+function readJsonBody(req, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let total = 0;
+    let failed = false;
+    req.on("data", (chunk) => {
+      if (failed) return;
+      total += chunk.length;
+      if (total > maxBytes) {
+        failed = true;
+        const error = new Error("Request body is too large");
+        error.status = 413;
+        reject(error);
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      if (failed) return;
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      } catch {
+        const error = new Error("Request body must be valid JSON");
+        error.status = 400;
+        reject(error);
+      }
+    });
+    req.on("error", (error) => {
+      if (failed) return;
+      failed = true;
+      reject(error);
+    });
+  });
+}
+
+function requestClientIp(req) {
+  // The leftmost x-forwarded-for entries are client-controlled, so only the
+  // entries appended by trusted proxies in front of us are safe to use — and
+  // only when we know such proxies exist (TRUST_PROXY is set, as in
+  // render.yaml). Delegates to clientAddress for the shared hop-selection
+  // logic, but reads the environment per-request so tests can toggle it.
+  return clientAddress(req, {
+    trustProxy: /^(1|true|yes)$/i.test(process.env.TRUST_PROXY || ""),
+    trustedHops: envInteger("TRUST_PROXY_HOPS", 1, 1)
+  });
+}
+
+function enforceTripCreateLimit(req) {
+  const now = Date.now();
+  const ip = requestClientIp(req);
+  const existing = tripCreatesByIp.get(ip);
+  const recent = (existing || []).filter(
+    (time) => now - time < TRIP_CREATE_WINDOW_MS
+  );
+  if (recent.length >= TRIP_CREATE_LIMIT) {
+    const error = new Error("Too many share links created; try again later");
+    error.status = 429;
+    throw error;
+  }
+  // Mirror the general API limiter's hard client cap: prune expired buckets,
+  // and if the map is still full, refuse NEW clients rather than growing
+  // without bound under rotating addresses.
+  if (existing === undefined && tripCreatesByIp.size >= API_RATE_LIMIT_MAX_CLIENTS) {
+    for (const [key, times] of tripCreatesByIp) {
+      if (!times.some((time) => now - time < TRIP_CREATE_WINDOW_MS)) tripCreatesByIp.delete(key);
+    }
+    if (tripCreatesByIp.size >= API_RATE_LIMIT_MAX_CLIENTS) {
+      const error = new Error("The share service is busy; try again later");
+      error.status = 429;
+      throw error;
+    }
+  }
+  recent.push(now);
+  tripCreatesByIp.set(ip, recent);
+}
+
+function requireTripStore() {
+  if (!tripStore) {
+    const error = new Error("Trip sharing is not configured");
+    error.status = 503;
+    error.details = "Set DATABASE_URL to enable shared trip links.";
+    throw error;
+  }
+  return tripStore;
 }
 
 function parseCoordPair(value, name) {
@@ -914,8 +1014,39 @@ async function handleApi(req, res, url) {
         },
         ebird: {
           serverConfigured: Boolean(process.env.EBIRD_API_KEY)
+        },
+        tripSharing: {
+          enabled: Boolean(tripStore)
         }
       });
+    }
+
+    if (url.pathname === "/api/trips") {
+      if (req.method !== "POST") return sendError(res, 405, "Use POST to create a shared trip");
+      // application/json is not a CORS-simple content type, so requiring it
+      // forces cross-origin browsers into a preflight we never approve. That
+      // stops third-party pages from using visitors' browsers to fill the
+      // trip store with no-cors text/plain POSTs.
+      const contentType = String(req.headers["content-type"] || "");
+      if (!/^application\/json\b/i.test(contentType)) {
+        return sendError(res, 415, "Content-Type must be application/json");
+      }
+      const store = requireTripStore();
+      enforceTripCreateLimit(req);
+      const data = await readJsonBody(req, TRIP_BODY_LIMIT_BYTES);
+      const { slug } = await store.createTrip(data);
+      return sendJson(res, 201, { slug, path: `/t/${slug}` });
+    }
+
+    const tripMatch = url.pathname.match(/^\/api\/trips\/([A-Za-z0-9]+)$/);
+    if (tripMatch) {
+      const store = requireTripStore();
+      if (!SLUG_PATTERN.test(tripMatch[1])) {
+        return sendError(res, 404, "This shared trip was not found or has expired");
+      }
+      const data = await store.getTrip(tripMatch[1]);
+      if (!data) return sendError(res, 404, "This shared trip was not found or has expired");
+      return sendJson(res, 200, { slug: tripMatch[1], data });
     }
 
     if (url.pathname === "/api/geocode") {
@@ -1184,6 +1315,11 @@ const server = http.createServer((req, res) => {
     handleApi(req, res, url);
     return;
   }
+  // Shared trip links are client-side routes: serve the app shell and let
+  // app.js fetch the trip for the slug in the path.
+  if (SHARED_TRIP_PAGE_PATTERN.test(url.pathname)) {
+    url.pathname = "/";
+  }
   serveStatic(req, res, url);
 });
 
@@ -1191,6 +1327,26 @@ if (require.main === module) {
   server.listen(PORT, () => {
     console.log(`Birdtrip running at http://localhost:${PORT}`);
   });
+  if (tripStore) {
+    // Warm the schema and sweep expired trips at boot; failures leave the
+    // rest of the app working and the trip endpoints retrying lazily. The
+    // hourly timer keeps retention honest even when no new trips are being
+    // created; unref so it never holds the process open.
+    const runTripSweep = () => tripStore
+      .sweepExpired()
+      .then((removed) => {
+        if (removed > 0) console.log(`[trips] removed ${removed} expired shared trips`);
+      })
+      .catch((error) => {
+        console.error(`[trips] retention sweep failed: ${error.message}`);
+      });
+    runTripSweep();
+    setInterval(runTripSweep, 60 * 60 * 1000).unref();
+  }
+}
+
+function setTripStore(store) {
+  tripStore = store;
 }
 
 module.exports = {
@@ -1199,7 +1355,11 @@ module.exports = {
   clientAddress,
   consumeRateLimit,
   fetchJson,
+  logApiRequest,
   nearestHotspotRegion,
   pruneResponseCache,
-  pruneSeasonalityCache
+  pruneSeasonalityCache,
+  readJsonBody,
+  server,
+  setTripStore
 };

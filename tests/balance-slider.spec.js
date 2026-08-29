@@ -32,10 +32,14 @@ test("share URL includes non-default balance and omits the default", async ({ pa
   await setSlider(page, "#balanceSliderResults", 0);
   // buildShareUrl is a top-level classic-script function, so it's on window.
   const shared = await page.evaluate(() => window.buildShareUrl());
+  const stored = await page.evaluate(() => window.buildShareTripData());
   expect(shared).toContain("balance=0");
+  expect(stored.balance).toBe(0);
   await setSlider(page, "#balanceSliderResults", 2);
   const sharedDefault = await page.evaluate(() => window.buildShareUrl());
+  const storedDefault = await page.evaluate(() => window.buildShareTripData());
   expect(sharedDefault).not.toContain("balance=");
+  expect(storedDefault).not.toHaveProperty("balance");
 });
 
 test("slider URL update keeps the submitted search after unsubmitted edits", async ({ page }) => {
