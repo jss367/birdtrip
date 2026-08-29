@@ -9,6 +9,7 @@ const {
   clientAddress,
   consumeRateLimit,
   fetchJson,
+  logApiRequest,
   nearestHotspotRegion,
   pruneResponseCache,
   pruneSeasonalityCache
@@ -277,4 +278,26 @@ test("concurrent cold seasonality requests share one upstream build", async () =
   } finally {
     global.fetch = originalFetch;
   }
+});
+
+test("api logs redact shared trip slugs", () => {
+  const { EventEmitter } = require("node:events");
+  const slug = "AbCdEfGh1234567890IjKl";
+  const lines = [];
+  const original = console.log;
+  console.log = (line) => lines.push(String(line));
+  try {
+    for (const pathname of [`/api/trips/${slug}`, `/t/${slug}`]) {
+      const res = new EventEmitter();
+      res.statusCode = 200;
+      logApiRequest({ method: "GET" }, res, `http://localhost${pathname}`);
+      res.emit("finish");
+    }
+  } finally {
+    console.log = original;
+  }
+  assert.equal(lines.length, 2);
+  assert.match(lines[0], /GET \/api\/trips\/:slug /);
+  assert.match(lines[1], /GET \/t\/:slug /);
+  for (const line of lines) assert.doesNotMatch(line, new RegExp(slug));
 });

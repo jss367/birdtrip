@@ -40,7 +40,10 @@ const state = {
     },
     ebird: {
       serverConfigured: false
-    }
+    },
+    // null means "not checked yet"; sharing still tries the server and falls
+    // back to a long query-parameter link if the endpoint is unavailable.
+    tripSharing: { enabled: null }
   },
   configReady: null
 };
@@ -229,9 +232,9 @@ function legacyMigrationMonth(search) {
   return "";
 }
 
-function init() {
+async function init() {
   if (redirectLegacyMigrationLink()) return;
-  const sharedSearch = readSharedSearchFromUrl();
+  const sharedSearch = await resolveSharedSearch();
   const saved = restorePreferences();
   state.savedTrips = readSavedTrips();
   state.mode = normalizeMode(sharedSearch?.mode || saved.searchMode);
@@ -254,6 +257,12 @@ function init() {
     event.preventDefault();
     runSearch();
   });
+  // Editing any shareable input invalidates a loaded /t/<slug> snapshot URL:
+  // swap the address bar to a live query URL so copying it keeps the edits.
+  // Only real user events fire these; programmatic hydration sets .value
+  // directly and leaves the short URL intact.
+  els.form.addEventListener("input", scheduleSharedUrlRefresh);
+  els.form.addEventListener("change", scheduleSharedUrlRefresh);
   els.modeButtons.forEach((button) => {
     button.addEventListener("click", () => setSearchMode(button.dataset.mode));
   });
@@ -356,7 +365,13 @@ async function initializeStartupMap(preferredProvider, sharedSearch) {
   }
   if (sharedSearch?.autoRun && hasRunnableSearchInputs()) {
     setStatus("Refreshing shared trip", "Loading the route and latest birding stops from this link.");
-    await runSearch({ persistPreferences: false });
+    // The visitor just opened a short /t/<slug> link and has changed nothing,
+    // so the hydration auto-run must not replace it with the long query URL.
+    // Any later user action (pinning, re-running a search) swaps it as usual.
+    await runSearch({
+      persistPreferences: false,
+      preserveSharedUrl: Boolean(sharedTripSlugFromLocation())
+    });
   }
 }
 
@@ -375,23 +390,77 @@ async function reapplyStartupProvider(preferredProvider) {
 function readSharedSearchFromUrl() {
   const search = new URLSearchParams(window.location.search);
   if (search.get("bt") !== SHARE_URL_VERSION) return null;
-
-  const mode = normalizeMode(search.get("mode"));
-  const shared = {
-    mode,
-    origin: cleanSharedText(search.get("origin"), 160),
-    destination: cleanSharedText(search.get("destination"), 160),
-    species: cleanSharedText(search.get("species"), 80),
-    mapProvider: search.get("mapProvider") === "google" ? "google" : "osm",
-    maxDetour: cleanSharedNumber(search.get("maxDetour"), 0, 240),
-    recentDays: cleanSharedNumber(search.get("recentDays"), 1, 30),
-    radiusKm: cleanSharedNumber(search.get("radiusKm"), 1, 50),
-    maxStops: cleanSharedNumber(search.get("maxStops"), 3, 20),
-    targets: cleanSharedTargets(search.get("targets"), 1200),
-    pins: cleanSharedIdList(search.getAll("pin"), 5),
+  return sanitizeSharedSearch({
+    mode: search.get("mode"),
+    origin: search.get("origin"),
+    destination: search.get("destination"),
+    species: search.get("species"),
+    mapProvider: search.get("mapProvider"),
+    maxDetour: search.get("maxDetour"),
+    recentDays: search.get("recentDays"),
+    radiusKm: search.get("radiusKm"),
+    maxStops: search.get("maxStops"),
+    targets: search.get("targets"),
+    pins: search.getAll("pin"),
     autoRun: search.get("run") === "1"
+  });
+}
+
+// Server-stored trips can carry far longer target lists than a URL, so the
+// write side (buildShareTripData) and the stored-read side share this cap;
+// only the legacy query-parameter channel keeps the tight 1200 limit.
+const STORED_TARGETS_MAX_LENGTH = 10000;
+const URL_TARGETS_MAX_LENGTH = 1200;
+
+// Both share channels (query parameters and server-stored trips) funnel
+// through the same sanitizer, so stored blobs get no more trust than URLs.
+function sanitizeSharedSearch(raw, options = {}) {
+  if (!raw || typeof raw !== "object") return null;
+  const { targetsMaxLength = URL_TARGETS_MAX_LENGTH } = options;
+  const shared = {
+    mode: normalizeMode(raw.mode),
+    origin: cleanSharedText(raw.origin, 160),
+    destination: cleanSharedText(raw.destination, 160),
+    species: cleanSharedText(raw.species, 80),
+    mapProvider: raw.mapProvider === "google" ? "google" : "osm",
+    maxDetour: cleanSharedNumber(raw.maxDetour, 0, 240),
+    recentDays: cleanSharedNumber(raw.recentDays, 1, 30),
+    radiusKm: cleanSharedNumber(raw.radiusKm, 1, 50),
+    maxStops: cleanSharedNumber(raw.maxStops, 3, 20),
+    targets: cleanSharedTargets(raw.targets, targetsMaxLength),
+    pins: cleanSharedIdList(Array.isArray(raw.pins) ? raw.pins.map(String) : [], 5),
+    autoRun: raw.autoRun === true
   };
   return shared.origin ? shared : null;
+}
+
+function sharedTripSlugFromLocation() {
+  const match = window.location.pathname.match(/^\/t\/([A-Za-z0-9]{8,64})\/?$/);
+  return match ? match[1] : null;
+}
+
+async function resolveSharedSearch() {
+  const slug = sharedTripSlugFromLocation();
+  if (!slug) return readSharedSearchFromUrl();
+  try {
+    const response = await fetch(`/api/trips/${encodeURIComponent(slug)}`, {
+      signal: AbortSignal.timeout(8000)
+    });
+    if (!response.ok) {
+      throw new Error(`The shared trip request failed (${response.status})`);
+    }
+    const payload = await response.json();
+    const shared = sanitizeSharedSearch(payload?.data, { targetsMaxLength: STORED_TARGETS_MAX_LENGTH });
+    if (!shared) throw new Error("The shared trip data was unreadable");
+    return shared;
+  } catch (error) {
+    console.error(error);
+    setStatus(
+      "Shared trip unavailable",
+      "This link may have expired — unopened shared trips are removed after 90 days. Start a new search below."
+    );
+    return null;
+  }
 }
 
 function applySharedSearch(shared) {
@@ -425,13 +494,22 @@ function cleanSharedText(value, maxLength) {
 }
 
 function cleanSharedTargets(value, maxLength) {
-  return String(value || "")
+  // Truncate at line boundaries: cutting mid-line would leave a partial
+  // species name that matches nothing (or the wrong bird).
+  const lines = String(value || "")
     .replace(/\r\n?/g, "\n")
     .split("\n")
     .map((line) => line.replace(/\s+/g, " ").trim())
-    .filter(Boolean)
-    .join("\n")
-    .slice(0, maxLength);
+    .filter(Boolean);
+  const kept = [];
+  let length = 0;
+  for (const line of lines) {
+    const next = length + (kept.length ? 1 : 0) + line.length;
+    if (next > maxLength) break;
+    kept.push(line);
+    length = next;
+  }
+  return kept.join("\n");
 }
 
 function cleanSharedIdList(values, maxItems) {
@@ -522,6 +600,11 @@ function savePreferences() {
 function setSearchMode(mode, options = {}) {
   const { persist = true } = options;
   const previousMode = state.mode;
+  // Capture the share marker now: clearResults() below may call
+  // clearSharedUrl(), after which the end-of-function refresh would see
+  // neither a slug nor bt=1 and skip serializing the new mode.
+  const hadSharedUrl = new URLSearchParams(window.location.search).get("bt") === SHARE_URL_VERSION
+    || Boolean(sharedTripSlugFromLocation());
   state.mode = normalizeMode(mode);
   const isArea = state.mode === "area";
   const isSpecies = state.mode === "species";
@@ -566,6 +649,7 @@ function setSearchMode(mode, options = {}) {
   updateInputSummaries();
   renderInsights();
   if (persist) savePreferences();
+  if (persist && hadSharedUrl) updateSharedUrlFromCurrentInputs({ autoRun: Boolean(state.params) });
   if (window.lucide) window.lucide.createIcons();
 }
 
@@ -694,6 +778,11 @@ async function loadSelectedTrip() {
     clearWarning();
     await setMapProvider(settings.mapProvider || state.provider, { persist: false, preserveData: false });
     restoreTripState(trip);
+    // Loading a saved trip replaces every shareable input programmatically,
+    // so any loaded /t/<slug> snapshot URL no longer matches — invalidate it
+    // only after restoreTripState has set the trip's pins, or the rebuilt URL
+    // would serialize the previous trip's pinnedIds.
+    refreshSharedUrlIfPresent();
     savePreferences();
     els.tripName.value = trip.name;
     renderSavedTrips(trip.id);
@@ -1072,6 +1161,9 @@ async function setMapProvider(provider, options = {}) {
       els.mapProvider.value = "osm";
       updateProviderHint();
       await initializeMap("osm", { preserveData });
+      // The fallback changes the control programmatically (no change event),
+      // so re-sync any live share URL that already serialized google.
+      refreshSharedUrlIfPresent();
     } else {
       throw error;
     }
@@ -1146,6 +1238,7 @@ function useSampleRoute() {
     els.radiusKm.value = "25";
     resetAutocomplete("origin");
     updateInputSummaries();
+    refreshSharedUrlIfPresent();
     return;
   }
   if (state.mode === "area") {
@@ -1166,6 +1259,7 @@ function useSampleRoute() {
   resetAutocomplete("origin");
   resetAutocomplete("destination");
   updateInputSummaries();
+  refreshSharedUrlIfPresent();
 }
 
 function resetAutocomplete(field) {
@@ -1231,7 +1325,7 @@ function clearResults() {
 }
 
 async function runSearch(options = {}) {
-  const { persistPreferences = true } = options;
+  const { persistPreferences = true, preserveSharedUrl = false } = options;
   if (persistPreferences) savePreferences();
   state.ebirdModalPrompted = false;
   setBusy(true);
@@ -1253,7 +1347,7 @@ async function runSearch(options = {}) {
       await runRouteSearch(params);
     }
     applyPendingSharedPins();
-    updateSharedUrlFromCurrentInputs({ autoRun: true });
+    if (!preserveSharedUrl) updateSharedUrlFromCurrentInputs({ autoRun: true });
   } catch (error) {
     setStatus("Search failed", error.message || "Something went wrong.");
     console.error(error);
@@ -1772,7 +1866,41 @@ async function shareCurrentTrip() {
     return;
   }
 
-  const shareUrl = updateSharedUrlFromCurrentInputs({ autoRun: true });
+  // One POST per click: every path below reuses this single promise, so a
+  // clipboard or share-sheet failure never creates a second stored trip
+  // (which would burn quota and orphan the first row).
+  const fallbackUrl = updateSharedUrlFromCurrentInputs({ autoRun: true });
+  const shortUrlPromise = createShortShareUrl(fallbackUrl);
+
+  // Without Web Share, hand the clipboard a PROMISE for the URL so the write
+  // starts inside the click's transient user activation — awaiting a slow or
+  // timing-out trip POST first can outlive that window, and some browsers
+  // then refuse the write entirely.
+  if (!navigator.share && navigator.clipboard?.write && window.ClipboardItem) {
+    try {
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          "text/plain": shortUrlPromise.then((url) => new Blob([url], { type: "text/plain" }))
+        })
+      ]);
+      setStatus("Link copied", "Copied a share link that refreshes this trip when opened.");
+      return;
+    } catch (error) {
+      if (error?.name === "AbortError") return;
+      console.error(error);
+      // Fall through to the await-then-share path below.
+    }
+  }
+
+  // Web Share must also run inside the click's activation, so never wait the
+  // POST's full 8s for it: after 3s share the legacy long URL instead (the
+  // documented fallback); a fast short link still wins the race.
+  const shareUrl = navigator.share
+    ? await Promise.race([
+      shortUrlPromise,
+      new Promise((resolve) => setTimeout(() => resolve(fallbackUrl), 3000))
+    ])
+    : await shortUrlPromise;
   // Intentionally omit `text` — share targets that don't fully support Web Share
   // concatenate text + url into one blob, which auto-linkers then fold back into
   // the URL and corrupt the query string (e.g. run=1 becomes run=1 Birdtrip…).
@@ -1797,48 +1925,131 @@ async function shareCurrentTrip() {
   } catch (error) {
     if (error?.name === "AbortError") return;
     console.error(error);
-    setStatus("Share failed", "The share link could not be copied.");
+    // Activation may have expired during the network wait; surface the link
+    // itself so one manual copy still succeeds.
+    setStatus("Copy this share link", shareUrl);
+  }
+}
+
+// Prefer a short server-stored link (/t/<slug>); fall back to the legacy
+// long query-parameter URL when the share service is disabled or down.
+async function createShortShareUrl(fallbackUrl) {
+  if (state.config.tripSharing?.enabled === false) return fallbackUrl;
+  try {
+    const response = await fetch("/api/trips", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(buildShareTripData()),
+      // Without a deadline a stalled insert would leave Share hanging with
+      // neither the short link nor the long-URL fallback.
+      signal: AbortSignal.timeout(8000)
+    });
+    if (!response.ok) throw new Error(`The share service responded ${response.status}`);
+    const payload = await response.json();
+    if (!payload?.slug) throw new Error("The share service returned no link");
+    return new URL(`/t/${payload.slug}`, window.location.href).toString();
+  } catch (error) {
+    console.error(error);
+    return fallbackUrl;
+  }
+}
+
+// Safari throttles history state calls (~100 per 30s window and throws
+// SecurityError beyond it), so keystroke-driven refreshes are debounced and
+// every replaceState is allowed to fail without breaking the interaction.
+let sharedUrlRefreshTimer = null;
+function scheduleSharedUrlRefresh() {
+  if (sharedUrlRefreshTimer) clearTimeout(sharedUrlRefreshTimer);
+  sharedUrlRefreshTimer = setTimeout(() => {
+    sharedUrlRefreshTimer = null;
+    refreshSharedUrlIfPresent();
+  }, 250);
+}
+
+function replaceHistoryUrl(url) {
+  try {
+    window.history.replaceState(null, "", url);
+  } catch (error) {
+    console.warn(`Address bar update skipped: ${error.message}`);
   }
 }
 
 function updateSharedUrlFromCurrentInputs(options = {}) {
   const url = buildShareUrl(options);
-  window.history.replaceState(null, "", url);
+  replaceHistoryUrl(url);
   return url;
 }
 
 function clearSharedUrl() {
   const url = new URL(window.location.href);
-  if (url.searchParams.get("bt") !== SHARE_URL_VERSION) return;
+  if (url.searchParams.get("bt") !== SHARE_URL_VERSION && !sharedTripSlugFromLocation()) return;
+  url.pathname = "/";
   url.search = "";
   url.hash = "";
-  window.history.replaceState(null, "", url);
+  replaceHistoryUrl(url);
 }
 
 function refreshSharedUrlIfPresent() {
-  if (new URLSearchParams(window.location.search).get("bt") !== SHARE_URL_VERSION) return;
+  // A /t/<slug> link is an immutable snapshot; once the trip changes, swap the
+  // address bar to a live query-parameter URL so copying it stays accurate.
+  const hasShareParams = new URLSearchParams(window.location.search).get("bt") === SHARE_URL_VERSION;
+  if (!hasShareParams && !sharedTripSlugFromLocation()) return;
   updateSharedUrlFromCurrentInputs({ autoRun: Boolean(state.params) });
+}
+
+function buildShareTripData() {
+  // Every text field is capped with the same cleaner and limit the reader
+  // applies in sanitizeSharedSearch, so what a recipient loads is exactly
+  // what the creator shared — never a silently truncated variant.
+  const data = {
+    version: 1,
+    mode: state.mode,
+    origin: cleanSharedText(els.origin.value, 160),
+    mapProvider: providerFromInput(),
+    maxDetour: clamp(Number(els.maxDetour.value || 60), 0, 240),
+    recentDays: clamp(Number(els.recentDays.value || 14), 1, 30),
+    radiusKm: clamp(Number(els.radiusKm.value || 25), 1, 50),
+    maxStops: clamp(Number(els.maxStops.value || 10), 3, 20),
+    autoRun: true
+  };
+  if (state.mode === "route") data.destination = cleanSharedText(els.destination.value, 160);
+  if (state.mode === "species" && els.speciesQuery.value.trim()) {
+    data.species = cleanSharedText(els.speciesQuery.value, 80);
+  }
+  // Cap at the same length the stored-trip reader accepts, so what a
+  // recipient loads is exactly what the creator shared.
+  const targets = cleanSharedTargets(els.targets.value, STORED_TARGETS_MAX_LENGTH);
+  if (targets) data.targets = targets;
+  const pins = state.pinnedIds.slice(0, 5);
+  if (pins.length) data.pins = pins;
+  return data;
 }
 
 function buildShareUrl(options = {}) {
   const { autoRun = false } = options;
+  const data = buildShareTripData();
   const url = new URL(window.location.href);
+  url.pathname = "/";
   url.search = "";
   url.hash = "";
   url.searchParams.set("bt", SHARE_URL_VERSION);
-  url.searchParams.set("mode", state.mode);
-  url.searchParams.set("origin", els.origin.value.trim());
-  if (state.mode === "route") url.searchParams.set("destination", els.destination.value.trim());
-  if (state.mode === "species" && els.speciesQuery.value.trim()) {
-    url.searchParams.set("species", els.speciesQuery.value.trim());
+  url.searchParams.set("mode", data.mode);
+  url.searchParams.set("origin", data.origin);
+  if (data.mode === "route") url.searchParams.set("destination", data.destination || "");
+  if (data.species) url.searchParams.set("species", data.species);
+  url.searchParams.set("mapProvider", data.mapProvider);
+  url.searchParams.set("maxDetour", String(data.maxDetour));
+  url.searchParams.set("recentDays", String(data.recentDays));
+  url.searchParams.set("radiusKm", String(data.radiusKm));
+  url.searchParams.set("maxStops", String(data.maxStops));
+  // The stored channel allows 10k of targets, but a query URL is read back
+  // through the 1200-character legacy cap — re-cap here so the fallback link
+  // round-trips exactly (and stays within practical URL length limits).
+  if (data.targets) {
+    const urlTargets = cleanSharedTargets(data.targets, URL_TARGETS_MAX_LENGTH);
+    if (urlTargets) url.searchParams.set("targets", urlTargets);
   }
-  url.searchParams.set("mapProvider", providerFromInput());
-  url.searchParams.set("maxDetour", String(clamp(Number(els.maxDetour.value || 60), 0, 240)));
-  url.searchParams.set("recentDays", String(clamp(Number(els.recentDays.value || 14), 1, 30)));
-  url.searchParams.set("radiusKm", String(clamp(Number(els.radiusKm.value || 25), 1, 50)));
-  url.searchParams.set("maxStops", String(clamp(Number(els.maxStops.value || 10), 3, 20)));
-  if (els.targets.value.trim()) url.searchParams.set("targets", els.targets.value.trim());
-  for (const id of state.pinnedIds.slice(0, 5)) url.searchParams.append("pin", id);
+  for (const id of data.pins || []) url.searchParams.append("pin", id);
   if (autoRun) url.searchParams.set("run", "1");
   return url.toString();
 }
@@ -2455,6 +2666,7 @@ async function useCurrentLocationForOrigin() {
     hideAutocomplete("origin");
     updateInputSummaries();
     savePreferences();
+    refreshSharedUrlIfPresent();
   } catch (error) {
     const message = describeGeolocationError(error);
     setFieldError("origin", message);
@@ -2660,6 +2872,9 @@ function selectAutocompleteItem(field, index) {
   if (inputEl === els.origin || inputEl === els.destination) {
     savePreferences();
   }
+  // Accepting a suggestion assigns the value programmatically (no input
+  // event), so invalidate any loaded /t/<slug> snapshot URL here too.
+  refreshSharedUrlIfPresent();
 }
 
 function handleAutocompleteOutsideClick(event) {
@@ -2834,6 +3049,8 @@ function selectSpeciesItem(index) {
   clearSpeciesError();
   hideSpeciesAutocomplete();
   savePreferences();
+  // Same as location autocomplete: programmatic assignment fires no event.
+  refreshSharedUrlIfPresent();
 }
 
 function hideSpeciesAutocomplete() {
@@ -2881,6 +3098,11 @@ function serializeTargetRows() {
 function syncTargetsFromRows() {
   els.targets.value = serializeTargetRows();
   updateInputSummaries();
+  // Row removal, list paste, and suggestion picks mutate the hidden textarea
+  // programmatically (no form input/change event), so invalidate any loaded
+  // /t/<slug> snapshot URL here. Hydration never calls this — it only renders
+  // rows from the textarea — so an unedited shared trip keeps its short URL.
+  refreshSharedUrlIfPresent();
 }
 
 function renderTargetRows() {
@@ -6609,4 +6831,4 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
-init();
+init().catch((error) => console.error(error));

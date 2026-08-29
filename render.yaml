@@ -18,3 +18,5 @@ services:
         value: 1
       - key: EBIRD_API_KEY
         sync: false
+      - key: DATABASE_URL
+        sync: false
