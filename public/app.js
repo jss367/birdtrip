@@ -1856,16 +1856,21 @@ async function shareCurrentTrip() {
     return;
   }
 
+  // One POST per click: every path below reuses this single promise, so a
+  // clipboard or share-sheet failure never creates a second stored trip
+  // (which would burn quota and orphan the first row).
+  const fallbackUrl = updateSharedUrlFromCurrentInputs({ autoRun: true });
+  const shortUrlPromise = createShortShareUrl(fallbackUrl);
+
   // Without Web Share, hand the clipboard a PROMISE for the URL so the write
   // starts inside the click's transient user activation — awaiting a slow or
   // timing-out trip POST first can outlive that window, and some browsers
   // then refuse the write entirely.
   if (!navigator.share && navigator.clipboard?.write && window.ClipboardItem) {
     try {
-      const urlPromise = createShareUrl();
       await navigator.clipboard.write([
         new ClipboardItem({
-          "text/plain": urlPromise.then((url) => new Blob([url], { type: "text/plain" }))
+          "text/plain": shortUrlPromise.then((url) => new Blob([url], { type: "text/plain" }))
         })
       ]);
       setStatus("Link copied", "Copied a share link that refreshes this trip when opened.");
@@ -1877,7 +1882,15 @@ async function shareCurrentTrip() {
     }
   }
 
-  const shareUrl = await createShareUrl();
+  // Web Share must also run inside the click's activation, so never wait the
+  // POST's full 8s for it: after 3s share the legacy long URL instead (the
+  // documented fallback); a fast short link still wins the race.
+  const shareUrl = navigator.share
+    ? await Promise.race([
+      shortUrlPromise,
+      new Promise((resolve) => setTimeout(() => resolve(fallbackUrl), 3000))
+    ])
+    : await shortUrlPromise;
   // Intentionally omit `text` — share targets that don't fully support Web Share
   // concatenate text + url into one blob, which auto-linkers then fold back into
   // the URL and corrupt the query string (e.g. run=1 becomes run=1 Birdtrip…).
@@ -1910,8 +1923,7 @@ async function shareCurrentTrip() {
 
 // Prefer a short server-stored link (/t/<slug>); fall back to the legacy
 // long query-parameter URL when the share service is disabled or down.
-async function createShareUrl() {
-  const fallbackUrl = updateSharedUrlFromCurrentInputs({ autoRun: true });
+async function createShortShareUrl(fallbackUrl) {
   if (state.config.tripSharing?.enabled === false) return fallbackUrl;
   try {
     const response = await fetch("/api/trips", {
