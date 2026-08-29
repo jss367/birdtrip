@@ -578,8 +578,35 @@ const PROFILE_FETCH_RETRY_DELAY_MS = 1500;
 // given account, so later sessions hydrate from the account instead of
 // re-running the merge (which would resurrect data deleted on other devices).
 const SYNCED_USER_KEY = "routeBirdingSyncedUser";
+// Set the moment a signed-in mutation queues an account write, cleared only
+// when a flush confirms nothing unconfirmed remains (successful upsert, or a
+// diff showing local already matches the account). Persisted so a reload that
+// beats the 750 ms debounce - or follows a failed upsert - can't treat the
+// stale account as canonical and hydrate it over the unconfirmed local edits:
+// runMergeAndHydrate routes through the merge flow while this is set.
+const PROFILE_DIRTY_KEY = "routeBirdingProfileDirty";
 let profileUpsertTimer = 0;
 let profileUpsertFailed = false;
+
+function markProfileDirty() {
+  try {
+    localStorage.setItem(PROFILE_DIRTY_KEY, "1");
+  } catch {
+    // Storage unavailable; hydration protection degrades to in-session only.
+  }
+}
+
+function clearProfileDirtyIfIdle() {
+  // Later mutations may already be queued behind the flush that just
+  // confirmed; they rebuild their patch from live state when they run, so
+  // the flag must survive until a flush leaves nothing else outstanding.
+  if (profileUpsertTimer || profileUpsertPending) return;
+  try {
+    localStorage.removeItem(PROFILE_DIRTY_KEY);
+  } catch {
+    // Storage unavailable; worst case the next sign-in runs the merge flow.
+  }
+}
 
 // Set by the first-reconciliation merge; committed to SYNCED_USER_KEY only
 // once the merged profile is confirmed to match the account (successful
@@ -691,6 +718,8 @@ let profileUpsertPending = false;
 function queueProfileUpsert() {
   if (suppressProfileUpsert) return;
   if (!window.birdtripAuth || !window.birdtripAuth.user) return;
+  // Local state is now ahead of the account until an upsert confirms it.
+  markProfileDirty();
   if (profileUpsertTimer) clearTimeout(profileUpsertTimer);
   profileUpsertTimer = setTimeout(() => {
     profileUpsertTimer = 0;
@@ -740,6 +769,7 @@ async function flushProfileUpsert() {
     // Local state already matches the account, so a first reconciliation
     // (if one is pending) is complete without a write.
     commitPendingSyncedUser();
+    clearProfileDirtyIfIdle();
     return;
   }
   // The first write for an account with no profiles row is an insert: send
@@ -763,6 +793,7 @@ async function flushProfileUpsert() {
     lastSyncedProfile = { ...lastSyncedProfile, ...patch };
     profileUpsertFailed = false;
     commitPendingSyncedUser();
+    clearProfileDirtyIfIdle();
   }
 }
 
@@ -797,9 +828,11 @@ function clearStateOnSignOut() {
     profileUpsertTimer = 0;
   }
   // Forget the reconciliation marker: data added anonymously after an explicit
-  // sign-out should go through the merge flow on the next sign-in.
+  // sign-out should go through the merge flow on the next sign-in. The dirty
+  // flag goes with it - the local data it protected is wiped right below.
   try {
     localStorage.removeItem(SYNCED_USER_KEY);
+    localStorage.removeItem(PROFILE_DIRTY_KEY);
   } catch {
     // Storage unavailable; worst case the next sign-in skips the merge dialog.
   }
@@ -894,14 +927,24 @@ async function runMergeAndHydrate() {
     // deletions made on another device aren't resurrected from localStorage.
     let alreadySynced = false;
     try {
-      alreadySynced = localStorage.getItem(SYNCED_USER_KEY) === userIdAtStart;
+      // A set dirty flag means a queued write was never confirmed (a reload
+      // beat the debounce, the upsert failed, or the user edited while this
+      // fetch was in flight): the account may be behind this browser, so
+      // reconcile through the merge flow instead of hydrating the stale
+      // account over the unconfirmed local edits.
+      alreadySynced = localStorage.getItem(SYNCED_USER_KEY) === userIdAtStart
+        && localStorage.getItem(PROFILE_DIRTY_KEY) !== "1";
     } catch {
       // Storage unavailable; fall back to the merge flow.
     }
     if (alreadySynced) {
-      hydrateFromAccount(account);
+      const hydrated = hydrateFromAccount(account);
       suppressProfileUpsert = true;
       try { savePreferences(); } finally { suppressProfileUpsert = false; }
+      // Await any map-adapter transition the hydration started, so the
+      // startup passes (which run after accountHydrationReady) see a settled
+      // adapter instead of racing a second transition against this one.
+      await hydrated;
       return;
     }
 
@@ -934,7 +977,17 @@ async function runMergeAndHydrate() {
     // targets (free text)
     const localTargets = (els.targets.value || "").trim();
     const accountTargets = (account.targets || "").trim();
-    if (!localTargets && !accountTargets) {
+    if (sharedFieldLocks.has("targets")) {
+      // The targets on screen came from a shared link: they're the sender's
+      // data on display, not this browser's, so they take no part in
+      // reconciliation. "Use account" must not replace the shared trip's
+      // targets on screen, and "use this browser" must not write the
+      // sender's targets into the recipient's account. The account value
+      // stays the write baseline (buildProfilePatch carries it through while
+      // the lock holds), and the field joins the account normally once the
+      // user explicitly edits or adopts it.
+      decisions.targets = "noop";
+    } else if (!localTargets && !accountTargets) {
       decisions.targets = "noop";
     } else if (!accountTargets && localTargets) {
       decisions.targets = "keep-local";
@@ -981,13 +1034,9 @@ async function runMergeAndHydrate() {
       for (const c of conflicts) {
         decisions[c.key] = choices[c.key] || c.options[0].value;
       }
-      // Deciding a targets conflict in the dialog is an explicit user choice
-      // about the field, so a shared-link lock no longer applies: "use this
-      // browser" must be able to write back, "use account" must display.
-      if (conflicts.some((c) => c.key === "targets")) unlockSharedField("targets");
     }
 
-    applyMergeDecisions(account, decisions);
+    const applied = applyMergeDecisions(account, decisions);
 
     // Don't persist the reconciliation marker yet: it becomes durable only
     // after the write-back below confirms the account holds the merged state.
@@ -996,6 +1045,9 @@ async function runMergeAndHydrate() {
     try { savePreferences(); } finally { suppressProfileUpsert = false; }
     // Write the merged state back to the account (covers keep-local and union cases).
     queueProfileUpsert();
+    // Same as the hydrate branch: keep any adapter transition the merge
+    // started inside accountHydrationReady.
+    await applied;
   } finally {
     mergeAndHydrateInFlight = false;
   }
@@ -1038,17 +1090,22 @@ function applyMergeDecisions(account, decisions) {
 
   // preferences: silent account-wins per non-empty field, skipping any field
   // that has its own column + explicit conflict handling.
+  const transitions = [];
   if (account.preferences && typeof account.preferences === "object") {
     for (const field of PREF_FIELDS) {
       if (ACCOUNT_OWNED_FIELDS.has(field)) continue;
       const value = account.preferences[field];
       if (typeof value === "string" && value.length) {
-        applyPreferenceField(field, value);
+        const transition = applyPreferenceField(field, value);
+        if (transition) transitions.push(transition);
       }
     }
   }
 
   updateInputSummaries();
+  // As in hydrateFromAccount: the caller awaits any map-adapter swap so it
+  // finishes inside accountHydrationReady.
+  return Promise.all(transitions);
 }
 
 function showMergeDialog(conflicts) {
@@ -1141,6 +1198,7 @@ function hydrateFromAccount(account) {
   // skips shared-link-locked fields.
   const prefs = (account.preferences && typeof account.preferences === "object")
     ? account.preferences : {};
+  const transitions = [];
   for (const field of PREF_FIELDS) {
     if (ACCOUNT_OWNED_FIELDS.has(field)) continue;
     if (!Object.prototype.hasOwnProperty.call(prefs, field)) continue;
@@ -1149,9 +1207,13 @@ function hydrateFromAccount(account) {
     // The provider select always holds a concrete value; an empty string
     // would be malformed data, not a clear.
     if (!value.length && field === "mapProvider") continue;
-    applyPreferenceField(field, value);
+    const transition = applyPreferenceField(field, value);
+    if (transition) transitions.push(transition);
   }
   updateInputSummaries();
+  // The map-adapter swap (if the provider changed) outlives this call; the
+  // caller awaits it so accountHydrationReady covers the whole transition.
+  return Promise.all(transitions);
 }
 
 function applyAccountProfile(profile, which) {
@@ -1199,18 +1261,23 @@ let accountMapProvider = null;
 // mapProvider owns real state (state.provider + the map adapter) through
 // setMapProvider(); assigning the <select> directly would leave searches on
 // the old provider while autocomplete and links use the new one. The select
-// and state.provider update synchronously; the adapter swap finishes async.
+// and state.provider update synchronously; the adapter swap finishes async
+// and is RETURNED so hydration can fold it into accountHydrationReady. If
+// hydration resolved while the swap was still loading the Google script, the
+// startup map pass would see a null adapter mid-transition and start a
+// second overlapping transition to the same provider - two adapters, the
+// first never destroyed.
 function applyPreferenceField(field, value) {
   // Explicit shared-link fields outrank hydrated account defaults.
-  if (sharedFieldLocks.has(field)) return;
+  if (sharedFieldLocks.has(field)) return null;
   if (field === "mapProvider") {
     accountMapProvider = value;
-    setMapProvider(value, { persist: false }).catch((err) => {
+    return setMapProvider(value, { persist: false }).catch((err) => {
       console.warn("Applying account map provider failed:", err && err.message);
     });
-    return;
   }
   els[field].value = value;
+  return null;
 }
 
 function setSearchMode(mode, options = {}) {
