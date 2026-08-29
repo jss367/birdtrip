@@ -175,11 +175,46 @@
   // deliberately rescued must survive the cut or the rescue work is wasted:
   // explicit target rescues are all kept (they are bounded upstream), and
   // target-match / unseen-species extras are kept up to maxStops per kind.
+  //
+  // Truncating under any single ordering is incomplete at some slider
+  // position, so options.endpointUtilities may supply one utility function
+  // per balance endpoint (full birding, full convenience). The pool is then
+  // the round-robin union of the top candidates under each endpoint ordering,
+  // up to the same cap. Every intermediate balance is a monotone blend of the
+  // endpoints, so a candidate strong enough to be shown at any slider
+  // position is strong at one endpoint or the other — covering both extremes
+  // covers every position in between. Without endpointUtilities the pool is
+  // the caller-ordered head of the list, as before.
   function selectNotableCandidates(candidates, options = {}) {
     const maxStops = Math.max(1, Math.floor(Number(options.maxStops) || 0) || 1);
+    const cap = Math.max(maxStops * 2, 12);
     const list = Array.from(candidates || []);
-    const top = list.slice(0, Math.max(maxStops * 2, 12));
-    const ids = new Set(top.map((candidate) => candidate.id));
+    const utilities = Array.isArray(options.endpointUtilities) && options.endpointUtilities.length
+      ? options.endpointUtilities
+      : [() => 0];
+    // One ordering per endpoint; ties (and the no-utility fallback, where
+    // every utility is 0) preserve the caller's order.
+    const orderings = utilities.map((utility) => list
+      .map((candidate, index) => ({ candidate, index, utility: Number(utility(candidate)) || 0 }))
+      .sort((a, b) => (b.utility - a.utility) || (a.index - b.index))
+      .map((entry) => entry.candidate));
+    const top = [];
+    const ids = new Set();
+    const cursors = orderings.map(() => 0);
+    let advanced = true;
+    while (top.length < cap && advanced) {
+      advanced = false;
+      for (let o = 0; o < orderings.length && top.length < cap; o += 1) {
+        const ordering = orderings[o];
+        while (cursors[o] < ordering.length && ids.has(ordering[cursors[o]].id)) cursors[o] += 1;
+        if (cursors[o] >= ordering.length) continue;
+        const candidate = ordering[cursors[o]];
+        ids.add(candidate.id);
+        top.push(candidate);
+        cursors[o] += 1;
+        advanced = true;
+      }
+    }
     const keep = (matches, limit) => {
       let added = 0;
       for (const candidate of list) {

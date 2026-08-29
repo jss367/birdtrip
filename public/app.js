@@ -1513,16 +1513,22 @@ async function runRouteSearch(params) {
   // the filter is belt-and-suspenders.
   const eligible = practical.filter((candidate) => candidate.addedMinutes <= params.maxDetour);
   // Notable reports do not feed the score, so candidates can be fully scored
-  // now that detour impact is known. scoreCandidates leaves rankUtility at the
-  // active balance (state.balance), so this sort ranks the pool by the
-  // weighting the user actually searched with before selectNotableCandidates
-  // truncates — a shared "Prioritize birding" link must not lose its best
-  // birding stops to the Recommended ordering. Later slider moves re-rank the
-  // same pool, drawing on the max(2 * maxStops, 12) headroom over the visible
-  // list.
+  // now that detour impact is known. Pool selection is the union of the top
+  // candidates under BOTH balance endpoints (full birding and full
+  // convenience): every slider position is a monotone blend of the two
+  // endpoint weightings, so covering both extremes guarantees each position
+  // — including the one the user searched with — keeps its strongest
+  // candidates in the max(2 * maxStops, 12) pool that later slider moves
+  // re-rank. The active-balance sort only orders ties and rescue extras.
   scoreCandidates(eligible, params);
   eligible.sort(compareByRankUtility);
-  const pool = ranking.selectNotableCandidates(eligible, params);
+  const endpointUtilities = [BALANCE_LEVELS[0], BALANCE_LEVELS[BALANCE_LEVELS.length - 1]]
+    .map((level) => (candidate) => (Number(candidate.birdPoints) || 0)
+      + level.convMult * (Number(candidate.scoreParts?.practicality) || 0));
+  const pool = ranking.selectNotableCandidates(eligible, {
+    maxStops: params.maxStops,
+    endpointUtilities
+  });
   setStatus("Adding notable birds", "Checking nearby notable reports for the strongest practical candidates.");
   await fetchNotablesPerCandidate(pool, params);
   scoreCandidates(pool, params);

@@ -263,7 +263,7 @@ test("notable pool bounds organic rescue extras but keeps all explicit rescues",
   assert.equal(new Set(ids).size, pool.length);
 });
 
-test("notable pool truncates in the caller's order, so callers must pre-rank", () => {
+test("notable pool without endpoint utilities truncates in the caller's order", () => {
   const candidates = [];
   for (let i = 0; i < 20; i += 1) candidates.push({ id: `ranked-${i}`, targetMatches: [], liferSpecies: [] });
 
@@ -276,18 +276,20 @@ test("notable pool truncates in the caller's order, so callers must pre-rank", (
   );
 });
 
-test("pre-ranking at the active balance keeps birding-favored stops in the pool", () => {
-  // Mirrors runRouteSearch's pre-truncation ranking: rankUtility is
-  // birdPoints + convMult * practicality, sorted descending before
-  // selectNotableCandidates truncates. At "Prioritize birding" (convMult 0)
-  // the remote pure-birding stop out-ranks every convenient roadside filler;
-  // at the Recommended weighting (convMult 1) it would fall below the cap and
-  // be discarded permanently, unreachable by any later re-rank.
-  const rankAt = (candidates, convMult) => [...candidates].sort((a, b) => (
-    (b.birdPoints + convMult * b.practicality) - (a.birdPoints + convMult * a.practicality)
-    || String(a.id).localeCompare(String(b.id))
-  ));
+// Mirrors runRouteSearch's endpoint-union pool selection: rankUtility at any
+// slider position is birdPoints + convMult * practicality, a monotone blend of
+// the two endpoints (convMult 0 = "Prioritize birding", convMult 5 = "Less
+// driving"). The pool interleaves the top candidates under both endpoint
+// orderings, so no single-order truncation can strand a candidate that some
+// slider position would rank on top.
+const utilityAt = (convMult) => (candidate) => candidate.birdPoints + convMult * candidate.practicality;
+const endpointUtilities = [utilityAt(0), utilityAt(5)];
+const rankAt = (candidates, convMult) => [...candidates].sort((a, b) => (
+  utilityAt(convMult)(b) - utilityAt(convMult)(a)
+  || String(a.id).localeCompare(String(b.id))
+));
 
+test("endpoint-union pool keeps birding-favored stops from a birding-start search", () => {
   const candidates = [
     { id: "remote-reserve", birdPoints: 50, practicality: 0, targetMatches: [], liferSpecies: [] }
   ];
@@ -295,15 +297,35 @@ test("pre-ranking at the active balance keeps birding-favored stops in the pool"
     candidates.push({ id: `roadside-${i}`, birdPoints: 20, practicality: 40, targetMatches: [], liferSpecies: [] });
   }
 
-  // Cap is max(2 * maxStops, 12) = 12; the 13 candidates exceed it, so the
-  // last-ranked candidate is truncated. Under the default weighting the
-  // reserve is that casualty (50 < 20 + 40); under the active balance it
-  // ranks first and survives.
-  const defaultPool = ranking.selectNotableCandidates(rankAt(candidates, 1), { maxStops: 3 });
-  assert.ok(!defaultPool.some((candidate) => candidate.id === "remote-reserve"));
+  // Cap is max(2 * maxStops, 12) = 12; the 13 candidates exceed it. The
+  // reserve loses at Recommended and beyond (50 < 20 + 40) but wins the
+  // birding endpoint, so the union keeps it wherever the search started.
+  const pool = ranking.selectNotableCandidates(rankAt(candidates, 0), { maxStops: 3, endpointUtilities });
+  assert.ok(pool.some((candidate) => candidate.id === "remote-reserve"));
+  assert.equal(rankAt(pool, 0)[0].id, "remote-reserve");
+});
 
-  const birdingPool = ranking.selectNotableCandidates(rankAt(candidates, 0), { maxStops: 3 });
-  assert.equal(birdingPool[0].id, "remote-reserve");
+test("endpoint-union pool keeps a birding outlier from a Recommended-start search", () => {
+  // Mirror case: the search ran at Recommended (convMult 1), so the caller's
+  // order buries the remote outlier behind 12 convenient stops — under
+  // single-order truncation it would be discarded permanently and sliding to
+  // "Prioritize birding" could never surface it. The birding endpoint of the
+  // union rescues it.
+  const candidates = [];
+  for (let i = 0; i < 12; i += 1) {
+    candidates.push({ id: `roadside-${i}`, birdPoints: 20, practicality: 40, targetMatches: [], liferSpecies: [] });
+  }
+  candidates.push({ id: "remote-reserve", birdPoints: 50, practicality: 0, targetMatches: [], liferSpecies: [] });
+
+  const recommendedOrder = rankAt(candidates, 1);
+  assert.equal(recommendedOrder[recommendedOrder.length - 1].id, "remote-reserve");
+
+  const pool = ranking.selectNotableCandidates(recommendedOrder, { maxStops: 3, endpointUtilities });
+  assert.ok(pool.some((candidate) => candidate.id === "remote-reserve"));
+  // Re-ranked at "Prioritize birding", the rescued outlier is the top result.
+  assert.equal(rankAt(pool, 0)[0].id, "remote-reserve");
+  // The convenience endpoint still holds its own extreme's favorites.
+  assert.ok(rankAt(pool, 5)[0].id.startsWith("roadside-"));
 });
 
 test("notable pool does not duplicate rescued candidates already in the top slice", () => {
