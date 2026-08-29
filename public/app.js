@@ -2134,8 +2134,11 @@ function setResultOrder(order) {
 // from another part of the world), fall back to a longitude-based offset so
 // departure, arrivals, and sunrise/sunset all stay in route-local time
 // instead of shifting by the viewer's offset.
-function routeTimeContext() {
-  const browserOffsetMinutes = -new Date().getTimezoneOffset();
+// The browser offset is sampled at the instant being displayed (atMs), not at
+// render time, so a route straddling a DST transition shows post-transition
+// clocks with the post-transition offset.
+function routeTimeContext(atMs = Date.now()) {
+  const browserOffsetMinutes = -new Date(atMs).getTimezoneOffset();
   const approxOffsetMinutes = timing?.approximateUtcOffsetMinutes?.(state.route?.origin?.lng);
   if (!Number.isFinite(approxOffsetMinutes) || Math.abs(browserOffsetMinutes - approxOffsetMinutes) <= 90) {
     return { offsetMinutes: browserOffsetMinutes, approximate: false };
@@ -2147,8 +2150,8 @@ function routeTimeContext() {
 // stop whose rounded solar zone differs from the origin's is displayed with
 // the origin's display offset shifted by the solar difference (approximate),
 // while stops in the origin's zone keep the route context unchanged.
-function stopTimeContext(lng) {
-  const routeContext = routeTimeContext();
+function stopTimeContext(lng, atMs = Date.now()) {
+  const routeContext = routeTimeContext(atMs);
   const stopOffset = timing?.stopClockOffsetMinutes?.({
     originDisplayOffsetMinutes: routeContext.offsetMinutes,
     originLng: state.route?.origin?.lng,
@@ -2197,7 +2200,7 @@ function candidateTiming(candidate) {
   return { arrivalMs, sun, habitat, assessment, lng: candidate.lng };
 }
 
-function formatClock(ms, context = routeTimeContext()) {
+function formatClock(ms, context = routeTimeContext(ms)) {
   if (!context.approximate) {
     return new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   }
@@ -2222,7 +2225,7 @@ function arrivalDayMarker(arrivalMs, context) {
     days = timing?.calendarDaysApart?.({
       fromMs: departureMs,
       toMs: arrivalMs,
-      fromOffsetMinutes: routeTimeContext().offsetMinutes,
+      fromOffsetMinutes: routeTimeContext(departureMs).offsetMinutes,
       toOffsetMinutes: context.offsetMinutes
     });
   } else {
@@ -2237,7 +2240,7 @@ function arrivalDayMarker(arrivalMs, context) {
 
 // The one arrival-clock string every surface (chips, details, report) shares:
 // clock time plus the overnight day marker.
-function arrivalClockLabel(stopTiming, context = stopTimeContext(stopTiming.lng)) {
+function arrivalClockLabel(stopTiming, context = stopTimeContext(stopTiming.lng, stopTiming.arrivalMs)) {
   return `${formatClock(stopTiming.arrivalMs, context)}${arrivalDayMarker(stopTiming.arrivalMs, context)}`;
 }
 
@@ -2252,7 +2255,7 @@ function timingChipLabel(stopTiming) {
 }
 
 function timingSentence(stopTiming) {
-  const context = stopTimeContext(stopTiming.lng);
+  const context = stopTimeContext(stopTiming.lng, stopTiming.arrivalMs);
   const arrival = arrivalClockLabel(stopTiming, context);
   const habitatName = stopTiming.habitat.habitat === "general" ? "This stop" : `This ${stopTiming.habitat.habitat} stop`;
   const sunPart = stopTiming.sun.polar
@@ -5987,7 +5990,7 @@ function buildReportMarkup() {
 
   const departureMs = isArea ? null : departureTimestamp();
   const departParam = departureMs
-    ? param("Leave at", `${formatClock(departureMs)}${routeTimeContext().approximate ? " (approximate local time at the origin)" : ""}`)
+    ? param("Leave at", `${formatClock(departureMs)}${routeTimeContext(departureMs).approximate ? " (approximate local time at the origin)" : ""}`)
     : "";
   const paramsBlock = `
     <h2>Search parameters</h2>
