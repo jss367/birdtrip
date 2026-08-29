@@ -62,3 +62,9 @@ Signed-in users (Google) get their life list, target species, eBird API token, a
 The feature is currently behind a `?auth=1` query-string flag while it's validated. Enable Supabase by setting `SUPABASE_URL` and `SUPABASE_ANON_KEY` (see `db/migrations/0001_profiles.sql` for the schema and `docs/plans/2026-05-23-user-accounts-design.md` for the design).
 
 OpenStreetMap mode uses public Nominatim and OSRM demo endpoints for geocoding and routing. That is fine for local experimentation, but a production deployment should use services with explicit quotas.
+
+## Server safeguards
+
+Successful upstream responses are cached in memory. eBird and routing responses default to a 10-minute time to live, while geocoding responses default to 24 hours. Concurrent identical requests share one upstream fetch, so repeated searches and overlapping searches do not spend quota unnecessarily. The cache is bounded to 1,000 entries and is cleared whenever the server restarts.
+
+API routes are also limited to 300 requests per client per minute by default and return `429` with `RateLimit-*` and `Retry-After` headers when the limit is exceeded. These settings can be adjusted with environment variables described in [DEPLOY.md](./DEPLOY.md).
