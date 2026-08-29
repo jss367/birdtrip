@@ -2208,13 +2208,16 @@ function formatClock(ms, context = routeTimeContext(ms)) {
     .toLocaleTimeString([], { hour: "numeric", minute: "2-digit", timeZone: "UTC" });
 }
 
-// Day marker (" +1d", " +2d", …) appended to an arrival clock when the route
-// pushes the arrival past midnight, so tomorrow's 1:05 AM is distinguishable
-// from today's. Days are counted on the clocks the user actually sees: the
-// departure on the origin's displayed clock and the arrival on the stop's
-// (they differ when the route crosses time zones — a 10 PM west-coast
-// departure heading east already reads as "tomorrow" on an eastern stop's
-// clock, which must not swallow the arrival's real +1d).
+// Day marker (" +1d", " -1d", …) appended to an arrival clock when the
+// displayed arrival date differs from the displayed departure date, so
+// tomorrow's 1:05 AM is distinguishable from today's. Days are counted on the
+// clocks the user actually sees: the departure on the origin's displayed
+// clock and the arrival on the stop's (they differ when the route crosses
+// time zones — a 10 PM west-coast departure heading east already reads as
+// "tomorrow" on an eastern stop's clock, which must not swallow the arrival's
+// real +1d). The difference can be negative: a 12:15 AM departure reaching a
+// stop displayed an hour farther west can arrive at 11:45 PM on the previous
+// displayed date, which must read " -1d" rather than look a day late.
 // Browser-local calendar days are used when the context is exact,
 // fixed-offset days when it is approximate.
 function arrivalDayMarker(arrivalMs, context) {
@@ -2235,7 +2238,7 @@ function arrivalDayMarker(arrivalMs, context) {
     };
     days = Math.round((localDayStartMs(arrivalMs) - localDayStartMs(departureMs)) / 86400000);
   }
-  return Number.isFinite(days) && days > 0 ? ` +${days}d` : "";
+  return Number.isFinite(days) && days !== 0 ? ` ${days > 0 ? `+${days}` : days}d` : "";
 }
 
 // The one arrival-clock string every surface (chips, details, report) shares:

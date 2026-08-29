@@ -145,6 +145,19 @@ test("calendar days apart read each instant on its own displayed clock", () => {
     }),
     0
   );
+  // Westbound just after midnight: depart at 12:15 AM UTC-5, drive 30
+  // minutes to a stop displayed at UTC-6 — the arrival reads 11:45 PM on the
+  // PREVIOUS displayed date, so the difference is -1, not 0.
+  const postMidnightDeparture = Date.UTC(2026, 7, 28, 5, 15); // 12:15 AM Aug 28, UTC-5
+  assert.equal(
+    timing.calendarDaysApart({
+      fromMs: postMidnightDeparture,
+      toMs: postMidnightDeparture + 0.5 * HOUR_MS,
+      fromOffsetMinutes: -5 * 60,
+      toOffsetMinutes: -6 * 60
+    }),
+    -1
+  );
   // A lone `offsetMinutes` still applies to both instants.
   assert.equal(
     timing.calendarDaysApart({
