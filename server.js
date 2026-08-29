@@ -1,10 +1,23 @@
 const http = require("http");
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+const { createTripStore, SLUG_PATTERN } = require("./lib/trip-store");
 
 const PORT = Number(process.env.PORT || 4177);
 const PUBLIC_DIR = path.join(__dirname, "public");
-const CACHE_TTL_MS = 10 * 60 * 1000;
+const CACHE_TTL_MS = envInteger("CACHE_TTL_MS", 10 * 60 * 1000, 1000);
+const EBIRD_CACHE_TTL_MS = envInteger("EBIRD_CACHE_TTL_MS", CACHE_TTL_MS, 1000);
+const GEOCODING_CACHE_TTL_MS = envInteger("GEOCODING_CACHE_TTL_MS", 24 * 60 * 60 * 1000, 1000);
+const ROUTING_CACHE_TTL_MS = envInteger("ROUTING_CACHE_TTL_MS", CACHE_TTL_MS, 1000);
+const CACHE_MAX_ENTRIES = envInteger("CACHE_MAX_ENTRIES", 1000, 1);
+const CACHE_MAX_BYTES = envInteger("CACHE_MAX_BYTES", 32 * 1024 * 1024, 1);
+const CACHE_MAX_ENTRY_BYTES = envInteger("CACHE_MAX_ENTRY_BYTES", 2 * 1024 * 1024, 1);
+const API_RATE_LIMIT_WINDOW_MS = envInteger("API_RATE_LIMIT_WINDOW_MS", 60 * 1000, 1000);
+const API_RATE_LIMIT_MAX = envInteger("API_RATE_LIMIT_MAX", 300, 0);
+const API_RATE_LIMIT_MAX_CLIENTS = envInteger("API_RATE_LIMIT_MAX_CLIENTS", 10000, 1);
+const TRUST_PROXY = /^(1|true|yes)$/i.test(process.env.TRUST_PROXY || "");
+const TRUST_PROXY_HOPS = envInteger("TRUST_PROXY_HOPS", 1, 1);
 const SEASONALITY_TTL_MS = 24 * 60 * 60 * 1000;
 const SEASONALITY_CACHE_MAX_ENTRIES = 100;
 const SEASONALITY_SAMPLE_DAYS = [5, 15, 25];
@@ -19,11 +32,31 @@ const DEFAULT_MAP_PROVIDER = MAP_PROVIDERS.has(process.env.MAP_PROVIDER)
   : "osm";
 const GOOGLE_MAPS_BROWSER_KEY = process.env.GOOGLE_MAPS_BROWSER_KEY || process.env.GOOGLE_MAPS_API_KEY || "";
 const GOOGLE_MAPS_SERVER_KEY = process.env.GOOGLE_MAPS_SERVER_KEY || process.env.GOOGLE_MAPS_API_KEY || "";
+const TRIP_BODY_LIMIT_BYTES = 150 * 1024;
+const TRIP_CREATE_LIMIT = 30;
+const TRIP_CREATE_WINDOW_MS = 60 * 60 * 1000;
+const SHARED_TRIP_PAGE_PATTERN = /^\/t\/[A-Za-z0-9]{8,64}\/?$/;
+let tripStore = process.env.DATABASE_URL
+  ? createTripStore({ connectionString: process.env.DATABASE_URL })
+  : null;
+const tripCreatesByIp = new Map();
 const cache = new Map();
+const pendingUpstreamRequests = new Map();
+const rateLimitBuckets = new Map();
+const rateLimitMetadata = new WeakMap();
 const seasonalityCache = new Map();
 const seasonalityBuilds = new Map();
 const seasonalityBuildQueue = [];
 let activeSeasonalityBuilds = 0;
+
+const CACHE_MISS = Symbol("cache-miss");
+
+function envInteger(name, fallback, minimum) {
+  const raw = process.env[name];
+  if (typeof raw !== "string" || raw.trim() === "") return fallback;
+  const value = Number(raw);
+  return Number.isInteger(value) && value >= minimum ? value : fallback;
+}
 
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
@@ -46,7 +79,12 @@ function logApiRequest(req, res, url) {
       logUrl.searchParams.delete("lat");
       logUrl.searchParams.delete("lng");
     }
-    console.log(`[api] ${req.method} ${logUrl.pathname}${logUrl.search} ${res.statusCode} ${elapsed}ms`);
+    // The slug is the bearer credential for a shared trip, so it must not
+    // land in logs — mirror the lat/lng redaction above.
+    const logPathname = logUrl.pathname
+      .replace(/^\/api\/trips\/[^/]+/, "/api/trips/:slug")
+      .replace(/^\/t\/[^/]+/, "/t/:slug");
+    console.log(`[api] ${req.method} ${logPathname}${logUrl.search} ${res.statusCode} ${elapsed}ms`);
   });
 }
 
@@ -58,23 +96,182 @@ function sendJson(res, status, payload) {
   res.end(JSON.stringify(payload));
 }
 
-function sendError(res, status, message, details) {
-  sendJson(res, status, { error: message, details });
+function sendError(res, status, message, details, code) {
+  sendJson(res, status, {
+    error: message,
+    ...(code ? { code } : {}),
+    details
+  });
 }
 
-function cached(key) {
-  const hit = cache.get(key);
-  if (!hit) return null;
-  if (Date.now() - hit.time > CACHE_TTL_MS) {
-    cache.delete(key);
-    return null;
+function responseCacheEntryBytes(entry) {
+  if (Number.isFinite(entry.sizeBytes)) return entry.sizeBytes;
+  const serialized = typeof entry.value === "string" ? entry.value : JSON.stringify(entry.value) || "";
+  return Buffer.byteLength(serialized);
+}
+
+function pruneResponseCache(
+  target = cache,
+  now = Date.now(),
+  maxEntries = CACHE_MAX_ENTRIES,
+  maxBytes = CACHE_MAX_BYTES
+) {
+  let totalBytes = 0;
+  for (const [key, entry] of target) {
+    if (entry.expiresAt <= now) {
+      target.delete(key);
+    } else {
+      totalBytes += responseCacheEntryBytes(entry);
+    }
   }
+  while (target.size > maxEntries || totalBytes > maxBytes) {
+    const oldestKey = target.keys().next().value;
+    const oldest = target.get(oldestKey);
+    totalBytes -= responseCacheEntryBytes(oldest);
+    target.delete(oldestKey);
+  }
+}
+
+function cached(key, now = Date.now()) {
+  const hit = cache.get(key);
+  if (!hit) return CACHE_MISS;
+  if (hit.expiresAt <= now) {
+    cache.delete(key);
+    return CACHE_MISS;
+  }
+  // Refresh insertion order so the size bound evicts the least-recently-used item.
+  cache.delete(key);
+  cache.set(key, hit);
   return hit.value;
 }
 
-function setCached(key, value) {
-  cache.set(key, { time: Date.now(), value });
+function setCached(key, value, ttlMs) {
+  const serialized = typeof value === "string" ? value : JSON.stringify(value) || "";
+  const sizeBytes = Buffer.byteLength(serialized);
+  if (sizeBytes > CACHE_MAX_ENTRY_BYTES || sizeBytes > CACHE_MAX_BYTES) return value;
+  pruneResponseCache();
+  cache.delete(key);
+  cache.set(key, { expiresAt: Date.now() + ttlMs, sizeBytes, value });
+  pruneResponseCache();
   return value;
+}
+
+function fingerprint(value) {
+  return crypto.createHash("sha256").update(String(value)).digest("hex");
+}
+
+function upstreamCacheKey(method, url, headers = {}, payload) {
+  const endpoint = new URL(url);
+  if (endpoint.searchParams.has("key")) {
+    endpoint.searchParams.set("key", fingerprint(endpoint.searchParams.get("key")));
+  }
+  endpoint.searchParams.sort();
+  const cacheHeaders = Object.entries(headers)
+    .map(([name, value]) => {
+      const normalized = name.toLowerCase();
+      const safeValue = normalized === "x-ebirdapitoken" || normalized === "x-goog-api-key"
+        ? fingerprint(value)
+        : String(value);
+      return [normalized, safeValue];
+    })
+    .sort(([left], [right]) => left.localeCompare(right));
+  return JSON.stringify([method, endpoint.toString(), cacheHeaders, payload ?? null]);
+}
+
+function upstreamCacheTtl(url) {
+  const endpoint = new URL(url);
+  if (endpoint.hostname === "api.ebird.org") return EBIRD_CACHE_TTL_MS;
+  if (
+    endpoint.hostname === "nominatim.openstreetmap.org"
+    || (endpoint.hostname === "maps.googleapis.com" && endpoint.pathname.includes("/geocode/"))
+  ) {
+    return GEOCODING_CACHE_TTL_MS;
+  }
+  if (endpoint.hostname === "router.project-osrm.org" || endpoint.hostname === "routes.googleapis.com") {
+    return ROUTING_CACHE_TTL_MS;
+  }
+  return CACHE_TTL_MS;
+}
+
+function clientAddress(req, options = {}) {
+  const trustProxy = options.trustProxy ?? TRUST_PROXY;
+  const trustedHops = options.trustedHops ?? TRUST_PROXY_HOPS;
+  if (trustProxy) {
+    const forwarded = String(req.headers["x-forwarded-for"] || "")
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean);
+    if (forwarded.length) return forwarded[Math.max(0, forwarded.length - trustedHops)];
+  }
+  return req.socket.remoteAddress || "unknown";
+}
+
+function rateLimitState(buckets) {
+  let state = rateLimitMetadata.get(buckets);
+  if (state) return state;
+  const resetTimes = [...buckets.values()].map((entry) => entry.resetAt);
+  state = { nextExpiry: resetTimes.length ? Math.min(...resetTimes) : Infinity };
+  rateLimitMetadata.set(buckets, state);
+  return state;
+}
+
+function pruneExpiredRateLimitBuckets(buckets, state, now) {
+  if (state.nextExpiry > now) return;
+  let nextExpiry = Infinity;
+  for (const [bucketKey, entry] of buckets) {
+    if (entry.resetAt <= now) buckets.delete(bucketKey);
+    else nextExpiry = Math.min(nextExpiry, entry.resetAt);
+  }
+  state.nextExpiry = nextExpiry;
+}
+
+function consumeRateLimit(key, options = {}) {
+  const buckets = options.buckets || rateLimitBuckets;
+  const now = options.now ?? Date.now();
+  const max = options.max ?? API_RATE_LIMIT_MAX;
+  const windowMs = options.windowMs ?? API_RATE_LIMIT_WINDOW_MS;
+  const maxClients = options.maxClients ?? API_RATE_LIMIT_MAX_CLIENTS;
+  const state = rateLimitState(buckets);
+  pruneExpiredRateLimitBuckets(buckets, state, now);
+  let bucket = buckets.get(key);
+  if (!bucket) {
+    if (buckets.size >= maxClients) {
+      const resetAt = state.nextExpiry;
+      return {
+        allowed: false,
+        limit: max,
+        remaining: 0,
+        resetAt,
+        retryAfterSeconds: Math.max(1, Math.ceil((resetAt - now) / 1000))
+      };
+    }
+    bucket = { count: 0, resetAt: now + windowMs };
+    buckets.set(key, bucket);
+    state.nextExpiry = Math.min(state.nextExpiry, bucket.resetAt);
+  }
+  const allowed = max === 0 || bucket.count < max;
+  if (allowed) bucket.count += 1;
+  return {
+    allowed,
+    limit: max,
+    remaining: max === 0 ? 0 : Math.max(0, max - bucket.count),
+    resetAt: bucket.resetAt,
+    retryAfterSeconds: Math.max(1, Math.ceil((bucket.resetAt - now) / 1000))
+  };
+}
+
+function applyApiRateLimit(req, res) {
+  if (API_RATE_LIMIT_MAX === 0) return true;
+  const result = consumeRateLimit(clientAddress(req));
+  res.setHeader("ratelimit-limit", String(result.limit));
+  res.setHeader("ratelimit-remaining", String(result.remaining));
+  res.setHeader("ratelimit-reset", String(result.retryAfterSeconds));
+  if (result.allowed) return true;
+  res.setHeader("retry-after", String(result.retryAfterSeconds));
+  sendError(res, 429, "Too many API requests", {
+    retryAfterSeconds: result.retryAfterSeconds
+  }, "RATE_LIMITED");
+  return false;
 }
 
 function pruneSeasonalityCache(target = seasonalityCache, now = Date.now()) {
@@ -112,6 +309,92 @@ function acquireSeasonalityBuildSlot() {
   return new Promise((resolve) => seasonalityBuildQueue.push(resolve));
 }
 
+function readJsonBody(req, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let total = 0;
+    let failed = false;
+    req.on("data", (chunk) => {
+      if (failed) return;
+      total += chunk.length;
+      if (total > maxBytes) {
+        failed = true;
+        const error = new Error("Request body is too large");
+        error.status = 413;
+        reject(error);
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      if (failed) return;
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      } catch {
+        const error = new Error("Request body must be valid JSON");
+        error.status = 400;
+        reject(error);
+      }
+    });
+    req.on("error", (error) => {
+      if (failed) return;
+      failed = true;
+      reject(error);
+    });
+  });
+}
+
+function requestClientIp(req) {
+  // The leftmost x-forwarded-for entries are client-controlled, so only the
+  // entries appended by trusted proxies in front of us are safe to use — and
+  // only when we know such proxies exist (TRUST_PROXY is set, as in
+  // render.yaml). Delegates to clientAddress for the shared hop-selection
+  // logic, but reads the environment per-request so tests can toggle it.
+  return clientAddress(req, {
+    trustProxy: /^(1|true|yes)$/i.test(process.env.TRUST_PROXY || ""),
+    trustedHops: envInteger("TRUST_PROXY_HOPS", 1, 1)
+  });
+}
+
+function enforceTripCreateLimit(req) {
+  const now = Date.now();
+  const ip = requestClientIp(req);
+  const existing = tripCreatesByIp.get(ip);
+  const recent = (existing || []).filter(
+    (time) => now - time < TRIP_CREATE_WINDOW_MS
+  );
+  if (recent.length >= TRIP_CREATE_LIMIT) {
+    const error = new Error("Too many share links created; try again later");
+    error.status = 429;
+    throw error;
+  }
+  // Mirror the general API limiter's hard client cap: prune expired buckets,
+  // and if the map is still full, refuse NEW clients rather than growing
+  // without bound under rotating addresses.
+  if (existing === undefined && tripCreatesByIp.size >= API_RATE_LIMIT_MAX_CLIENTS) {
+    for (const [key, times] of tripCreatesByIp) {
+      if (!times.some((time) => now - time < TRIP_CREATE_WINDOW_MS)) tripCreatesByIp.delete(key);
+    }
+    if (tripCreatesByIp.size >= API_RATE_LIMIT_MAX_CLIENTS) {
+      const error = new Error("The share service is busy; try again later");
+      error.status = 429;
+      throw error;
+    }
+  }
+  recent.push(now);
+  tripCreatesByIp.set(ip, recent);
+}
+
+function requireTripStore() {
+  if (!tripStore) {
+    const error = new Error("Trip sharing is not configured");
+    error.status = 503;
+    error.details = "Set DATABASE_URL to enable shared trip links.";
+    throw error;
+  }
+  return tripStore;
+}
+
 function parseCoordPair(value, name) {
   if (!value) throwClientInputError(`${name} is required`);
   const [lng, lat] = value.split(",").map(Number);
@@ -138,107 +421,129 @@ function boundedNumber(value, fallback, min, max) {
 }
 
 async function fetchJson(url, headers = {}, options = {}) {
-  const cacheKey = `${url} ${JSON.stringify(headers)}`;
+  const cacheKey = upstreamCacheKey("GET", url, headers);
+  const timeoutMs = Number(options.timeoutMs) || 0;
+  const pendingKey = `${cacheKey} timeout=${timeoutMs}`;
   const shouldCache = options.cache !== false;
   const hit = shouldCache ? cached(cacheKey) : null;
-  if (hit) return hit;
+  if (shouldCache && hit !== CACHE_MISS) return hit;
+  if (shouldCache && pendingUpstreamRequests.has(pendingKey)) {
+    return pendingUpstreamRequests.get(pendingKey);
+  }
 
-  const timeoutMs = Number(options.timeoutMs) || 0;
-  const controller = timeoutMs > 0 ? new AbortController() : null;
-  const timeout = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
-  let response;
-  let text;
-  try {
-    response = await fetch(url, {
-      signal: controller?.signal,
-      headers: {
-        "accept": "application/json",
-        "user-agent": "birdtrip/0.1 local personal app",
-        ...headers
+  const request = (async () => {
+    const controller = timeoutMs > 0 ? new AbortController() : null;
+    const timeout = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+    let response;
+    let text;
+    try {
+      response = await fetch(url, {
+        signal: controller?.signal,
+        headers: {
+          "accept": "application/json",
+          "user-agent": "birdtrip/0.1 local personal app",
+          ...headers
+        }
+      });
+      text = await response.text();
+    } catch (error) {
+      if (error.name === "AbortError" && controller?.signal.aborted) {
+        const timeoutError = new Error("Upstream request timed out");
+        timeoutError.status = 504;
+        timeoutError.details = { timeoutMs };
+        throw timeoutError;
       }
-    });
-    text = await response.text();
-  } catch (error) {
-    if (error.name === "AbortError" && controller?.signal.aborted) {
-      const timeoutError = new Error("Upstream request timed out");
-      timeoutError.status = 504;
-      timeoutError.details = { timeoutMs };
-      throw timeoutError;
+      throw error;
+    } finally {
+      if (timeout) clearTimeout(timeout);
     }
-    throw error;
-  } finally {
-    if (timeout) clearTimeout(timeout);
-  }
 
-  let body;
+    let body;
+    try {
+      body = text ? JSON.parse(text) : null;
+    } catch {
+      body = text;
+    }
+
+    if (!response.ok) {
+      const message = typeof body === "object" && body && body.message ? body.message : response.statusText;
+      const error = new Error(message || "Upstream request failed");
+      error.status = response.status;
+      error.details = body;
+      throw error;
+    }
+
+    const cacheIf = typeof options.cacheIf === "function" ? options.cacheIf : () => true;
+    return shouldCache && cacheIf(body) ? setCached(cacheKey, body, upstreamCacheTtl(url)) : body;
+  })();
+  if (shouldCache) pendingUpstreamRequests.set(pendingKey, request);
   try {
-    body = text ? JSON.parse(text) : null;
-  } catch {
-    body = text;
+    return await request;
+  } finally {
+    if (pendingUpstreamRequests.get(pendingKey) === request) pendingUpstreamRequests.delete(pendingKey);
   }
-
-  if (!response.ok) {
-    const message = typeof body === "object" && body && body.message ? body.message : response.statusText;
-    const error = new Error(message || "Upstream request failed");
-    error.status = response.status;
-    error.details = body;
-    throw error;
-  }
-
-  return shouldCache ? setCached(cacheKey, body) : body;
 }
 
 async function postJson(url, payload, headers = {}) {
-  const cacheKey = `${url} ${JSON.stringify(headers)} ${JSON.stringify(payload)}`;
+  const cacheKey = upstreamCacheKey("POST", url, headers, payload);
   const hit = cached(cacheKey);
-  if (hit) return hit;
+  if (hit !== CACHE_MISS) return hit;
+  if (pendingUpstreamRequests.has(cacheKey)) return pendingUpstreamRequests.get(cacheKey);
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
-  let response;
-  try {
-    response = await fetch(url, {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        "accept": "application/json",
-        "content-type": "application/json",
-        "user-agent": "birdtrip/0.1 local personal app",
-        ...headers
-      },
-      body: JSON.stringify(payload)
-    });
-  } catch (error) {
-    if (error.name === "AbortError") {
-      const timeoutError = new Error("Upstream request timed out");
-      timeoutError.status = 504;
-      timeoutError.details = { timeoutMs: UPSTREAM_TIMEOUT_MS };
-      throw timeoutError;
+  const request = (async () => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+    let response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        signal: controller.signal,
+        headers: {
+          "accept": "application/json",
+          "content-type": "application/json",
+          "user-agent": "birdtrip/0.1 local personal app",
+          ...headers
+        },
+        body: JSON.stringify(payload)
+      });
+    } catch (error) {
+      if (error.name === "AbortError") {
+        const timeoutError = new Error("Upstream request timed out");
+        timeoutError.status = 504;
+        timeoutError.details = { timeoutMs: UPSTREAM_TIMEOUT_MS };
+        throw timeoutError;
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
     }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-  }
 
-  const text = await response.text();
-  let body;
+    const text = await response.text();
+    let body;
+    try {
+      body = text ? JSON.parse(text) : null;
+    } catch {
+      body = text;
+    }
+
+    if (!response.ok) {
+      const message = typeof body === "object" && body && body.error?.message
+        ? body.error.message
+        : response.statusText;
+      const error = new Error(message || "Upstream request failed");
+      error.status = response.status;
+      error.details = body;
+      throw error;
+    }
+
+    return setCached(cacheKey, body, upstreamCacheTtl(url));
+  })();
+  pendingUpstreamRequests.set(cacheKey, request);
   try {
-    body = text ? JSON.parse(text) : null;
-  } catch {
-    body = text;
+    return await request;
+  } finally {
+    if (pendingUpstreamRequests.get(cacheKey) === request) pendingUpstreamRequests.delete(cacheKey);
   }
-
-  if (!response.ok) {
-    const message = typeof body === "object" && body && body.error?.message
-      ? body.error.message
-      : response.statusText;
-    const error = new Error(message || "Upstream request failed");
-    error.status = response.status;
-    error.details = body;
-    throw error;
-  }
-
-  return setCached(cacheKey, body);
 }
 
 function mapProviderFrom(url) {
@@ -277,7 +582,9 @@ async function geocodeGoogle(q) {
   const endpoint = new URL("https://maps.googleapis.com/maps/api/geocode/json");
   endpoint.searchParams.set("address", q);
   endpoint.searchParams.set("key", requireGoogleServerKey());
-  const result = await fetchJson(endpoint.toString());
+  const result = await fetchJson(endpoint.toString(), {}, {
+    cacheIf: (body) => body?.status === "OK" || body?.status === "ZERO_RESULTS"
+  });
   if (result.status !== "OK" && result.status !== "ZERO_RESULTS") {
     const error = new Error(result.error_message || result.status || "Google geocoding failed");
     error.status = 502;
@@ -316,7 +623,9 @@ async function reverseGeocodeGoogle(lat, lng) {
   const endpoint = new URL("https://maps.googleapis.com/maps/api/geocode/json");
   endpoint.searchParams.set("latlng", `${lat},${lng}`);
   endpoint.searchParams.set("key", requireGoogleServerKey());
-  const result = await fetchJson(endpoint.toString());
+  const result = await fetchJson(endpoint.toString(), {}, {
+    cacheIf: (body) => body?.status === "OK" || body?.status === "ZERO_RESULTS"
+  });
   if (result.status !== "OK" && result.status !== "ZERO_RESULTS") {
     const error = new Error(result.error_message || result.status || "Google reverse geocoding failed");
     error.status = 502;
@@ -564,7 +873,7 @@ async function inferEbirdRegion(lat, lng, token) {
   const hotspots = await fetchJson(
     endpoint.toString(),
     { "x-ebirdapitoken": String(token) },
-    { timeoutMs: UPSTREAM_TIMEOUT_MS, cache: false }
+    { timeoutMs: UPSTREAM_TIMEOUT_MS }
   );
   if (!Array.isArray(hotspots) || !hotspots.length) {
     const error = new Error("No eBird hotspots were found near that location");
@@ -705,8 +1014,39 @@ async function handleApi(req, res, url) {
         },
         ebird: {
           serverConfigured: Boolean(process.env.EBIRD_API_KEY)
+        },
+        tripSharing: {
+          enabled: Boolean(tripStore)
         }
       });
+    }
+
+    if (url.pathname === "/api/trips") {
+      if (req.method !== "POST") return sendError(res, 405, "Use POST to create a shared trip");
+      // application/json is not a CORS-simple content type, so requiring it
+      // forces cross-origin browsers into a preflight we never approve. That
+      // stops third-party pages from using visitors' browsers to fill the
+      // trip store with no-cors text/plain POSTs.
+      const contentType = String(req.headers["content-type"] || "");
+      if (!/^application\/json\b/i.test(contentType)) {
+        return sendError(res, 415, "Content-Type must be application/json");
+      }
+      const store = requireTripStore();
+      enforceTripCreateLimit(req);
+      const data = await readJsonBody(req, TRIP_BODY_LIMIT_BYTES);
+      const { slug } = await store.createTrip(data);
+      return sendJson(res, 201, { slug, path: `/t/${slug}` });
+    }
+
+    const tripMatch = url.pathname.match(/^\/api\/trips\/([A-Za-z0-9]+)$/);
+    if (tripMatch) {
+      const store = requireTripStore();
+      if (!SLUG_PATTERN.test(tripMatch[1])) {
+        return sendError(res, 404, "This shared trip was not found or has expired");
+      }
+      const data = await store.getTrip(tripMatch[1]);
+      if (!data) return sendError(res, 404, "This shared trip was not found or has expired");
+      return sendJson(res, 200, { slug: tripMatch[1], data });
     }
 
     if (url.pathname === "/api/geocode") {
@@ -971,8 +1311,14 @@ const server = http.createServer((req, res) => {
   }
   if (url.pathname.startsWith("/api/")) {
     logApiRequest(req, res, url);
+    if (!applyApiRateLimit(req, res)) return;
     handleApi(req, res, url);
     return;
+  }
+  // Shared trip links are client-side routes: serve the app shell and let
+  // app.js fetch the trip for the slug in the path.
+  if (SHARED_TRIP_PAGE_PATTERN.test(url.pathname)) {
+    url.pathname = "/";
   }
   serveStatic(req, res, url);
 });
@@ -981,12 +1327,39 @@ if (require.main === module) {
   server.listen(PORT, () => {
     console.log(`Birdtrip running at http://localhost:${PORT}`);
   });
+  if (tripStore) {
+    // Warm the schema and sweep expired trips at boot; failures leave the
+    // rest of the app working and the trip endpoints retrying lazily. The
+    // hourly timer keeps retention honest even when no new trips are being
+    // created; unref so it never holds the process open.
+    const runTripSweep = () => tripStore
+      .sweepExpired()
+      .then((removed) => {
+        if (removed > 0) console.log(`[trips] removed ${removed} expired shared trips`);
+      })
+      .catch((error) => {
+        console.error(`[trips] retention sweep failed: ${error.message}`);
+      });
+    runTripSweep();
+    setInterval(runTripSweep, 60 * 60 * 1000).unref();
+  }
+}
+
+function setTripStore(store) {
+  tripStore = store;
 }
 
 module.exports = {
   acquireSeasonalityBuildSlot,
   buildSeasonality,
+  clientAddress,
+  consumeRateLimit,
   fetchJson,
+  logApiRequest,
   nearestHotspotRegion,
-  pruneSeasonalityCache
+  pruneResponseCache,
+  pruneSeasonalityCache,
+  readJsonBody,
+  server,
+  setTripStore
 };

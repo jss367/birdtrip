@@ -2,7 +2,6 @@ const js = require("@eslint/js");
 const globals = require("globals");
 
 // Flat config. ESLint ignores node_modules and .git by default.
-// The shipped app stays dependency-free; ESLint is a devDependency only.
 module.exports = [
   {
     ignores: [".context/**"]
@@ -23,7 +22,7 @@ module.exports = [
   },
   {
     // Node server and this config file (CommonJS).
-    files: ["server.js", "eslint.config.js", "test/**/*.js"],
+    files: ["server.js", "lib/**/*.js", "eslint.config.js", "test/**/*.js"],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "commonjs",
