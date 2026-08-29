@@ -1932,10 +1932,13 @@ function refreshSharedUrlIfPresent() {
 }
 
 function buildShareTripData() {
+  // Every text field is capped with the same cleaner and limit the reader
+  // applies in sanitizeSharedSearch, so what a recipient loads is exactly
+  // what the creator shared — never a silently truncated variant.
   const data = {
     version: 1,
     mode: state.mode,
-    origin: els.origin.value.trim(),
+    origin: cleanSharedText(els.origin.value, 160),
     mapProvider: providerFromInput(),
     maxDetour: clamp(Number(els.maxDetour.value || 60), 0, 240),
     recentDays: clamp(Number(els.recentDays.value || 14), 1, 30),
@@ -1943,9 +1946,9 @@ function buildShareTripData() {
     maxStops: clamp(Number(els.maxStops.value || 10), 3, 20),
     autoRun: true
   };
-  if (state.mode === "route") data.destination = els.destination.value.trim();
+  if (state.mode === "route") data.destination = cleanSharedText(els.destination.value, 160);
   if (state.mode === "species" && els.speciesQuery.value.trim()) {
-    data.species = els.speciesQuery.value.trim();
+    data.species = cleanSharedText(els.speciesQuery.value, 80);
   }
   // Cap at the same length the stored-trip reader accepts, so what a
   // recipient loads is exactly what the creator shared.
