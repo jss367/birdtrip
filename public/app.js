@@ -585,6 +585,16 @@ const SYNCED_USER_KEY = "routeBirdingSyncedUser";
 // stale account as canonical and hydrate it over the unconfirmed local edits:
 // runMergeAndHydrate routes through the merge flow while this is set.
 const PROFILE_DIRTY_KEY = "routeBirdingProfileDirty";
+// Records which account the local data retained through an involuntary
+// session loss belongs to. Consulted at the next sign-in: the owner returning
+// reconciles through the merge flow as usual, but a DIFFERENT user must not
+// inherit that data - it is wiped before their account is touched, so the
+// merge can't read the prior user's life list, targets, or eBird token as
+// anonymous local state and upload it into the new account.
+const RETAINED_OWNER_KEY = "routeBirdingRetainedOwner";
+// In-memory mirror of RETAINED_OWNER_KEY so the different-user guard still
+// works within a page session when localStorage is unavailable.
+let retainedDataOwnerId = null;
 let profileUpsertTimer = 0;
 let profileUpsertFailed = false;
 
@@ -621,9 +631,13 @@ function commitPendingSyncedUser() {
   if (!user || user.id !== pendingSyncedUserId) return;
   try {
     localStorage.setItem(SYNCED_USER_KEY, pendingSyncedUserId);
+    // Reconciliation confirmed: any data retained through an earlier
+    // involuntary session loss is now synced with its owner's account.
+    localStorage.removeItem(RETAINED_OWNER_KEY);
   } catch {
     // Storage unavailable; the merge flow will simply run again next session.
   }
+  retainedDataOwnerId = null;
   pendingSyncedUserId = null;
 }
 
@@ -828,14 +842,27 @@ function clearStateOnSignOut() {
     profileUpsertTimer = 0;
   }
   // Forget the reconciliation marker: data added anonymously after an explicit
-  // sign-out should go through the merge flow on the next sign-in. The dirty
-  // flag goes with it - the local data it protected is wiped right below.
+  // sign-out should go through the merge flow on the next sign-in. Any
+  // retained-data ownership record goes with it - the data is wiped below.
+  retainedDataOwnerId = null;
   try {
     localStorage.removeItem(SYNCED_USER_KEY);
-    localStorage.removeItem(PROFILE_DIRTY_KEY);
+    localStorage.removeItem(RETAINED_OWNER_KEY);
   } catch {
     // Storage unavailable; worst case the next sign-in skips the merge dialog.
   }
+  wipeLocalUserData();
+}
+
+// Wipes the user-owned data (life list, targets, eBird token) from memory,
+// the form, and browser storage. Used by the explicit sign-out handoff and by
+// the different-user guard in runMergeAndHydrate. Targets a shared link
+// populated stay put: while the sharedFieldLocks lock holds they are the
+// displayed trip's data, not the departing account's (buildProfilePatch keeps
+// locked fields out of account writes, so they can't leak into a profile
+// either), and clearing them would leave already-rendered shared results
+// inconsistent with the inputs.
+function wipeLocalUserData() {
   state.lifeList = {
     source: "",
     fileName: "",
@@ -843,12 +870,18 @@ function clearStateOnSignOut() {
     species: new Set(),
     displayNames: []
   };
-  els.targets.value = "";
+  if (!sharedFieldLocks.has("targets")) els.targets.value = "";
   els.apiToken.value = "";
   els.rememberToken.checked = false;
   // Also drop the sessionStorage copy of the token, or reloading this tab
   // would restore the previous user's eBird credential on a shared browser.
   saveSessionApiToken();
+  // The dirty flag protected exactly the local data wiped here.
+  try {
+    localStorage.removeItem(PROFILE_DIRTY_KEY);
+  } catch {
+    // Storage unavailable; worst case the next sign-in runs the merge flow.
+  }
   updateLifeListStatus();
   updateInputSummaries();
   updateSetupStatus();
@@ -863,8 +896,10 @@ function clearStateOnSignOut() {
 // never reached the account - and fall back to anonymous mode. Only the sync
 // bookkeeping is reset; clearing SYNCED_USER_KEY makes the next sign-in
 // reconcile through the merge flow instead of treating the account as
-// canonical and wiping those unsynced local edits.
-function handleInvoluntarySessionLoss() {
+// canonical and wiping those unsynced local edits. The retained data is
+// recorded as belonging to the user who lost the session, so a different user
+// signing in on this browser can't inherit it (see runMergeAndHydrate).
+function handleInvoluntarySessionLoss(lostUserId) {
   lastSyncedProfile = null;
   profileRowExists = false;
   pendingSyncedUserId = null;
@@ -873,10 +908,13 @@ function handleInvoluntarySessionLoss() {
     clearTimeout(profileUpsertTimer);
     profileUpsertTimer = 0;
   }
+  retainedDataOwnerId = lostUserId || null;
   try {
     localStorage.removeItem(SYNCED_USER_KEY);
+    if (lostUserId) localStorage.setItem(RETAINED_OWNER_KEY, lostUserId);
   } catch {
-    // Storage unavailable; worst case the next sign-in skips the merge dialog.
+    // Storage unavailable; worst case the next sign-in skips the merge dialog,
+    // and the in-memory owner still guards this page session.
   }
   addWarning("You were signed out because your session expired. Your data is still in this browser - sign in again to sync it.");
   renderWarnings();
@@ -898,6 +936,33 @@ async function runMergeAndHydrate() {
   const userIdAtStart = window.birdtripAuth.user.id;
   mergeAndHydrateInFlight = true;
   try {
+    // Local data retained through an involuntary session loss belongs to the
+    // user who lost the session. If someone else signs in on this browser,
+    // wipe it before touching their account: the merge below would otherwise
+    // read it as anonymous local state and upload the prior user's life list,
+    // targets, and eBird token into the new account. The owner returning
+    // keeps the data and reconciles through the merge flow as usual; the
+    // record clears once that reconciliation is confirmed
+    // (commitPendingSyncedUser) or on an explicit sign-out.
+    let retainedOwner = retainedDataOwnerId;
+    if (!retainedOwner) {
+      try {
+        retainedOwner = localStorage.getItem(RETAINED_OWNER_KEY);
+      } catch {
+        // Storage unavailable; nothing recorded to act on.
+      }
+    }
+    if (retainedOwner && retainedOwner !== userIdAtStart) {
+      wipeLocalUserData();
+      retainedDataOwnerId = null;
+      retainedOwner = null;
+      try {
+        localStorage.removeItem(RETAINED_OWNER_KEY);
+      } catch {
+        // Storage unavailable; the in-memory owner is already cleared.
+      }
+    }
+
     let account = await window.birdtripAuth.getProfile();
     // The user may have signed out (or switched accounts) while we were awaiting.
     if (!window.birdtripAuth.user || window.birdtripAuth.user.id !== userIdAtStart) return;
@@ -925,18 +990,20 @@ async function runMergeAndHydrate() {
     // meets this account. On later sessions (restored session, page reload)
     // the account is canonical: hydrate from it, including cleared fields, so
     // deletions made on another device aren't resurrected from localStorage.
-    let alreadySynced = false;
+    let markerMatches = false;
+    let dirtyFlagSet = false;
     try {
-      // A set dirty flag means a queued write was never confirmed (a reload
-      // beat the debounce, the upsert failed, or the user edited while this
-      // fetch was in flight): the account may be behind this browser, so
-      // reconcile through the merge flow instead of hydrating the stale
-      // account over the unconfirmed local edits.
-      alreadySynced = localStorage.getItem(SYNCED_USER_KEY) === userIdAtStart
-        && localStorage.getItem(PROFILE_DIRTY_KEY) !== "1";
+      markerMatches = localStorage.getItem(SYNCED_USER_KEY) === userIdAtStart;
+      dirtyFlagSet = localStorage.getItem(PROFILE_DIRTY_KEY) === "1";
     } catch {
       // Storage unavailable; fall back to the merge flow.
     }
+    // A set dirty flag means a queued write was never confirmed (a reload
+    // beat the debounce, the upsert failed, or the user edited while this
+    // fetch was in flight): the account may be behind this browser, so
+    // reconcile through the merge flow instead of hydrating the stale
+    // account over the unconfirmed local edits.
+    const alreadySynced = markerMatches && !dirtyFlagSet;
     if (alreadySynced) {
       const hydrated = hydrateFromAccount(account);
       suppressProfileUpsert = true;
@@ -947,6 +1014,18 @@ async function runMergeAndHydrate() {
       await hydrated;
       return;
     }
+
+    // Reaching the merge with the dirty flag set AND an ownership tie between
+    // the local data and this account (the sync marker, or the retained-data
+    // owner when an involuntary session loss removed the marker) means local
+    // state descends from this account's canonical state plus unconfirmed
+    // edits. An empty local field is then an intentional clear that must win
+    // over the stale account value and be written back - not "never set" data
+    // to refill from the account. Without the ownership tie (e.g. a failed
+    // first-ever merge write-back left the flag set), an empty local field
+    // really may mean never-set, so the account still wins those cases.
+    const dirtyLocalWins = dirtyFlagSet
+      && (markerMatches || retainedOwner === userIdAtStart);
 
     const conflicts = [];
     const decisions = {};
@@ -963,7 +1042,9 @@ async function runMergeAndHydrate() {
     } else if (!accountLLSize && localLLSize) {
       decisions.lifeList = "keep-local";
     } else if (accountLLSize && !localLLSize) {
-      decisions.lifeList = "use-account";
+      // keep-local under dirtyLocalWins: the empty list is an unconfirmed
+      // local clear, and the write-back below propagates it to the account.
+      decisions.lifeList = dirtyLocalWins ? "keep-local" : "use-account";
     } else if (lifeListEqual) {
       decisions.lifeList = "noop";
     } else {
@@ -992,7 +1073,7 @@ async function runMergeAndHydrate() {
     } else if (!accountTargets && localTargets) {
       decisions.targets = "keep-local";
     } else if (accountTargets && !localTargets) {
-      decisions.targets = "use-account";
+      decisions.targets = dirtyLocalWins ? "keep-local" : "use-account";
     } else if (localTargets === accountTargets) {
       decisions.targets = "noop";
     } else {
@@ -1011,7 +1092,7 @@ async function runMergeAndHydrate() {
     } else if (!accountToken && localToken) {
       decisions.token = "keep-local";
     } else if (accountToken && !localToken) {
-      decisions.token = "use-account";
+      decisions.token = dirtyLocalWins ? "keep-local" : "use-account";
     } else if (localToken === accountToken) {
       decisions.token = "noop";
     } else {
@@ -1024,8 +1105,10 @@ async function runMergeAndHydrate() {
 
     // Preferences merge silently: account-wins for any non-empty account value,
     // local wins where account is empty. Excludes ACCOUNT_OWNED_FIELDS, which
-    // have their own column + explicit conflict handling above.
-    decisions.preferences = "merge-silently";
+    // have their own column + explicit conflict handling above. Under
+    // dirtyLocalWins local preferences (including clears) are the newest
+    // edits, so they stand and the write-back carries them to the account.
+    decisions.preferences = dirtyLocalWins ? "keep-local" : "merge-silently";
 
     if (conflicts.length) {
       const choices = await showMergeDialog(conflicts);
@@ -1089,9 +1172,11 @@ function applyMergeDecisions(account, decisions) {
   }
 
   // preferences: silent account-wins per non-empty field, skipping any field
-  // that has its own column + explicit conflict handling.
+  // that has its own column + explicit conflict handling. "keep-local"
+  // (dirty reconciliation) leaves every local preference in place instead.
   const transitions = [];
-  if (account.preferences && typeof account.preferences === "object") {
+  if (decisions.preferences === "merge-silently"
+      && account.preferences && typeof account.preferences === "object") {
     for (const field of PREF_FIELDS) {
       if (ACCOUNT_OWNED_FIELDS.has(field)) continue;
       const value = account.preferences[field];
@@ -1785,7 +1870,8 @@ async function loadAppConfig() {
       window.birdtripAuth.onChange((user) => {
         const nextUserId = user ? user.id : null;
         if (nextUserId === previousUserId) return;
-        const wasSignedIn = Boolean(previousUserId);
+        const priorUserId = previousUserId;
+        const wasSignedIn = Boolean(priorUserId);
         const isSignedIn = Boolean(nextUserId);
         previousUserId = nextUserId;
         if (isSignedIn) {
@@ -1805,7 +1891,7 @@ async function loadAppConfig() {
           if (explicit) {
             clearStateOnSignOut();
           } else {
-            handleInvoluntarySessionLoss();
+            handleInvoluntarySessionLoss(priorUserId);
           }
         }
       });
