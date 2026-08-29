@@ -2207,15 +2207,24 @@ function formatClock(ms, context = routeTimeContext()) {
 
 // Day marker (" +1d", " +2d", …) appended to an arrival clock when the route
 // pushes the arrival past midnight, so tomorrow's 1:05 AM is distinguishable
-// from today's. Days are counted on the same clock formatClock displays:
-// browser-local calendar days when the context is exact, fixed-offset days
-// when it is approximate.
+// from today's. Days are counted on the clocks the user actually sees: the
+// departure on the origin's displayed clock and the arrival on the stop's
+// (they differ when the route crosses time zones — a 10 PM west-coast
+// departure heading east already reads as "tomorrow" on an eastern stop's
+// clock, which must not swallow the arrival's real +1d).
+// Browser-local calendar days are used when the context is exact,
+// fixed-offset days when it is approximate.
 function arrivalDayMarker(arrivalMs, context) {
   const departureMs = departureTimestamp();
   if (departureMs === null || !Number.isFinite(arrivalMs)) return "";
   let days;
   if (context.approximate) {
-    days = timing?.calendarDaysApart?.({ fromMs: departureMs, toMs: arrivalMs, offsetMinutes: context.offsetMinutes });
+    days = timing?.calendarDaysApart?.({
+      fromMs: departureMs,
+      toMs: arrivalMs,
+      fromOffsetMinutes: routeTimeContext().offsetMinutes,
+      toOffsetMinutes: context.offsetMinutes
+    });
   } else {
     const localDayStartMs = (ms) => {
       const local = new Date(ms);

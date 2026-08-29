@@ -117,6 +117,50 @@ test("calendar days apart count displayed midnights between departure and arriva
   assert.equal(timing.calendarDaysApart({}), null);
 });
 
+test("calendar days apart read each instant on its own displayed clock", () => {
+  // Eastbound overnight: depart Los Angeles (UTC-8) at 10 PM, arrive New
+  // York (UTC-5) 8 hours later at 9 AM the next displayed day. On the stop's
+  // clock alone the departure already reads 1 AM "tomorrow", which would hide
+  // the overnight; the origin's clock keeps it on the departure day.
+  const laDeparture = Date.UTC(2026, 7, 28, 6, 0); // 10:00 PM Aug 27, UTC-8
+  assert.equal(
+    timing.calendarDaysApart({
+      fromMs: laDeparture,
+      toMs: laDeparture + 8 * HOUR_MS,
+      fromOffsetMinutes: -8 * 60,
+      toOffsetMinutes: -5 * 60
+    }),
+    1
+  );
+  // Westbound with same-day clocks: depart New York (UTC-5) at 8 AM, arrive
+  // Los Angeles (UTC-8) 12 hours later at 5 PM the same displayed day — no
+  // marker even though the elapsed time nearly spans the origin's evening.
+  const nyDeparture = Date.UTC(2026, 7, 28, 13, 0); // 8:00 AM Aug 28, UTC-5
+  assert.equal(
+    timing.calendarDaysApart({
+      fromMs: nyDeparture,
+      toMs: nyDeparture + 12 * HOUR_MS,
+      fromOffsetMinutes: -5 * 60,
+      toOffsetMinutes: -8 * 60
+    }),
+    0
+  );
+  // A lone `offsetMinutes` still applies to both instants.
+  assert.equal(
+    timing.calendarDaysApart({
+      fromMs: laDeparture,
+      toMs: laDeparture + 8 * HOUR_MS,
+      offsetMinutes: -5 * 60
+    }),
+    0
+  );
+  // Per-side offsets must both be finite.
+  assert.equal(
+    timing.calendarDaysApart({ fromMs: laDeparture, toMs: laDeparture, fromOffsetMinutes: -8 * 60 }),
+    null
+  );
+});
+
 test("habitat inference maps hotspot names to time-of-day windows", () => {
   assert.equal(timing.inferStopTiming("Sweetwater Wetlands").window, "dawn");
   assert.equal(timing.inferStopTiming("Tres Rios Marsh").habitat, "marsh");

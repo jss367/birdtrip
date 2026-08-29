@@ -82,18 +82,24 @@
     return { offsetMinutes: originDisplayOffsetMinutes + (stopSolarOffset - originSolarOffset), shifted: true };
   }
 
-  // Whole calendar days between two instants as read off a clock fixed at
-  // `offsetMinutes` east of UTC: 0 when both fall on the same displayed date,
-  // 1 when `toMs` lands on the next displayed date, and so on. Used to flag
-  // arrivals that a long route pushes past midnight, which would otherwise
-  // render as the same clock time on the wrong day.
+  // Whole calendar days between two instants as read off the clocks they are
+  // displayed on: 0 when both fall on the same displayed date, 1 when `toMs`
+  // lands on the next displayed date, and so on. Each instant can carry its
+  // own display offset (`fromOffsetMinutes`/`toOffsetMinutes`, east of UTC),
+  // because a route that crosses time zones shows the departure on the
+  // origin's clock and the arrival on the stop's; a single `offsetMinutes`
+  // covers both when the clocks agree. Used to flag arrivals that a long
+  // route pushes past midnight, which would otherwise render as the same
+  // clock time on the wrong day.
   function calendarDaysApart(options = {}) {
     const fromMs = Number(options.fromMs);
     const toMs = Number(options.toMs);
-    const offsetMinutes = Number(options.offsetMinutes);
-    if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || !Number.isFinite(offsetMinutes)) return null;
-    const dayIndex = (ms) => Math.floor((ms + offsetMinutes * 60000) / DAY_MS);
-    return dayIndex(toMs) - dayIndex(fromMs);
+    const fromOffsetMinutes = Number(options.fromOffsetMinutes ?? options.offsetMinutes);
+    const toOffsetMinutes = Number(options.toOffsetMinutes ?? options.offsetMinutes);
+    if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)
+      || !Number.isFinite(fromOffsetMinutes) || !Number.isFinite(toOffsetMinutes)) return null;
+    const dayIndex = (ms, offsetMinutes) => Math.floor((ms + offsetMinutes * 60000) / DAY_MS);
+    return dayIndex(toMs, toOffsetMinutes) - dayIndex(fromMs, fromOffsetMinutes);
   }
 
   // Ordered by specificity: an "Owl Woods" is an owling spot before it is
