@@ -2258,9 +2258,13 @@ function timingSentence(stopTiming) {
   const context = stopTimeContext(stopTiming.lng, stopTiming.arrivalMs);
   const arrival = arrivalClockLabel(stopTiming, context);
   const habitatName = stopTiming.habitat.habitat === "general" ? "This stop" : `This ${stopTiming.habitat.habitat} stop`;
+  // Each solar clock gets a context sampled at its own instant: a sunrise or
+  // sunset can sit on the far side of a DST transition from the arrival, where
+  // the arrival's offset would misstate it by an hour.
   const sunPart = stopTiming.sun.polar
     ? ""
-    : ` Sunrise ${formatClock(stopTiming.sun.sunriseMs, context)}, sunset ${formatClock(stopTiming.sun.sunsetMs, context)}.`;
+    : ` Sunrise ${formatClock(stopTiming.sun.sunriseMs, stopTimeContext(stopTiming.lng, stopTiming.sun.sunriseMs))},` +
+      ` sunset ${formatClock(stopTiming.sun.sunsetMs, stopTimeContext(stopTiming.lng, stopTiming.sun.sunsetMs))}.`;
   const zonePart = context.approximate ? " Times are approximate local time at this stop." : "";
   return `You'd reach this stop around ${arrival} — ${stopTiming.assessment.note}. ${habitatName} is ${stopTiming.habitat.bestLabel}.${sunPart}${zonePart}`;
 }
