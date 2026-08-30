@@ -4,6 +4,7 @@ const state = {
   route: null,
   routeName: "",
   results: [],
+  resultOrder: "score",
   candidatePool: [],
   // A restored saved trip's selected stop can sit outside the serialized
   // visible results (out-of-rank); it is rehydrated here so candidateById can
@@ -56,6 +57,7 @@ const state = {
 };
 
 const ranking = window.BirdtripRanking;
+const timing = window.BirdtripTiming;
 const navigationExport = window.BirdtripNavigationExport;
 const SCORING_VERSION = 2;
 const DISCOVERY_QUERY_RADIUS_KM = 200;
@@ -107,6 +109,11 @@ const els = {
   radiusKm: document.querySelector("#radiusKm"),
   radiusKmLabel: document.querySelector("#radiusKmLabel"),
   maxStops: document.querySelector("#maxStops"),
+  departTimeField: document.querySelector("#departTimeField"),
+  departTime: document.querySelector("#departTime"),
+  orderToggle: document.querySelector("#orderToggle"),
+  orderByScore: document.querySelector("#orderByScore"),
+  orderByArrival: document.querySelector("#orderByArrival"),
   ebirdAccessStatus: document.querySelector("#ebirdAccessStatus"),
   apiToken: document.querySelector("#apiToken"),
   rememberToken: document.querySelector("#rememberToken"),
@@ -215,6 +222,7 @@ const PREF_FIELDS = [
   "recentDays",
   "radiusKm",
   "maxStops",
+  "departTime",
   "targets",
   "speciesQuery"
 ];
@@ -344,6 +352,9 @@ async function init() {
     event.preventDefault();
     saveCurrentTrip();
   });
+  els.orderByScore.addEventListener("click", () => setResultOrder("score"));
+  els.orderByArrival.addEventListener("click", () => setResultOrder("arrival"));
+  els.departTime.addEventListener("change", handleDepartTimeChange);
   els.clearComparisonButton.addEventListener("click", clearComparison);
   els.clearItinerary.addEventListener("click", clearPinnedStops);
   els.downloadGpxButton.addEventListener("click", downloadGpxRoute);
@@ -426,6 +437,7 @@ function readSharedSearchFromUrl() {
     recentDays: search.get("recentDays"),
     radiusKm: search.get("radiusKm"),
     maxStops: search.get("maxStops"),
+    departTime: search.get("departTime"),
     targets: search.get("targets"),
     // Raw, not clamped: setBalance defaults out-of-range values rather than
     // letting balance=99 arrive pre-clamped to "Less driving".
@@ -456,6 +468,7 @@ function sanitizeSharedSearch(raw, options = {}) {
     recentDays: cleanSharedNumber(raw.recentDays, 1, 30),
     radiusKm: cleanSharedNumber(raw.radiusKm, 1, 50),
     maxStops: cleanSharedNumber(raw.maxStops, 3, 20),
+    departTime: cleanTimeString(raw.departTime),
     targets: cleanSharedTargets(raw.targets, targetsMaxLength),
     balance: raw.balance,
     pins: cleanSharedIdList(Array.isArray(raw.pins) ? raw.pins.map(String) : [], 5),
@@ -510,6 +523,10 @@ function applySharedSearch(shared) {
   if (shared.recentDays) els.recentDays.value = shared.recentDays;
   if (shared.radiusKm) els.radiusKm.value = shared.radiusKm;
   if (shared.maxStops) els.maxStops.value = shared.maxStops;
+  // Applied unconditionally: a shared link that omits the optional departure
+  // time should clear any restored preference so the recipient sees the trip
+  // the sender shared, not arrival warnings from their own previous state.
+  els.departTime.value = shared.departTime || "";
   if (shared.targets) els.targets.value = shared.targets;
   // "0" is a valid position; only an absent/invalid param falls back to default.
   setBalance(shared.balance === null || shared.balance === "" ? DEFAULT_BALANCE : Number(shared.balance), { skipRerank: true });
@@ -549,6 +566,11 @@ function cleanSharedIdList(values, maxItems) {
     .map((item) => item.trim())
     .filter((item) => /^[\w:.,-]{1,80}$/.test(item))
     .slice(0, maxItems);
+}
+
+function cleanTimeString(value) {
+  const text = String(value || "").trim();
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(text) ? text : "";
 }
 
 function cleanSharedNumber(value, min, max) {
@@ -659,6 +681,8 @@ function setSearchMode(mode, options = {}) {
   els.balanceField.hidden = state.mode === "species";
   syncBalanceControls();
   els.maxDetour.disabled = isAreaLike;
+  els.departTimeField.hidden = state.mode !== "route";
+  els.departTime.disabled = isAreaLike;
   els.radiusKmLabel.textContent = isSpecies ? "Search radius" : isArea ? "Area radius" : "Corridor radius";
   els.submitLabel.textContent = isSpecies ? "Map Sightings" : isArea ? "Search Area" : "Find Stops";
   els.routeDistanceLabel.textContent = isSpecies ? "Search Radius" : isArea ? "Area Radius" : "Route Miles";
@@ -856,6 +880,7 @@ function readTripSettings() {
       recentDays: Number.isFinite(state.params.recentDays) ? String(state.params.recentDays) : els.recentDays.value,
       radiusKm: Number.isFinite(state.params.radiusKm) ? String(state.params.radiusKm) : els.radiusKm.value,
       maxStops: Number.isFinite(state.params.maxStops) ? String(state.params.maxStops) : els.maxStops.value,
+      departTime: typeof state.params.departTime === "string" ? state.params.departTime : els.departTime.value,
       targets: Array.isArray(state.params.targets) ? state.params.targets.join("\n") : els.targets.value,
       speciesQuery: typeof state.params.speciesQuery === "string" ? state.params.speciesQuery : els.speciesQuery.value,
       searchMode: typeof state.params.mode === "string" ? state.params.mode : state.mode,
@@ -875,6 +900,9 @@ function applyTripSettings(settings) {
   for (const field of PREF_FIELDS) {
     if (typeof settings[field] === "string" && els[field]) els[field].value = settings[field];
   }
+  // Trips saved before departTime existed carry no stored value; clear the
+  // field so a stale visible time is not silently applied when rerunning.
+  if (typeof settings.departTime !== "string") els.departTime.value = "";
   if (typeof settings.searchMode === "string") {
     setSearchMode(settings.searchMode, { persist: false });
   }
@@ -929,6 +957,7 @@ function serializeCandidate(candidate) {
     liferSpecies: candidate.liferSpecies,
     nearestSample: candidate.nearestSample,
     routeDistanceKm: candidate.routeDistanceKm,
+    routeProgress: candidate.routeProgress,
     targetMatches: candidate.targetMatches,
     viaRoute: candidate.viaRoute,
     addedMinutes: candidate.addedMinutes,
@@ -954,9 +983,16 @@ function restoreTripState(trip) {
   const savedState = trip.state || {};
   state.routeName = savedState.routeName || "";
   state.route = savedState.route || null;
-  state.results = Array.isArray(savedState.results)
-    ? savedState.results.filter(isObjectRecord).map(hydrateCandidate)
+  const savedResults = Array.isArray(savedState.results)
+    ? savedState.results.filter(isObjectRecord)
     : [];
+  // Trips saved before routeProgress was serialized restore without it, which
+  // would hide arrival timing and drive-order sorting until a fresh search.
+  // Rebuild the missing metrics from the saved route geometry.
+  if (state.route?.geometry?.coordinates) {
+    ranking.backfillRouteMetrics(savedResults, state.route.geometry.coordinates);
+  }
+  state.results = savedResults.map(hydrateCandidate);
   // Saved trips serialize only the truncated visible results, not the full
   // candidate pool, so re-ranking a restored trip would silently produce wrong
   // orderings — lock the balance control and keep the saved order. Display
@@ -1149,6 +1185,7 @@ function restoreSelectedStop() {
 }
 
 function renderEmptyResults(icon, message) {
+  els.orderToggle.hidden = true;
   els.resultsList.className = "results-list empty";
   els.resultsList.innerHTML = `<div class="empty-state"><i data-lucide="${icon}"></i><p>${escapeHtml(message)}</p></div>`;
 }
@@ -1402,6 +1439,7 @@ function clearResults() {
   clearFieldErrors();
   clearWarning();
   els.report.innerHTML = "";
+  els.orderToggle.hidden = true;
   els.resultsList.className = "results-list empty";
   els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="binoculars"></i><p>Results will appear here after the first search.</p></div>';
   els.resultContext.textContent = state.mode === "species"
@@ -1960,6 +1998,7 @@ function readParams() {
     recentDays: clamp(Number(els.recentDays.value || 14), 1, 30),
     radiusKm: clamp(Number(els.radiusKm.value || 25), 1, 50),
     maxStops: clamp(Number(els.maxStops.value || 10), 3, 20),
+    departTime: cleanTimeString(els.departTime.value),
     mapProvider: state.provider,
     token: els.apiToken.value.trim(),
     speciesQuery: els.speciesQuery.value.trim(),
@@ -2160,6 +2199,8 @@ function buildShareTripData() {
   if (state.mode === "species" && els.speciesQuery.value.trim()) {
     data.species = cleanSharedText(els.speciesQuery.value, 80);
   }
+  const departTime = cleanTimeString(els.departTime.value);
+  if (departTime) data.departTime = departTime;
   // Cap at the same length the stored-trip reader accepts, so what a
   // recipient loads is exactly what the creator shared.
   const targets = cleanSharedTargets(els.targets.value, STORED_TARGETS_MAX_LENGTH);
@@ -2187,6 +2228,7 @@ function buildShareUrl(options = {}) {
   url.searchParams.set("recentDays", String(data.recentDays));
   url.searchParams.set("radiusKm", String(data.radiusKm));
   url.searchParams.set("maxStops", String(data.maxStops));
+  if (data.departTime) url.searchParams.set("departTime", data.departTime);
   // The stored channel allows 10k of targets, but a query URL is read back
   // through the 1200-character legacy cap — re-cap here so the fallback link
   // round-trips exactly (and stays within practical URL length limits).
@@ -2424,6 +2466,195 @@ function updateLifeListStatus() {
   const fileName = state.lifeList.fileName ? ` from ${state.lifeList.fileName}` : "";
   els.lifeListStatus.textContent = `${count} ${source}species imported${fileName}.`;
   els.clearLifeListButton.disabled = false;
+}
+
+function handleDepartTimeChange() {
+  if (state.params) state.params.departTime = cleanTimeString(els.departTime.value);
+  savePreferences();
+  refreshSharedUrlIfPresent();
+  renderResultsIfPresent();
+}
+
+function setResultOrder(order) {
+  if (state.resultOrder === order) return;
+  state.resultOrder = order;
+  const byArrival = order === "arrival";
+  els.orderByScore.classList.toggle("is-active", !byArrival);
+  els.orderByArrival.classList.toggle("is-active", byArrival);
+  els.orderByScore.setAttribute("aria-pressed", String(!byArrival));
+  els.orderByArrival.setAttribute("aria-pressed", String(byArrival));
+  if (state.results.length) {
+    renderResults();
+    renderMarkers();
+    if (window.lucide) window.lucide.createIcons();
+  }
+}
+
+// The departure time means clock time at the route origin. Without a
+// lat/lng-to-IANA-timezone database we approximate: when the browser's UTC
+// offset is plausible for the origin longitude (the common case — planning a
+// trip in your own region), the browser timezone IS the route timezone and is
+// used exactly, DST included. When it clearly is not (viewing a shared route
+// from another part of the world), fall back to a longitude-based offset so
+// departure, arrivals, and sunrise/sunset all stay in route-local time
+// instead of shifting by the viewer's offset.
+// The browser offset is sampled at the instant being displayed (atMs), not at
+// render time, so a route straddling a DST transition shows post-transition
+// clocks with the post-transition offset.
+function routeTimeContext(atMs = Date.now()) {
+  const browserOffsetMinutes = -new Date(atMs).getTimezoneOffset();
+  const approxOffsetMinutes = timing?.approximateUtcOffsetMinutes?.(state.route?.origin?.lng);
+  if (!Number.isFinite(approxOffsetMinutes) || Math.abs(browserOffsetMinutes - approxOffsetMinutes) <= 90) {
+    return { offsetMinutes: browserOffsetMinutes, approximate: false };
+  }
+  return { offsetMinutes: approxOffsetMinutes, approximate: true };
+}
+
+// Clock display context for a single stop. Routes can cross time zones, so a
+// stop whose rounded solar zone differs from the origin's is displayed with
+// the origin's display offset shifted by the solar difference (approximate),
+// while stops in the origin's zone keep the route context unchanged.
+function stopTimeContext(lng, atMs = Date.now()) {
+  const routeContext = routeTimeContext(atMs);
+  const stopOffset = timing?.stopClockOffsetMinutes?.({
+    originDisplayOffsetMinutes: routeContext.offsetMinutes,
+    originLng: state.route?.origin?.lng,
+    stopLng: lng
+  });
+  if (!stopOffset?.shifted) return routeContext;
+  return { offsetMinutes: stopOffset.offsetMinutes, approximate: true };
+}
+
+function departureTimestamp() {
+  const value = cleanTimeString(state.params?.departTime);
+  if (!value) return null;
+  const [hours, minutes] = value.split(":").map(Number);
+  const context = routeTimeContext();
+  if (!context.approximate) {
+    const now = new Date();
+    // On a spring-forward date the requested wall time may not exist (02:30 on
+    // the skip day); the multi-argument Date constructor silently normalizes
+    // it forward (to 03:30). That normalized instant is the only real instant
+    // near the request, so it is used as-is; departureDstSkipNote() discloses
+    // the shift wherever timing estimates are shown.
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes).getTime();
+  }
+  const offsetMs = context.offsetMinutes * 60000;
+  const routeNow = new Date(Date.now() + offsetMs);
+  return Date.UTC(routeNow.getUTCFullYear(), routeNow.getUTCMonth(), routeNow.getUTCDate(), hours, minutes) - offsetMs;
+}
+
+// Non-empty exactly when today's spring-forward transition skips the requested
+// departure wall time: the constructed Date's clock is compared against the
+// parsed input, and on mismatch the note names the departure the estimates
+// really use. The approximate (fixed-offset) branch of departureTimestamp()
+// never normalizes, so no check is needed there. Leading space matches the
+// sentence-part convention in timingSentence().
+function departureDstSkipNote() {
+  const value = cleanTimeString(state.params?.departTime);
+  if (!value || routeTimeContext().approximate) return "";
+  const [hours, minutes] = value.split(":").map(Number);
+  const now = new Date();
+  const date = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes);
+  if (date.getHours() === hours && date.getMinutes() === minutes) return "";
+  return ` Daylight saving time skips a ${value} departure today, so estimates leave at ${formatClock(date.getTime())}.`;
+}
+
+function candidateTiming(candidate) {
+  if (!timing || state.params?.mode !== "route") return null;
+  const departureMs = departureTimestamp();
+  const durationSeconds = state.route?.durationSeconds;
+  if (!departureMs || !Number.isFinite(durationSeconds) || !Number.isFinite(candidate.routeProgress)) return null;
+  const arrivalMs = timing.estimateArrivalMs({
+    departureMs,
+    routeProgress: candidate.routeProgress,
+    routeDurationSeconds: durationSeconds,
+    addedMinutes: candidate.addedMinutes
+  });
+  const sun = timing.sunTimes(arrivalMs, candidate.lat, candidate.lng);
+  if (!Number.isFinite(arrivalMs) || !sun) return null;
+  const habitat = timing.inferStopTiming(candidate.name);
+  const assessment = timing.assessArrival({
+    arrivalMs,
+    sunriseMs: sun.sunriseMs,
+    sunsetMs: sun.sunsetMs,
+    polar: sun.polar,
+    window: habitat.window
+  });
+  if (!assessment) return null;
+  return { arrivalMs, sun, habitat, assessment, lng: candidate.lng };
+}
+
+function formatClock(ms, context = routeTimeContext(ms)) {
+  if (!context.approximate) {
+    return new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  }
+  return new Date(ms + context.offsetMinutes * 60000)
+    .toLocaleTimeString([], { hour: "numeric", minute: "2-digit", timeZone: "UTC" });
+}
+
+// Day marker (" +1d", " -1d", …) appended to an arrival clock when the
+// displayed arrival date differs from the displayed departure date, so
+// tomorrow's 1:05 AM is distinguishable from today's. Days are counted on the
+// clocks the user actually sees: the departure on the origin's displayed
+// clock and the arrival on the stop's (they differ when the route crosses
+// time zones — a 10 PM west-coast departure heading east already reads as
+// "tomorrow" on an eastern stop's clock, which must not swallow the arrival's
+// real +1d). The difference can be negative: a 12:15 AM departure reaching a
+// stop displayed an hour farther west can arrive at 11:45 PM on the previous
+// displayed date, which must read " -1d" rather than look a day late.
+// Browser-local calendar days are used when the context is exact,
+// fixed-offset days when it is approximate.
+function arrivalDayMarker(arrivalMs, context) {
+  const departureMs = departureTimestamp();
+  if (departureMs === null || !Number.isFinite(arrivalMs)) return "";
+  let days;
+  if (context.approximate) {
+    days = timing?.calendarDaysApart?.({
+      fromMs: departureMs,
+      toMs: arrivalMs,
+      fromOffsetMinutes: routeTimeContext(departureMs).offsetMinutes,
+      toOffsetMinutes: context.offsetMinutes
+    });
+  } else {
+    const localDayStartMs = (ms) => {
+      const local = new Date(ms);
+      return Date.UTC(local.getFullYear(), local.getMonth(), local.getDate());
+    };
+    days = Math.round((localDayStartMs(arrivalMs) - localDayStartMs(departureMs)) / 86400000);
+  }
+  return Number.isFinite(days) && days !== 0 ? ` ${days > 0 ? `+${days}` : days}d` : "";
+}
+
+// The one arrival-clock string every surface (chips, details, report) shares:
+// clock time plus the overnight day marker.
+function arrivalClockLabel(stopTiming, context = stopTimeContext(stopTiming.lng, stopTiming.arrivalMs)) {
+  return `${formatClock(stopTiming.arrivalMs, context)}${arrivalDayMarker(stopTiming.arrivalMs, context)}`;
+}
+
+function timingChipLabel(stopTiming) {
+  switch (stopTiming.assessment.quality) {
+    case "prime": return "prime time";
+    case "good": return "good timing";
+    case "fair": return "ok timing";
+    case "dark": return "in the dark";
+    default: return stopTiming.habitat.bestLabel;
+  }
+}
+
+function timingSentence(stopTiming) {
+  const context = stopTimeContext(stopTiming.lng, stopTiming.arrivalMs);
+  const arrival = arrivalClockLabel(stopTiming, context);
+  const habitatName = stopTiming.habitat.habitat === "general" ? "This stop" : `This ${stopTiming.habitat.habitat} stop`;
+  // Each solar clock gets a context sampled at its own instant: a sunrise or
+  // sunset can sit on the far side of a DST transition from the arrival, where
+  // the arrival's offset would misstate it by an hour.
+  const sunPart = stopTiming.sun.polar
+    ? ""
+    : ` Sunrise ${formatClock(stopTiming.sun.sunriseMs, stopTimeContext(stopTiming.lng, stopTiming.sun.sunriseMs))},` +
+      ` sunset ${formatClock(stopTiming.sun.sunsetMs, stopTimeContext(stopTiming.lng, stopTiming.sun.sunsetMs))}.`;
+  const zonePart = context.approximate ? " Times are approximate local time at this stop." : "";
+  return `You'd reach this stop around ${arrival} — ${stopTiming.assessment.note}. ${habitatName} is ${stopTiming.habitat.bestLabel}.${sunPart}${zonePart}${departureDstSkipNote()}`;
 }
 
 function renderResultsIfPresent() {
@@ -5061,17 +5292,22 @@ function renderResults() {
   els.resultsList.innerHTML = "";
 
   if (!state.results.length) {
+    els.orderToggle.hidden = true;
     els.resultsList.className = "results-list empty";
     els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="search-x"></i><p>No stops matched the current constraints.</p></div>';
     if (window.lucide) window.lucide.createIcons();
     return;
   }
 
+  const orderableByArrival = !isArea && state.results.some((candidate) => Number.isFinite(candidate.routeProgress));
+  els.orderToggle.hidden = !orderableByArrival;
+  const byArrival = orderableByArrival && state.resultOrder === "arrival";
+  const displayResults = displayOrderedResults();
   const outOfRankPinned = outOfRankPinnedStops();
   // The pill scale must cover every rendered card, including out-of-rank pins.
   const scale = scoreScale(state.results.concat(outOfRankPinned));
-  state.results.forEach((candidate, index) => {
-    els.resultsList.appendChild(buildStopCard(candidate, index, { outOfRank: false, scale }));
+  displayResults.forEach((candidate, index) => {
+    els.resultsList.appendChild(buildStopCard(candidate, index, { outOfRank: false, scale, byArrival }));
   });
 
   if (outOfRankPinned.length) {
@@ -5082,7 +5318,7 @@ function renderResults() {
     outOfRankPinned.forEach((candidate, offset) => {
       // Give each out-of-rank card a distinct index so candidateSpeciesPreview
       // derives unique tooltip IDs (duplicate IDs break aria-describedby).
-      els.resultsList.appendChild(buildStopCard(candidate, state.results.length + offset, { outOfRank: true, scale }));
+      els.resultsList.appendChild(buildStopCard(candidate, state.results.length + offset, { outOfRank: true, scale, byArrival: false }));
     });
   }
 
@@ -5095,7 +5331,7 @@ function outOfRankPinnedStops() {
   return pinnedStops().filter((stop) => !state.results.some((item) => item.id === stop.id));
 }
 
-function buildStopCard(candidate, index, { outOfRank, scale }) {
+function buildStopCard(candidate, index, { outOfRank, scale, byArrival }) {
   const isArea = state.params?.mode === "area";
   const node = els.resultTemplate.content.cloneNode(true);
   {
@@ -5108,7 +5344,9 @@ function buildStopCard(candidate, index, { outOfRank, scale }) {
     rank.textContent = outOfRank ? "📌" : String(index + 1);
     rank.title = outOfRank
       ? "Pinned stop outside the current top results"
-      : `Rank ${index + 1} of ${state.results.length} by score`;
+      : byArrival
+        ? `Stop ${index + 1} of ${state.results.length} in drive order`
+        : `Rank ${index + 1} of ${state.results.length} by score`;
     node.querySelector(".stop-name").textContent = candidate.name;
     node.querySelector(".stop-preview").textContent = speciesPreview(candidate);
     node.querySelector(".stop-chips").innerHTML = candidateChips(candidate, index);
@@ -5188,7 +5426,7 @@ function buildStopCard(candidate, index, { outOfRank, scale }) {
     const mainButton = node.querySelector(".stop-main");
     mainButton.setAttribute("aria-label", outOfRank
       ? `View ${candidate.name}, pinned outside current top results, score ${candidate.score} of ${scale.max}`
-      : `View ${candidate.name}, rank ${index + 1} of ${state.results.length}, score ${candidate.score} of ${scale.max}`);
+      : `View ${candidate.name}, ${byArrival ? "stop" : "rank"} ${index + 1} of ${state.results.length}, score ${candidate.score} of ${scale.max}`);
     mainButton.addEventListener("click", () => selectCandidate(candidate.id));
     setupCandidateSpeciesPreviews(card);
   }
@@ -5202,9 +5440,19 @@ function setMetricTooltip(element, text) {
   element.tabIndex = 0;
 }
 
+// Single source of truth for result ordering so card ordinals and map marker
+// numbers always agree, whichever order toggle is active.
+function displayOrderedResults() {
+  const byArrival = state.params?.mode !== "area"
+    && state.resultOrder === "arrival"
+    && state.results.some((candidate) => Number.isFinite(candidate.routeProgress));
+  if (!byArrival) return state.results;
+  return [...state.results].sort((a, b) => (Number.isFinite(a.routeProgress) ? a.routeProgress : 1) - (Number.isFinite(b.routeProgress) ? b.routeProgress : 1));
+}
+
 function renderMarkers() {
   if (!state.mapAdapter) return;
-  const markers = state.results.concat(outOfRankPinnedStops());
+  const markers = displayOrderedResults().concat(outOfRankPinnedStops());
   // Re-ranking can push the selected, unpinned stop out of the visible top N
   // while its detail panel stays open (see updateVisibleDetails). Include it
   // alongside the out-of-rank pins so its marker survives the rebuild.
@@ -5241,6 +5489,7 @@ function renderDetails(candidate) {
     : candidate.species.size
       ? `These are reports from the selected ${state.params?.recentDays || 14}-day window, not encounter predictions.`
       : `No species reports were returned for this hotspot in the selected ${state.params?.recentDays || 14}-day window.`;
+  const stopTiming = candidateTiming(candidate);
 
   els.detailsContent.innerHTML = `
     <h3>${escapeHtml(candidate.name)}</h3>
@@ -5250,6 +5499,13 @@ function renderDetails(candidate) {
       <p>${escapeHtml(candidateReasonText(candidate, isArea))}</p>
       <p><small>${escapeHtml(evidenceNote)}</small></p>
     </section>
+    ${stopTiming ? `
+      <section class="reason-line timing-line timing-${stopTiming.assessment.quality}">
+        <h4>Arrival Timing</h4>
+        <p>${escapeHtml(timingSentence(stopTiming))}</p>
+        <p><small>Estimated from your departure time plus driving along the route; time spent birding at earlier stops is not included.</small></p>
+      </section>
+    ` : ""}
     <div class="detail-grid">
       <div><b>${candidate.species.size}</b><small>recent species</small></div>
       <div><b>${candidate.observations.length}</b><small>records</small></div>
@@ -5694,6 +5950,10 @@ function candidateChips(candidate, index) {
     }));
   }
   if (isHotspot(candidate)) chips.push('<span class="stop-chip chip-hotspot">top hotspot</span>');
+  const stopTiming = candidateTiming(candidate);
+  if (stopTiming) {
+    chips.push(`<span class="stop-chip chip-time-${stopTiming.assessment.quality}" title="${escapeHtml(timingSentence(stopTiming))}">~${escapeHtml(arrivalClockLabel(stopTiming))} · ${escapeHtml(timingChipLabel(stopTiming))}</span>`);
+  }
   return chips.join("");
 }
 
@@ -6311,11 +6571,16 @@ function buildReportMarkup() {
     return `<div><dt>${escapeHtml(label)}</dt><dd>${renderedValue}</dd></div>`;
   };
 
+  const departureMs = isArea ? null : departureTimestamp();
+  const departParam = departureMs
+    ? param("Leave at", `${formatClock(departureMs)}${routeTimeContext(departureMs).approximate ? " (approximate local time at the origin)" : ""}`)
+    : "";
   const paramsBlock = `
     <h2>Search parameters</h2>
     <dl class="report-params">
       ${param(isArea ? "Location" : "Origin", p.origin)}
       ${isArea ? "" : param("Destination", p.destination)}
+      ${departParam}
       ${param("Map service", providerLabel(p.mapProvider))}
       ${isArea ? "" : param("Max added", `${p.maxDetour} min`)}
       ${param(isArea ? "Area radius" : "Corridor radius", `${p.radiusKm} km`)}
@@ -6351,11 +6616,13 @@ function buildReportMarkup() {
         const notable = prioritizedNotableReports(candidate, 12);
         const unseenNearbyCount = unseenNotableSpecies(candidate).length;
         const links = candidateLinks(candidate);
+        const stopTiming = candidateTiming(candidate);
         return `
           <div class="report-stop">
             <h3>${index + 1}. ${escapeHtml(candidate.name)}</h3>
             <p class="report-stop-meta">
               Score ${candidate.score} ·
+              ${stopTiming ? `arrive ~${escapeHtml(arrivalClockLabel(stopTiming))} (${escapeHtml(timingChipLabel(stopTiming))}) ·` : ""}
               ${isArea
                 ? `~${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi from center ·`
                 : `+${Math.round(candidate.addedMinutes)} min · +${candidate.addedMiles.toFixed(1)} mi detour · ~${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi off route ·`}

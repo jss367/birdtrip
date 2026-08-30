@@ -169,6 +169,27 @@
       .filter((hotspot) => hotspot.routeDistanceKm <= radiusKm);
   }
 
+  function backfillRouteMetrics(candidates, coordinates) {
+    const list = Array.isArray(candidates) ? candidates : [];
+    const points = Array.isArray(coordinates) ? coordinates : [];
+    if (!points.length) return list;
+    const missing = list.filter((candidate) => (
+      candidate
+      && typeof candidate === "object"
+      && Number.isFinite(candidate.lat)
+      && Number.isFinite(candidate.lng)
+      && (!Number.isFinite(candidate.routeProgress) || !Number.isFinite(candidate.routeDistanceKm))
+    ));
+    if (!missing.length) return list;
+    const routeIndex = createRouteIndex(points);
+    for (const candidate of missing) {
+      const routeMatch = routeIndex.distanceTo(candidate);
+      if (!Number.isFinite(candidate.routeProgress)) candidate.routeProgress = routeMatch.progress;
+      if (!Number.isFinite(candidate.routeDistanceKm)) candidate.routeDistanceKm = routeMatch.distanceKm;
+    }
+    return list;
+  }
+
   // Bounds the route-mode re-ranking pool while retaining rescued candidates.
   // Every pool member gets a notable lookup so members stay comparable when
   // the balance changes, so the pool is truncated — but candidates that were
@@ -340,6 +361,7 @@
   }
 
   root.BirdtripRanking = Object.freeze({
+    backfillRouteMetrics,
     calculateCandidateScore,
     clamp,
     createRouteIndex,
