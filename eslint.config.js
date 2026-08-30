@@ -21,13 +21,15 @@ module.exports = [
     }
   },
   {
-    // Node server and this config file (CommonJS).
-    files: ["server.js", "lib/**/*.js", "eslint.config.js", "test/**/*.js"],
+    // Node server, tests, and config files (CommonJS). Playwright tests also
+    // get browser globals for code inside page.evaluate callbacks.
+    files: ["server.js", "lib/**/*.js", "eslint.config.js", "playwright.config.js", "test/**/*.js", "tests/**/*.js"],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "commonjs",
       globals: {
         ...globals.node,
+        ...globals.browser,
         fetch: "readonly"
       }
     }

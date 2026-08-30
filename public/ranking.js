@@ -190,6 +190,72 @@
     return list;
   }
 
+  // Bounds the route-mode re-ranking pool while retaining rescued candidates.
+  // Every pool member gets a notable lookup so members stay comparable when
+  // the balance changes, so the pool is truncated — but candidates that were
+  // deliberately rescued must survive the cut or the rescue work is wasted:
+  // explicit target rescues are all kept (they are bounded upstream), and
+  // target-match / unseen-species extras are kept up to maxStops per kind.
+  //
+  // deriveVisibleResults shows the top maxStops of the pool at the current
+  // balance level, so the pool must contain the top maxStops under EVERY
+  // selectable level (the slider is a finite set of presets, one utility
+  // function per level in options.balanceUtilities). The pool is exactly
+  // that: for each level, take its top maxStops under that level's
+  // ordering; the pool is the deduplicated union, plus rescue retention.
+  // This is definitionally sufficient — each level's visible set is in the
+  // pool verbatim — and there is no fixed cap: the union's worst case is
+  // #levels * maxStops, and overlap between levels usually keeps it far
+  // smaller. (Earlier schemes truncated the union under a fixed cap, which
+  // could displace a level's own top-maxStops candidates; a capped
+  // round-robin still gave each level only ~cap/#levels guaranteed slots.)
+  // Each level's ordering breaks utility ties by candidate ID — the same
+  // tie-break the visible ranking (compareByRankUtility) uses — so pool
+  // selection and visible ranking cannot disagree on which tie member is
+  // shown. Without balanceUtilities there is a single all-ties ordering,
+  // so the pool is the ID-ordered top maxStops plus rescues.
+  function selectNotableCandidates(candidates, options = {}) {
+    const maxStops = Math.max(1, Math.floor(Number(options.maxStops) || 0) || 1);
+    const list = Array.from(candidates || []);
+    const utilities = Array.isArray(options.balanceUtilities) && options.balanceUtilities.length
+      ? options.balanceUtilities
+      : [() => 0];
+    const top = [];
+    const ids = new Set();
+    for (const utility of utilities) {
+      // One ordering per selectable level, using the SAME comparator the
+      // visible ranking applies (compareByRankUtility): utility descending,
+      // then candidate ID. Breaking ties by caller order instead would
+      // diverge from the visible ranking exactly at ties — the caller's
+      // order is the ACTIVE level's — so the pool could retain the wrong
+      // tie member and drop the one deriveVisibleResults would show.
+      const visible = list
+        .map((candidate) => ({ candidate, utility: Number(utility(candidate)) || 0 }))
+        .sort((a, b) => (b.utility - a.utility)
+          || String(a.candidate.id).localeCompare(String(b.candidate.id)))
+        .slice(0, maxStops);
+      for (const entry of visible) {
+        if (ids.has(entry.candidate.id)) continue;
+        ids.add(entry.candidate.id);
+        top.push(entry.candidate);
+      }
+    }
+    const keep = (matches, limit) => {
+      let added = 0;
+      for (const candidate of list) {
+        if (added >= limit) break;
+        if (ids.has(candidate.id) || !matches(candidate)) continue;
+        ids.add(candidate.id);
+        top.push(candidate);
+        added += 1;
+      }
+    };
+    keep((candidate) => candidate.explicitTargetRescue, Infinity);
+    keep((candidate) => (candidate.targetMatches?.length ?? 0) > 0, maxStops);
+    keep((candidate) => (candidate.liferSpecies?.length ?? 0) > 0, maxStops);
+    return top;
+  }
+
   function detourImpact(viaRoute, baseRoute) {
     return {
       addedMinutes: Math.max(
@@ -233,7 +299,10 @@
   }
 
   function personalValueScore(options = {}) {
-    const targetValue = clamp(Number(options.weightedTargets) || 0, 0, 5) / 5;
+    // Normalize target credit to the number of targets actually requested
+    // (capped at 5) so a single-target search can earn full target value.
+    const targetSlots = clamp(Number(options.targetSlots) || 5, 1, 5);
+    const targetValue = clamp(Number(options.weightedTargets) || 0, 0, targetSlots) / targetSlots;
     const unseenValue = clamp(Number(options.weightedUnseen) || 0, 0, 8) / 8;
     const targetsEnabled = Boolean(options.targetsEnabled);
     const unseenEnabled = Boolean(options.unseenEnabled);
@@ -278,6 +347,7 @@
       personal: personalValueScore({
         weightedTargets: options.weightedTargets,
         weightedUnseen: options.weightedUnseen,
+        targetSlots: options.targetSlots,
         targetsEnabled,
         unseenEnabled
       }),
@@ -306,6 +376,7 @@
     personalValueScore,
     practicalityScore,
     richnessPrior,
-    sampleRouteForCoverage
+    sampleRouteForCoverage,
+    selectNotableCandidates
   });
 }(globalThis));

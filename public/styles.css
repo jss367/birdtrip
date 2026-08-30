@@ -540,6 +540,52 @@ select {
   line-height: 1.3;
 }
 
+.balance-field {
+  display: grid;
+  gap: 4px;
+  margin-top: 12px;
+}
+
+.balance-labels {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 750;
+}
+
+.balance-field input[type="range"] {
+  width: 100%;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.balance-field input[type="range"]:disabled {
+  opacity: 0.45;
+}
+
+.balance-hint {
+  text-align: center;
+  font-weight: 750;
+}
+
+.balance-field-results {
+  min-width: 200px;
+  margin-top: 0;
+}
+
+.out-of-rank-heading {
+  margin: 10px 2px 2px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 750;
+}
+
+.stop-card.is-out-of-rank {
+  opacity: 0.85;
+  border-style: dashed;
+}
+
 .ebird-access-status {
   display: flex;
   align-items: flex-start;

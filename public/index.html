@@ -190,6 +190,15 @@
               <small class="field-hint">Optional. Estimates arrival at each stop and flags bad timing, e.g. reaching a marsh at 2 PM when it is best at dawn.</small>
             </label>
           </div>
+          <div class="balance-field" id="balanceField">
+            <div class="balance-labels" aria-hidden="true">
+              <span>Prioritize birding</span>
+              <span>Less driving</span>
+            </div>
+            <input id="balanceSlider" type="range" min="0" max="4" step="1" value="2"
+                   aria-label="Ranking preference: prioritize birding versus less driving">
+            <small class="field-hint balance-hint" id="balanceHint">Recommended</small>
+          </div>
         </section>
 
         <div class="actions">
@@ -317,6 +326,15 @@
             <span><b class="tier mid"></b>Notable birds</span>
             <span><b class="tier lifer"></b>Unseen recent report</span>
             <span><b class="tier low"></b>Target match</span>
+          </div>
+          <div class="balance-field balance-field-results" id="balanceFieldResults" hidden>
+            <div class="balance-labels" aria-hidden="true">
+              <span>Prioritize birding</span>
+              <span>Less driving</span>
+            </div>
+            <input id="balanceSliderResults" type="range" min="0" max="4" step="1" value="2"
+                   aria-label="Ranking preference: prioritize birding versus less driving">
+            <small class="field-hint balance-hint" id="balanceHintResults">Recommended</small>
           </div>
           <div class="results-actions" id="resultsActions" hidden>
             <button type="button" id="shareTripButton" class="ghost-button">
