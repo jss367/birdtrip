@@ -713,6 +713,8 @@ const PROFILE_FETCH_RETRY_DELAY_MS = 1500;
 // Marks that this browser has already reconciled its anonymous data with a
 // given account, so later sessions hydrate from the account instead of
 // re-running the merge (which would resurrect data deleted on other devices).
+// It also names the owner of the cached data: a different user signing in
+// while it is set is isolated from that data (see runMergeAndHydrate).
 const SYNCED_USER_KEY = "routeBirdingSyncedUser";
 // The profile columns a signed-in mutation left ahead of the account (JSON
 // array), recorded the moment the write is queued and cleared only when a
@@ -1153,28 +1155,36 @@ async function runMergeAndHydrate() {
   const userIdAtStart = window.birdtripAuth.user.id;
   mergeAndHydrateInFlight = true;
   try {
-    // Local data retained through an involuntary session loss belongs to the
-    // user who lost the session. If someone else signs in on this browser,
-    // wipe it before touching their account: the merge below would otherwise
-    // read it as anonymous local state and upload the prior user's life list,
-    // targets, and eBird token into the new account. The owner returning
-    // keeps the data and reconciles through the merge flow as usual; the
-    // record clears once that reconciliation is confirmed
-    // (commitPendingSyncedUser) or on an explicit sign-out.
+    // Local data that still belongs to another account must not reach this
+    // one. Two records can name that owner: the retained-owner record from
+    // an involuntary session loss this page observed, and the sync marker
+    // itself when the session was lost while the app was closed (a revoked
+    // or expired refresh token: startup then sees no session at all, so no
+    // loss handler ran and the marker survived with the owner's cached life
+    // list, targets, and eBird token). If someone else signs in on this
+    // browser, wipe that data before touching their account: the merge
+    // below would otherwise read it as anonymous local state and upload the
+    // prior user's data into the new account. The owner returning keeps the
+    // data and reconciles as usual; the retained-owner record clears once
+    // that reconciliation is confirmed (commitPendingSyncedUser) or on an
+    // explicit sign-out.
     let retainedOwner = retainedDataOwnerId;
-    if (!retainedOwner) {
-      try {
-        retainedOwner = localStorage.getItem(RETAINED_OWNER_KEY);
-      } catch {
-        // Storage unavailable; nothing recorded to act on.
-      }
+    let markerOwner = null;
+    try {
+      if (!retainedOwner) retainedOwner = localStorage.getItem(RETAINED_OWNER_KEY);
+      markerOwner = localStorage.getItem(SYNCED_USER_KEY);
+    } catch {
+      // Storage unavailable; nothing recorded to act on.
     }
-    if (retainedOwner && retainedOwner !== userIdAtStart) {
+    const foreignOwner = (retainedOwner && retainedOwner !== userIdAtStart)
+      || (markerOwner && markerOwner !== userIdAtStart);
+    if (foreignOwner) {
       wipeLocalUserData();
       retainedDataOwnerId = null;
       retainedOwner = null;
       try {
         localStorage.removeItem(RETAINED_OWNER_KEY);
+        localStorage.removeItem(SYNCED_USER_KEY);
       } catch {
         // Storage unavailable; the in-memory owner is already cleared.
       }
