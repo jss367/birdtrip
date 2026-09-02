@@ -572,9 +572,13 @@ function applySharedSearch(shared) {
   // the sender shared, not arrival warnings from their own previous state.
   els.departTime.value = shared.departTime || "";
   if (shared.targets) els.targets.value = shared.targets;
-  // Record which inputs the link set (origin, destination, and mapProvider are
-  // always explicitly managed above) so hydration leaves them alone.
-  sharedFieldLocks.add("origin").add("destination").add("mapProvider");
+  // Record which inputs the link set (origin, destination, mapProvider, and
+  // departTime are always explicitly managed above) so hydration leaves them
+  // alone. departTime is locked even when the link omitted it: a signed-in
+  // recipient's account hydration would otherwise refill their own stored
+  // time before an autoRun search, and later profile writes would carry the
+  // sender's time into their account.
+  sharedFieldLocks.add("origin").add("destination").add("mapProvider").add("departTime");
   if (shared.mode === "species" && shared.species) sharedFieldLocks.add("speciesQuery");
   for (const field of ["maxDetour", "recentDays", "radiusKm", "maxStops", "targets"]) {
     if (shared[field]) sharedFieldLocks.add(field);
@@ -3414,6 +3418,9 @@ function updateLifeListStatus() {
 }
 
 function handleDepartTimeChange() {
+  // The user editing the control adopts it: it leaves shared-link display
+  // mode and persists (and syncs) like any other preference from here on.
+  unlockSharedField("departTime");
   if (state.params) state.params.departTime = cleanTimeString(els.departTime.value);
   savePreferences();
   refreshSharedUrlIfPresent();
