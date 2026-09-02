@@ -1278,7 +1278,15 @@ async function handleApi(req, res, url) {
 }
 
 function serveStatic(req, res, url) {
-  const requested = decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname);
+  let requested;
+  try {
+    requested = decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname);
+  } catch {
+    // Malformed percent-encoding (e.g. /%E0%A4%A) throws a URIError; without
+    // this guard a single request would take the whole process down.
+    res.writeHead(400);
+    return res.end("Bad request");
+  }
   const filePath = path.normalize(path.join(PUBLIC_DIR, requested));
   if (!filePath.startsWith(PUBLIC_DIR)) {
     res.writeHead(403);
@@ -1299,8 +1307,23 @@ function serveStatic(req, res, url) {
   });
 }
 
+// Only the path and query are ever read from the parsed URL, so a fixed base
+// is used rather than the Host header: an unparsable Host value (e.g. "[")
+// would otherwise throw out of the request handler and crash the server.
+function parseRequestUrl(req) {
+  try {
+    return new URL(req.url, "http://localhost");
+  } catch {
+    return null;
+  }
+}
+
 const server = http.createServer((req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+  const url = parseRequestUrl(req);
+  if (!url) {
+    res.writeHead(400);
+    return res.end("Bad request");
+  }
   if (url.pathname === "/healthz") {
     res.writeHead(200, {
       "content-type": "text/plain; charset=utf-8",
@@ -1324,6 +1347,18 @@ const server = http.createServer((req, res) => {
 });
 
 if (require.main === module) {
+  // Make process-level failures visible in the logs before the host restarts
+  // the service. The exit preserves Node's default fail-fast behaviour; the
+  // logging is what was missing. stderr is written synchronously because
+  // console.error can be asynchronous when piped, and process.exit would
+  // otherwise drop the message.
+  const fatal = (label, error) => {
+    const detail = error instanceof Error ? error.stack || error.message : String(error);
+    fs.writeSync(2, `[fatal] ${label}\n${detail}\n`);
+    process.exit(1);
+  };
+  process.on("uncaughtException", (error) => fatal("uncaught exception", error));
+  process.on("unhandledRejection", (reason) => fatal("unhandled promise rejection", reason));
   server.listen(PORT, () => {
     console.log(`Birdtrip running at http://localhost:${PORT}`);
   });
