@@ -723,9 +723,10 @@ const SYNCED_USER_KEY = "routeBirdingSyncedUser";
 // beats the 750 ms debounce - or follows a failed upsert - can't treat the
 // stale account as canonical and hydrate it over the unconfirmed local edits:
 // runMergeAndHydrate routes through the merge flow while any column is
-// listed, and only the listed columns get local-wins treatment there, so an
-// unconfirmed life-list import can't make this browser's untouched targets
-// or preferences override what another device wrote since.
+// listed, and only the listed columns get local-wins treatment there; the
+// rest hydrate from the account (clears included), so an unconfirmed
+// life-list import can't make this browser's untouched targets or
+// preferences override what another device wrote since.
 const PROFILE_DIRTY_KEY = "routeBirdingProfileDirty";
 const PROFILE_COLUMNS = ["life_list", "targets", "ebird_token", "preferences"];
 // Records which account the local data retained through an involuntary
@@ -1241,20 +1242,26 @@ async function runMergeAndHydrate() {
       return;
     }
 
-    // Reaching the merge with a column recorded dirty AND an ownership tie
-    // between the local data and this account (the sync marker, or the
-    // retained-data owner when an involuntary session loss removed the
-    // marker) means that column's local state descends from this account's
-    // canonical state plus unconfirmed edits. An empty local field is then an
-    // intentional clear that must win over the stale account value and be
-    // written back - not "never set" data to refill from the account.
-    // Columns NOT recorded dirty were never edited here since the last
-    // confirmed sync, so the account (possibly updated from another device
-    // meanwhile) stays canonical for them. Without the ownership tie (e.g. a
-    // failed first-ever merge write-back left columns recorded), an empty
-    // local field really may mean never-set, so the account still wins.
+    // Reaching the merge with an ownership tie between the local data and
+    // this account (the sync marker, or the retained-data owner when an
+    // involuntary session loss removed the marker) means the local state
+    // descends from this account's canonical state plus the columns recorded
+    // dirty (unconfirmed edits). Those columns keep local: an empty local
+    // field is then an intentional clear that must win over the stale
+    // account value and be written back - not "never set" data to refill
+    // from the account. Columns NOT recorded dirty were never edited here
+    // since the last confirmed sync, so the account (possibly updated from
+    // another device meanwhile, clears included) is canonical for them -
+    // exactly as the alreadySynced hydrate above would have treated them had
+    // no column been dirty. They take no part in the local-wins or
+    // conflict-dialog branches below: a stale local value must neither be
+    // offered as a choice nor written back over the other device's change.
+    // Without the ownership tie (e.g. a failed first-ever merge write-back
+    // left columns recorded), an empty local field really may mean
+    // never-set, so the first-sign-in merge rules apply unchanged.
     const ownershipTie = markerMatches || retainedOwner === userIdAtStart;
     const dirtyLocalWins = (column) => ownershipTie && dirtyColumns.has(column);
+    const accountCanonical = (column) => ownershipTie && !dirtyColumns.has(column);
 
     const conflicts = [];
     const decisions = {};
@@ -1266,7 +1273,9 @@ async function runMergeAndHydrate() {
     const accountLLSize = accountLLArr.length;
     const lifeListEqual = localLLSize === accountLLSize && localLLSize > 0
       && accountLLArr.every((s) => state.lifeList.species.has(normalizeName(s)));
-    if (!localLLSize && !accountLLSize) {
+    if (accountCanonical("life_list")) {
+      decisions.lifeList = "use-account";
+    } else if (!localLLSize && !accountLLSize) {
       decisions.lifeList = "noop";
     } else if (!accountLLSize && localLLSize) {
       decisions.lifeList = "keep-local";
@@ -1297,6 +1306,8 @@ async function runMergeAndHydrate() {
       // the lock holds), and the field joins the account normally once the
       // user explicitly edits or adopts it.
       decisions.targets = "noop";
+    } else if (accountCanonical("targets")) {
+      decisions.targets = "use-account";
     } else if (!localTargets && !accountTargets) {
       decisions.targets = "noop";
     } else if (!accountTargets && localTargets) {
@@ -1316,7 +1327,9 @@ async function runMergeAndHydrate() {
     // ebird_token
     const localToken = els.rememberToken.checked ? (els.apiToken.value || "") : "";
     const accountToken = account.ebird_token || "";
-    if (!localToken && !accountToken) {
+    if (accountCanonical("ebird_token")) {
+      decisions.token = "use-account";
+    } else if (!localToken && !accountToken) {
       decisions.token = "noop";
     } else if (!accountToken && localToken) {
       decisions.token = "keep-local";
@@ -1336,8 +1349,15 @@ async function runMergeAndHydrate() {
     // local wins where account is empty. Excludes ACCOUNT_OWNED_FIELDS, which
     // have their own column + explicit conflict handling above. Under
     // dirtyLocalWins local preferences (including clears) are the newest
-    // edits, so they stand and the write-back carries them to the account.
-    decisions.preferences = dirtyLocalWins("preferences") ? "keep-local" : "merge-silently";
+    // edits, so they stand and the write-back carries them to the account;
+    // a clean column under an ownership tie hydrates canonically instead.
+    if (accountCanonical("preferences")) {
+      decisions.preferences = "use-account";
+    } else if (dirtyLocalWins("preferences")) {
+      decisions.preferences = "keep-local";
+    } else {
+      decisions.preferences = "merge-silently";
+    }
 
     if (conflicts.length) {
       const choices = await showMergeDialog(conflicts);
@@ -1366,9 +1386,14 @@ async function runMergeAndHydrate() {
 }
 
 function applyMergeDecisions(account, decisions) {
+  // "use-account" applies the account column canonically, clears included:
+  // for a clean column under an ownership tie an empty account value is a
+  // deletion made on another device and must empty the local copy too. The
+  // dialog choice and the one-sided-empty-local branches only reach here
+  // with a non-empty account value, where this equals applyAccountProfile.
   // life_list
   if (decisions.lifeList === "use-account") {
-    applyAccountProfile(account, { lifeList: true });
+    hydrateLifeListFromAccount(account);
   } else if (decisions.lifeList === "merge-union") {
     const accountSpecies = (account.life_list && Array.isArray(account.life_list.species))
       ? account.life_list.species : [];
@@ -1392,19 +1417,23 @@ function applyMergeDecisions(account, decisions) {
 
   // targets
   if (decisions.targets === "use-account") {
-    applyAccountProfile(account, { targets: true });
+    hydrateTargetsFromAccount(account);
   }
 
   // token
   if (decisions.token === "use-account") {
-    applyAccountProfile(account, { token: true });
+    hydrateTokenFromAccount(account);
   }
 
   // preferences: silent account-wins per non-empty field, skipping any field
   // that has its own column + explicit conflict handling. "keep-local"
-  // (dirty reconciliation) leaves every local preference in place instead.
+  // (dirty reconciliation) leaves every local preference in place instead;
+  // "use-account" (clean column under an ownership tie) hydrates them
+  // canonically, clears included.
   const transitions = [];
-  if (decisions.preferences === "merge-silently"
+  if (decisions.preferences === "use-account") {
+    transitions.push(hydratePreferencesFromAccount(account));
+  } else if (decisions.preferences === "merge-silently"
       && account.preferences && typeof account.preferences === "object") {
     for (const field of PREF_FIELDS) {
       if (ACCOUNT_OWNED_FIELDS.has(field)) continue;
@@ -1468,7 +1497,20 @@ function showMergeDialog(conflicts) {
 // Applies the account as the canonical source of truth, including clears:
 // unlike applyAccountProfile (which only applies non-empty values during the
 // first-sign-in merge), an empty account field here empties the local one.
+// The per-column helpers below are also what applyMergeDecisions uses for a
+// "use-account" decision, so a single column can be hydrated the same way.
 function hydrateFromAccount(account) {
+  hydrateLifeListFromAccount(account);
+  hydrateTargetsFromAccount(account);
+  hydrateTokenFromAccount(account);
+  const transitions = hydratePreferencesFromAccount(account);
+  updateInputSummaries();
+  // The map-adapter swap (if the provider changed) outlives this call; the
+  // caller awaits it so accountHydrationReady covers the whole transition.
+  return transitions;
+}
+
+function hydrateLifeListFromAccount(account) {
   const hasLifeList = account.life_list && typeof account.life_list === "object"
     && Array.isArray(account.life_list.species) && account.life_list.species.length;
   if (hasLifeList) {
@@ -1483,11 +1525,15 @@ function hydrateFromAccount(account) {
     };
     updateLifeListStatus();
   }
+}
 
+function hydrateTargetsFromAccount(account) {
   if (!sharedFieldLocks.has("targets")) {
     els.targets.value = typeof account.targets === "string" ? account.targets : "";
   }
+}
 
+function hydrateTokenFromAccount(account) {
   if (typeof account.ebird_token === "string" && account.ebird_token.length) {
     els.apiToken.value = account.ebird_token;
     els.rememberToken.checked = true;
@@ -1503,13 +1549,16 @@ function hydrateFromAccount(account) {
     saveSessionApiToken();
   }
   updateSetupStatus();
+}
 
-  // Preferences are canonical here too, including clears: a key present with
-  // an empty string is a value the user cleared on another device, so apply
-  // it (otherwise this browser's stale cache survives and the next save
-  // writes the deleted value back). An absent key means the account never
-  // stored the field, so the local value stands. applyPreferenceField still
-  // skips shared-link-locked fields.
+// Preferences are canonical here too, including clears: a key present with
+// an empty string is a value the user cleared on another device, so apply
+// it (otherwise this browser's stale cache survives and the next save
+// writes the deleted value back). An absent key means the account never
+// stored the field, so the local value stands. applyPreferenceField still
+// skips shared-link-locked fields. Resolves once any map-adapter swap the
+// provider preference started has finished.
+function hydratePreferencesFromAccount(account) {
   const prefs = (account.preferences && typeof account.preferences === "object")
     ? account.preferences : {};
   const transitions = [];
@@ -1524,9 +1573,6 @@ function hydrateFromAccount(account) {
     const transition = applyPreferenceField(field, value);
     if (transition) transitions.push(transition);
   }
-  updateInputSummaries();
-  // The map-adapter swap (if the provider changed) outlives this call; the
-  // caller awaits it so accountHydrationReady covers the whole transition.
   return Promise.all(transitions);
 }
 
