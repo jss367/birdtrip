@@ -4,6 +4,14 @@ const state = {
   route: null,
   routeName: "",
   results: [],
+  resultOrder: "score",
+  candidatePool: [],
+  // A restored saved trip's selected stop can sit outside the serialized
+  // visible results (out-of-rank); it is rehydrated here so candidateById can
+  // resolve it the same way the live UI resolves out-of-rank pool candidates.
+  restoredSelectedStop: null,
+  balance: 2,
+  balanceLocked: false,
   selectedId: null,
   savedTrips: [],
   comparisonIds: [],
@@ -40,12 +48,16 @@ const state = {
     },
     ebird: {
       serverConfigured: false
-    }
+    },
+    // null means "not checked yet"; sharing still tries the server and falls
+    // back to a long query-parameter link if the endpoint is unavailable.
+    tripSharing: { enabled: null }
   },
   configReady: null
 };
 
 const ranking = window.BirdtripRanking;
+const timing = window.BirdtripTiming;
 const navigationExport = window.BirdtripNavigationExport;
 const SCORING_VERSION = 2;
 const DISCOVERY_QUERY_RADIUS_KM = 200;
@@ -86,11 +98,22 @@ const els = {
   mapProvider: document.querySelector("#mapProvider"),
   mapProviderHint: document.querySelector("#mapProviderHint"),
   maxDetourField: document.querySelector("#maxDetourField"),
+  balanceField: document.querySelector("#balanceField"),
+  balanceSlider: document.querySelector("#balanceSlider"),
+  balanceHint: document.querySelector("#balanceHint"),
+  balanceFieldResults: document.querySelector("#balanceFieldResults"),
+  balanceSliderResults: document.querySelector("#balanceSliderResults"),
+  balanceHintResults: document.querySelector("#balanceHintResults"),
   maxDetour: document.querySelector("#maxDetour"),
   recentDays: document.querySelector("#recentDays"),
   radiusKm: document.querySelector("#radiusKm"),
   radiusKmLabel: document.querySelector("#radiusKmLabel"),
   maxStops: document.querySelector("#maxStops"),
+  departTimeField: document.querySelector("#departTimeField"),
+  departTime: document.querySelector("#departTime"),
+  orderToggle: document.querySelector("#orderToggle"),
+  orderByScore: document.querySelector("#orderByScore"),
+  orderByArrival: document.querySelector("#orderByArrival"),
   ebirdAccessStatus: document.querySelector("#ebirdAccessStatus"),
   apiToken: document.querySelector("#apiToken"),
   rememberToken: document.querySelector("#rememberToken"),
@@ -180,6 +203,17 @@ const autocomplete = {
 
 const speciesAutocomplete = { timer: 0, controller: null, items: [], activeIndex: -1, lastQuery: "" };
 
+// Ranking preference: convMult scales practicality points against bird points
+// in rankUtility. Index 2 (convMult 1) reproduces the pre-slider formula.
+const BALANCE_LEVELS = [
+  { convMult: 0, label: "Prioritize birding" },
+  { convMult: 0.5, label: "Leaning birding" },
+  { convMult: 1, label: "Recommended" },
+  { convMult: 2, label: "Leaning convenience" },
+  { convMult: 5, label: "Less driving" }
+];
+const DEFAULT_BALANCE = 2;
+
 const PREF_FIELDS = [
   "origin",
   "destination",
@@ -188,6 +222,7 @@ const PREF_FIELDS = [
   "recentDays",
   "radiusKm",
   "maxStops",
+  "departTime",
   "targets",
   "speciesQuery"
 ];
@@ -233,9 +268,9 @@ function legacyMigrationMonth(search) {
   return "";
 }
 
-function init() {
+async function init() {
   if (redirectLegacyMigrationLink()) return;
-  const sharedSearch = readSharedSearchFromUrl();
+  const sharedSearch = await resolveSharedSearch();
   const saved = restorePreferences();
   state.savedTrips = readSavedTrips();
   state.mode = normalizeMode(sharedSearch?.mode || saved.searchMode);
@@ -261,6 +296,12 @@ function init() {
     unlockAllSharedFields();
     runSearch();
   });
+  // Editing any shareable input invalidates a loaded /t/<slug> snapshot URL:
+  // swap the address bar to a live query URL so copying it keeps the edits.
+  // Only real user events fire these; programmatic hydration sets .value
+  // directly and leaves the short URL intact.
+  els.form.addEventListener("input", scheduleSharedUrlRefresh);
+  els.form.addEventListener("change", scheduleSharedUrlRefresh);
   els.modeButtons.forEach((button) => {
     button.addEventListener("click", () => setSearchMode(button.dataset.mode));
   });
@@ -297,6 +338,8 @@ function init() {
   for (const field of ["recentDays", "radiusKm", "maxStops"]) {
     els[field].addEventListener("input", () => unlockSharedField(field));
   }
+  els.balanceSlider.addEventListener("input", () => setBalance(els.balanceSlider.value));
+  els.balanceSliderResults.addEventListener("input", () => setBalance(els.balanceSliderResults.value));
   els.shareTripButton.addEventListener("click", shareCurrentTrip);
   els.downloadReportButton.addEventListener("click", downloadHtmlReport);
   els.settingsButton.addEventListener("click", () => openSettingsModal());
@@ -323,6 +366,9 @@ function init() {
     event.preventDefault();
     saveCurrentTrip();
   });
+  els.orderByScore.addEventListener("click", () => setResultOrder("score"));
+  els.orderByArrival.addEventListener("click", () => setResultOrder("arrival"));
+  els.departTime.addEventListener("change", handleDepartTimeChange);
   els.clearComparisonButton.addEventListener("click", clearComparison);
   els.clearItinerary.addEventListener("click", clearPinnedStops);
   els.downloadGpxButton.addEventListener("click", downloadGpxRoute);
@@ -378,7 +424,13 @@ async function initializeStartupMap(preferredProvider, sharedSearch) {
     // Let a signed-in user's profile hydration finish first so the search
     // runs with the account's life list, targets, and eBird token.
     await accountHydrationReady;
-    await runSearch({ persistPreferences: false });
+    // The visitor just opened a short /t/<slug> link and has changed nothing,
+    // so the hydration auto-run must not replace it with the long query URL.
+    // Any later user action (pinning, re-running a search) swaps it as usual.
+    await runSearch({
+      persistPreferences: false,
+      preserveSharedUrl: Boolean(sharedTripSlugFromLocation())
+    });
   }
 }
 
@@ -401,21 +453,52 @@ async function reapplyStartupProvider(preferredProvider) {
 function readSharedSearchFromUrl() {
   const search = new URLSearchParams(window.location.search);
   if (search.get("bt") !== SHARE_URL_VERSION) return null;
-
-  const mode = normalizeMode(search.get("mode"));
-  const shared = {
-    mode,
-    origin: cleanSharedText(search.get("origin"), 160),
-    destination: cleanSharedText(search.get("destination"), 160),
-    species: cleanSharedText(search.get("species"), 80),
-    mapProvider: search.get("mapProvider") === "google" ? "google" : "osm",
-    maxDetour: cleanSharedNumber(search.get("maxDetour"), 0, 240),
-    recentDays: cleanSharedNumber(search.get("recentDays"), 1, 30),
-    radiusKm: cleanSharedNumber(search.get("radiusKm"), 1, 50),
-    maxStops: cleanSharedNumber(search.get("maxStops"), 3, 20),
-    targets: cleanSharedTargets(search.get("targets"), 1200),
-    pins: cleanSharedIdList(search.getAll("pin"), 5),
+  return sanitizeSharedSearch({
+    mode: search.get("mode"),
+    origin: search.get("origin"),
+    destination: search.get("destination"),
+    species: search.get("species"),
+    mapProvider: search.get("mapProvider"),
+    maxDetour: search.get("maxDetour"),
+    recentDays: search.get("recentDays"),
+    radiusKm: search.get("radiusKm"),
+    maxStops: search.get("maxStops"),
+    departTime: search.get("departTime"),
+    targets: search.get("targets"),
+    // Raw, not clamped: setBalance defaults out-of-range values rather than
+    // letting balance=99 arrive pre-clamped to "Less driving".
+    balance: search.get("balance"),
+    pins: search.getAll("pin"),
     autoRun: search.get("run") === "1"
+  });
+}
+
+// Server-stored trips can carry far longer target lists than a URL, so the
+// write side (buildShareTripData) and the stored-read side share this cap;
+// only the legacy query-parameter channel keeps the tight 1200 limit.
+const STORED_TARGETS_MAX_LENGTH = 10000;
+const URL_TARGETS_MAX_LENGTH = 1200;
+
+// Both share channels (query parameters and server-stored trips) funnel
+// through the same sanitizer, so stored blobs get no more trust than URLs.
+function sanitizeSharedSearch(raw, options = {}) {
+  if (!raw || typeof raw !== "object") return null;
+  const { targetsMaxLength = URL_TARGETS_MAX_LENGTH } = options;
+  const shared = {
+    mode: normalizeMode(raw.mode),
+    origin: cleanSharedText(raw.origin, 160),
+    destination: cleanSharedText(raw.destination, 160),
+    species: cleanSharedText(raw.species, 80),
+    mapProvider: raw.mapProvider === "google" ? "google" : "osm",
+    maxDetour: cleanSharedNumber(raw.maxDetour, 0, 240),
+    recentDays: cleanSharedNumber(raw.recentDays, 1, 30),
+    radiusKm: cleanSharedNumber(raw.radiusKm, 1, 50),
+    maxStops: cleanSharedNumber(raw.maxStops, 3, 20),
+    departTime: cleanTimeString(raw.departTime),
+    targets: cleanSharedTargets(raw.targets, targetsMaxLength),
+    balance: raw.balance,
+    pins: cleanSharedIdList(Array.isArray(raw.pins) ? raw.pins.map(String) : [], 5),
+    autoRun: raw.autoRun === true
   };
   return shared.origin ? shared : null;
 }
@@ -438,6 +521,35 @@ function unlockAllSharedFields() {
   sharedFieldLocks.clear();
 }
 
+function sharedTripSlugFromLocation() {
+  const match = window.location.pathname.match(/^\/t\/([A-Za-z0-9]{8,64})\/?$/);
+  return match ? match[1] : null;
+}
+
+async function resolveSharedSearch() {
+  const slug = sharedTripSlugFromLocation();
+  if (!slug) return readSharedSearchFromUrl();
+  try {
+    const response = await fetch(`/api/trips/${encodeURIComponent(slug)}`, {
+      signal: AbortSignal.timeout(8000)
+    });
+    if (!response.ok) {
+      throw new Error(`The shared trip request failed (${response.status})`);
+    }
+    const payload = await response.json();
+    const shared = sanitizeSharedSearch(payload?.data, { targetsMaxLength: STORED_TARGETS_MAX_LENGTH });
+    if (!shared) throw new Error("The shared trip data was unreadable");
+    return shared;
+  } catch (error) {
+    console.error(error);
+    setStatus(
+      "Shared trip unavailable",
+      "This link may have expired — unopened shared trips are removed after 90 days. Start a new search below."
+    );
+    return null;
+  }
+}
+
 function applySharedSearch(shared) {
   setSearchMode(shared.mode, { persist: false });
   if (shared.origin) els.origin.value = shared.origin;
@@ -455,6 +567,10 @@ function applySharedSearch(shared) {
   if (shared.recentDays) els.recentDays.value = shared.recentDays;
   if (shared.radiusKm) els.radiusKm.value = shared.radiusKm;
   if (shared.maxStops) els.maxStops.value = shared.maxStops;
+  // Applied unconditionally: a shared link that omits the optional departure
+  // time should clear any restored preference so the recipient sees the trip
+  // the sender shared, not arrival warnings from their own previous state.
+  els.departTime.value = shared.departTime || "";
   if (shared.targets) els.targets.value = shared.targets;
   // Record which inputs the link set (origin, destination, and mapProvider are
   // always explicitly managed above) so hydration leaves them alone.
@@ -463,6 +579,8 @@ function applySharedSearch(shared) {
   for (const field of ["maxDetour", "recentDays", "radiusKm", "maxStops", "targets"]) {
     if (shared[field]) sharedFieldLocks.add(field);
   }
+  // "0" is a valid position; only an absent/invalid param falls back to default.
+  setBalance(shared.balance === null || shared.balance === "" ? DEFAULT_BALANCE : Number(shared.balance), { skipRerank: true });
   state.pendingPinnedIds = shared.pins || [];
   updateInputSummaries();
   setStatus(
@@ -476,13 +594,22 @@ function cleanSharedText(value, maxLength) {
 }
 
 function cleanSharedTargets(value, maxLength) {
-  return String(value || "")
+  // Truncate at line boundaries: cutting mid-line would leave a partial
+  // species name that matches nothing (or the wrong bird).
+  const lines = String(value || "")
     .replace(/\r\n?/g, "\n")
     .split("\n")
     .map((line) => line.replace(/\s+/g, " ").trim())
-    .filter(Boolean)
-    .join("\n")
-    .slice(0, maxLength);
+    .filter(Boolean);
+  const kept = [];
+  let length = 0;
+  for (const line of lines) {
+    const next = length + (kept.length ? 1 : 0) + line.length;
+    if (next > maxLength) break;
+    kept.push(line);
+    length = next;
+  }
+  return kept.join("\n");
 }
 
 function cleanSharedIdList(values, maxItems) {
@@ -490,6 +617,11 @@ function cleanSharedIdList(values, maxItems) {
     .map((item) => item.trim())
     .filter((item) => /^[\w:.,-]{1,80}$/.test(item))
     .slice(0, maxItems);
+}
+
+function cleanTimeString(value) {
+  const text = String(value || "").trim();
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(text) ? text : "";
 }
 
 function cleanSharedNumber(value, min, max) {
@@ -1368,6 +1500,11 @@ function applyPreferenceField(field, value) {
 function setSearchMode(mode, options = {}) {
   const { persist = true } = options;
   const previousMode = state.mode;
+  // Capture the share marker now: clearResults() below may call
+  // clearSharedUrl(), after which the end-of-function refresh would see
+  // neither a slug nor bt=1 and skip serializing the new mode.
+  const hadSharedUrl = new URLSearchParams(window.location.search).get("bt") === SHARE_URL_VERSION
+    || Boolean(sharedTripSlugFromLocation());
   state.mode = normalizeMode(mode);
   const isArea = state.mode === "area";
   const isSpecies = state.mode === "species";
@@ -1387,7 +1524,11 @@ function setSearchMode(mode, options = {}) {
   els.destinationField.hidden = isAreaLike;
   els.destination.required = !isAreaLike;
   els.maxDetourField.hidden = state.mode !== "route";
+  els.balanceField.hidden = state.mode === "species";
+  syncBalanceControls();
   els.maxDetour.disabled = isAreaLike;
+  els.departTimeField.hidden = state.mode !== "route";
+  els.departTime.disabled = isAreaLike;
   els.radiusKmLabel.textContent = isSpecies ? "Search radius" : isArea ? "Area radius" : "Corridor radius";
   els.submitLabel.textContent = isSpecies ? "Map Sightings" : isArea ? "Search Area" : "Find Stops";
   els.routeDistanceLabel.textContent = isSpecies ? "Search Radius" : isArea ? "Area Radius" : "Route Miles";
@@ -1412,6 +1553,7 @@ function setSearchMode(mode, options = {}) {
   updateInputSummaries();
   renderInsights();
   if (persist) savePreferences();
+  if (persist && hadSharedUrl) updateSharedUrlFromCurrentInputs({ autoRun: Boolean(state.params) });
   if (window.lucide) window.lucide.createIcons();
 }
 
@@ -1543,6 +1685,11 @@ async function loadSelectedTrip() {
     clearWarning();
     await setMapProvider(settings.mapProvider || state.provider, { persist: false, preserveData: false });
     restoreTripState(trip);
+    // Loading a saved trip replaces every shareable input programmatically,
+    // so any loaded /t/<slug> snapshot URL no longer matches — invalidate it
+    // only after restoreTripState has set the trip's pins, or the rebuilt URL
+    // would serialize the previous trip's pinnedIds.
+    refreshSharedUrlIfPresent();
     savePreferences();
     els.tripName.value = trip.name;
     renderSavedTrips(trip.id);
@@ -1582,9 +1729,11 @@ function readTripSettings() {
       recentDays: Number.isFinite(state.params.recentDays) ? String(state.params.recentDays) : els.recentDays.value,
       radiusKm: Number.isFinite(state.params.radiusKm) ? String(state.params.radiusKm) : els.radiusKm.value,
       maxStops: Number.isFinite(state.params.maxStops) ? String(state.params.maxStops) : els.maxStops.value,
+      departTime: typeof state.params.departTime === "string" ? state.params.departTime : els.departTime.value,
       targets: Array.isArray(state.params.targets) ? state.params.targets.join("\n") : els.targets.value,
       speciesQuery: typeof state.params.speciesQuery === "string" ? state.params.speciesQuery : els.speciesQuery.value,
-      searchMode: typeof state.params.mode === "string" ? state.params.mode : state.mode
+      searchMode: typeof state.params.mode === "string" ? state.params.mode : state.mode,
+      balance: String(state.balance)
     };
   }
 
@@ -1592,6 +1741,7 @@ function readTripSettings() {
   for (const field of PREF_FIELDS) settings[field] = els[field].value;
   settings.searchMode = state.mode;
   settings.mapProvider = state.provider;
+  settings.balance = String(state.balance);
   return settings;
 }
 
@@ -1599,18 +1749,31 @@ function applyTripSettings(settings) {
   for (const field of PREF_FIELDS) {
     if (typeof settings[field] === "string" && els[field]) els[field].value = settings[field];
   }
+  // Trips saved before departTime existed carry no stored value; clear the
+  // field so a stale visible time is not silently applied when rerunning.
+  if (typeof settings.departTime !== "string") els.departTime.value = "";
   if (typeof settings.searchMode === "string") {
     setSearchMode(settings.searchMode, { persist: false });
   }
+  // Trips saved before the balance control existed restore at the default.
+  setBalance(settings.balance !== undefined ? Number(settings.balance) : DEFAULT_BALANCE, { skipRerank: true });
   updateInputSummaries();
 }
 
 function serializeTripState() {
+  // The selected stop can be an out-of-rank pool candidate (unpinned, outside
+  // the truncated visible results). Persist it alongside the results so
+  // restoring the trip can rebuild its detail panel and marker instead of
+  // silently clearing the selection.
+  const selectedCandidate = state.selectedId ? candidateById(state.selectedId) : null;
+  const selectedOutOfRank = selectedCandidate
+    && !state.results.some((item) => item.id === selectedCandidate.id);
   return {
     routeName: state.routeName,
     route: state.route,
     results: state.results.map(serializeCandidate),
     selectedId: state.selectedId,
+    selectedStop: selectedOutOfRank ? serializeCandidate(selectedCandidate) : null,
     warnings: state.warnings,
     params: state.params ? { ...state.params, token: "" } : null,
     origin: state.origin,
@@ -1643,6 +1806,7 @@ function serializeCandidate(candidate) {
     liferSpecies: candidate.liferSpecies,
     nearestSample: candidate.nearestSample,
     routeDistanceKm: candidate.routeDistanceKm,
+    routeProgress: candidate.routeProgress,
     targetMatches: candidate.targetMatches,
     viaRoute: candidate.viaRoute,
     addedMinutes: candidate.addedMinutes,
@@ -1657,6 +1821,9 @@ function serializeCandidate(candidate) {
     scoringVersion: candidate.scoringVersion,
     enabledScoreParts: candidate.enabledScoreParts,
     scoredWithLifeList: candidate.scoredWithLifeList,
+    siteQuality: candidate.siteQuality,
+    birdPoints: candidate.birdPoints,
+    birdMax: candidate.birdMax,
     score: candidate.score
   };
 }
@@ -1665,10 +1832,35 @@ function restoreTripState(trip) {
   const savedState = trip.state || {};
   state.routeName = savedState.routeName || "";
   state.route = savedState.route || null;
-  state.results = Array.isArray(savedState.results)
-    ? savedState.results.filter(isObjectRecord).map(hydrateCandidate)
+  const savedResults = Array.isArray(savedState.results)
+    ? savedState.results.filter(isObjectRecord)
     : [];
+  // Trips saved before routeProgress was serialized restore without it, which
+  // would hide arrival timing and drive-order sorting until a fresh search.
+  // Rebuild the missing metrics from the saved route geometry.
+  if (state.route?.geometry?.coordinates) {
+    ranking.backfillRouteMetrics(savedResults, state.route.geometry.coordinates);
+  }
+  state.results = savedResults.map(hydrateCandidate);
+  // Saved trips serialize only the truncated visible results, not the full
+  // candidate pool, so re-ranking a restored trip would silently produce wrong
+  // orderings — lock the balance control and keep the saved order. Display
+  // scores are recomputed from scoreParts at the stored balance (already
+  // applied by applyTripSettings) so they sit on the 0-100 scale.
+  state.candidatePool = [];
+  state.balanceLocked = true;
+  applyBalance(state.results);
   state.selectedId = savedState.selectedId || null;
+  // Rehydrate a selected stop saved from outside the visible results so the
+  // restore path routes it through the same out-of-rank handling as the live
+  // UI (candidateById fallback -> detail panel + unranked marker).
+  state.restoredSelectedStop = isObjectRecord(savedState.selectedStop)
+    && savedState.selectedStop.id
+    && savedState.selectedStop.id === state.selectedId
+    && !state.results.some((item) => item.id === state.selectedId)
+    ? hydrateCandidate(savedState.selectedStop)
+    : null;
+  if (state.restoredSelectedStop) applyBalance([state.restoredSelectedStop]);
   state.warnings = Array.isArray(savedState.warnings) ? savedState.warnings : [];
   state.params = isObjectRecord(savedState.params)
     ? { ...savedState.params, mapProvider: state.provider, token: els.apiToken.value.trim() }
@@ -1746,6 +1938,29 @@ function hydrateCandidate(candidate) {
     seen.add(obsKey);
   }
 
+  const scoreParts = candidate.scoreParts || {
+    species: 0,
+    activity: 0,
+    notable: 0,
+    targets: 0,
+    practicality: 0
+  };
+  // Left undefined for trips saved before this was recorded, so display code
+  // can tell "scored without a life list" apart from "we don't know".
+  const scoredWithLifeList = typeof candidate.scoredWithLifeList === "boolean"
+    ? candidate.scoredWithLifeList
+    : undefined;
+  const savedScoringVersion = Number.isFinite(candidate.scoringVersion) ? candidate.scoringVersion : 1;
+  // Balance-input rebuilds depend on which scoring model produced the saved
+  // parts: v2 saves carry {current, stable, personal}; v1 saves carry
+  // {species, activity, notable, targets, lifers}.
+  const savedIsV2 = savedScoringVersion >= 2;
+  const siteRaw = savedIsV2
+    ? (Number(scoreParts.current) || 0) + (Number(scoreParts.stable) || 0)
+    : (Number(scoreParts.species) || 0) + (Number(scoreParts.activity) || 0) + (Number(scoreParts.notable) || 0);
+  const siteRawMax = savedIsV2 ? 45 : 80;
+  const savedPersonalEnabled = Array.isArray(candidate.enabledScoreParts) && candidate.enabledScoreParts.includes("personal");
+
   const evidence = isObjectRecord(candidate.evidence)
     ? {
         ...candidate.evidence,
@@ -1775,16 +1990,23 @@ function hydrateCandidate(candidate) {
       ? candidate.liferSpecies.filter(isObjectRecord)
       : [],
     routeDistanceKm: Number.isFinite(candidate.routeDistanceKm) ? candidate.routeDistanceKm : 0,
-    scoreParts: candidate.scoreParts || {
-      species: 0,
-      activity: 0,
-      notable: 0,
-      targets: 0,
-      practicality: 0
-    },
-    // Left undefined for trips saved before this was recorded, so scoreScale can
-    // tell "scored without a life list" apart from "we don't know".
-    scoredWithLifeList: typeof candidate.scoredWithLifeList === "boolean" ? candidate.scoredWithLifeList : undefined,
+    scoreParts,
+    scoredWithLifeList,
+    // Rebuild balance inputs from scoreParts for trips saved before these
+    // fields existed; saves that carried them win via the fallbacks.
+    siteQuality: Number.isFinite(candidate.siteQuality)
+      ? candidate.siteQuality
+      : Math.round(siteRaw / siteRawMax * 100),
+    birdPoints: Number.isFinite(candidate.birdPoints)
+      ? candidate.birdPoints
+      : savedIsV2
+        ? siteRaw + (Number(scoreParts.personal) || 0)
+        : siteRaw + (Number(scoreParts.targets) || 0) + (Number(scoreParts.lifers) || 0),
+    birdMax: Number.isFinite(candidate.birdMax)
+      ? candidate.birdMax
+      : savedIsV2
+        ? (savedPersonalEnabled ? 60 : 45)
+        : ((scoredWithLifeList ?? (Number(scoreParts.lifers) || 0) > 0) ? 113 : 95),
     scoringVersion: Number.isFinite(candidate.scoringVersion) ? candidate.scoringVersion : 1,
     enabledScoreParts: Array.isArray(candidate.enabledScoreParts) ? candidate.enabledScoreParts : [],
     evidence,
@@ -1798,7 +2020,9 @@ function isObjectRecord(value) {
 
 function restoreSelectedStop() {
   if (!state.selectedId) return;
-  const candidate = state.results.find((item) => item.id === state.selectedId);
+  // Resolve through candidateById so a restored out-of-rank selected stop
+  // (kept in state.restoredSelectedStop) reopens like any other selection.
+  const candidate = candidateById(state.selectedId);
   if (!candidate) {
     state.selectedId = null;
     return;
@@ -1810,6 +2034,7 @@ function restoreSelectedStop() {
 }
 
 function renderEmptyResults(icon, message) {
+  els.orderToggle.hidden = true;
   els.resultsList.className = "results-list empty";
   els.resultsList.innerHTML = `<div class="empty-state"><i data-lucide="${icon}"></i><p>${escapeHtml(message)}</p></div>`;
 }
@@ -1962,6 +2187,9 @@ async function setMapProvider(provider, options = {}) {
       els.mapProvider.value = "osm";
       updateProviderHint();
       await initializeMap("osm", { preserveData });
+      // The fallback changes the control programmatically (no change event),
+      // so re-sync any live share URL that already serialized google.
+      refreshSharedUrlIfPresent();
     } else {
       throw error;
     }
@@ -2038,6 +2266,7 @@ function useSampleRoute() {
     els.radiusKm.value = "25";
     resetAutocomplete("origin");
     updateInputSummaries();
+    refreshSharedUrlIfPresent();
     return;
   }
   if (state.mode === "area") {
@@ -2058,6 +2287,7 @@ function useSampleRoute() {
   resetAutocomplete("origin");
   resetAutocomplete("destination");
   updateInputSummaries();
+  refreshSharedUrlIfPresent();
 }
 
 function resetAutocomplete(field) {
@@ -2080,6 +2310,10 @@ function resetAutocomplete(field) {
 
 function clearResults() {
   state.results = [];
+  state.candidatePool = [];
+  state.restoredSelectedStop = null;
+  state.balanceLocked = false;
+  syncBalanceControls();
   state.route = null;
   state.areaCenter = null;
   state.sightings = [];
@@ -2097,6 +2331,7 @@ function clearResults() {
   clearFieldErrors();
   clearWarning();
   els.report.innerHTML = "";
+  els.orderToggle.hidden = true;
   els.resultsList.className = "results-list empty";
   els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="binoculars"></i><p>Results will appear here after the first search.</p></div>';
   els.resultContext.textContent = state.mode === "species"
@@ -2123,7 +2358,7 @@ function clearResults() {
 }
 
 async function runSearch(options = {}) {
-  const { persistPreferences = true } = options;
+  const { persistPreferences = true, preserveSharedUrl = false } = options;
   if (persistPreferences) savePreferences();
   state.ebirdModalPrompted = false;
   setBusy(true);
@@ -2145,7 +2380,7 @@ async function runSearch(options = {}) {
       await runRouteSearch(params);
     }
     applyPendingSharedPins();
-    updateSharedUrlFromCurrentInputs({ autoRun: true });
+    if (!preserveSharedUrl) updateSharedUrlFromCurrentInputs({ autoRun: true });
   } catch (error) {
     setStatus("Search failed", error.message || "Something went wrong.");
     console.error(error);
@@ -2297,14 +2532,38 @@ async function runRouteSearch(params) {
     return;
   }
 
-  scoreCandidates(practical, params);
-
-  state.results = practical
-    .filter((candidate) => candidate.addedMinutes <= params.maxDetour)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, params.maxStops);
+  // The re-ranking pool must have complete notable data so candidates are
+  // comparable: bound it (retaining rescued candidates), then fetch notables
+  // for every member. evaluateDetours already drops over-budget candidates;
+  // the filter is belt-and-suspenders.
+  const eligible = practical.filter((candidate) => candidate.addedMinutes <= params.maxDetour);
+  // Notable reports do not feed the score, so candidates can be fully scored
+  // now that detour impact is known. The pool is exactly the union of the
+  // top maxStops under the rankUtility ordering at EVERY selectable balance
+  // level (the slider offers only the discrete BALANCE_LEVELS presets),
+  // plus rescued candidates — so each level's visible set survives later
+  // slider moves by construction, with no fixed cap on the union. This is
+  // pure retention over the already-evaluated candidates: it changes what
+  // is KEPT for notable lookups, not how many detours are evaluated. The
+  // active-balance sort only orders rescue extras; within each level,
+  // utility ties break by candidate ID, exactly as compareByRankUtility
+  // does, so the pool and the visible ranking cannot diverge at ties.
+  scoreCandidates(eligible, params);
+  eligible.sort(compareByRankUtility);
+  const balanceUtilities = BALANCE_LEVELS
+    .map((level) => (candidate) => (Number(candidate.birdPoints) || 0)
+      + level.convMult * (Number(candidate.scoreParts?.practicality) || 0));
+  const pool = ranking.selectNotableCandidates(eligible, {
+    maxStops: params.maxStops,
+    balanceUtilities
+  });
   setStatus("Adding notable birds", "Checking nearby notable reports for the strongest practical candidates.");
-  await addNotableObservations(state.results, params);
+  await fetchNotablesPerCandidate(pool, params);
+  scoreCandidates(pool, params);
+
+  state.balanceLocked = false;
+  state.candidatePool = pool;
+  deriveVisibleResults();
 
   renderResults();
   renderMarkers();
@@ -2376,13 +2635,13 @@ async function runAreaSearch(params) {
     addedMiles: 0
   }));
 
+  setStatus("Adding notable birds", "Checking recent notable reports for the strongest area matches.");
+  await addAreaNotableObservations(practical, params);
   scoreCandidates(practical, params);
 
-  state.results = practical
-    .sort((a, b) => b.score - a.score)
-    .slice(0, params.maxStops);
-  setStatus("Adding notable birds", "Checking recent notable reports for the strongest area matches.");
-  await addNotableObservations(state.results, params);
+  state.balanceLocked = false;
+  state.candidatePool = practical;
+  deriveVisibleResults();
 
   renderResults();
   renderMarkers();
@@ -2631,24 +2890,27 @@ function readParams() {
     recentDays: clamp(Number(els.recentDays.value || 14), 1, 30),
     radiusKm: clamp(Number(els.radiusKm.value || 25), 1, 50),
     maxStops: clamp(Number(els.maxStops.value || 10), 3, 20),
+    departTime: cleanTimeString(els.departTime.value),
     mapProvider: state.provider,
     token: els.apiToken.value.trim(),
     speciesQuery: els.speciesQuery.value.trim(),
     species: state.species && normalizeName(state.species.comName) === normalizeName(els.speciesQuery.value)
       ? state.species
       : null,
-    targets: els.targets.value
-      .split(/\n|,/)
-      .map((target) => normalizeName(target))
-      .filter(Boolean),
+    targets: parseTargetsInput(),
     lifeList: new Set(state.lifeList.species)
   };
 }
 
 function applyPendingSharedPins() {
-  if (!state.pendingPinnedIds.length || !state.results.length) return;
-  const resultIds = new Set(state.results.map((candidate) => candidate.id));
-  const pinnedIds = state.pendingPinnedIds.filter((id) => resultIds.has(id)).slice(0, 5);
+  // Shared URLs can carry a pin that sits outside the top N at the shared
+  // balance. Resolve pins against the full scored pool, not the truncated
+  // visible results, so such stops land in the out-of-rank pinned section
+  // instead of being silently dropped.
+  const source = state.candidatePool.length ? state.candidatePool : state.results;
+  if (!state.pendingPinnedIds.length || !source.length) return;
+  const candidateIds = new Set(source.map((candidate) => candidate.id));
+  const pinnedIds = state.pendingPinnedIds.filter((id) => candidateIds.has(id)).slice(0, 5);
   state.pendingPinnedIds = [];
   if (!pinnedIds.length || state.mode === "area") return;
   state.pinnedIds = pinnedIds;
@@ -2664,7 +2926,41 @@ async function shareCurrentTrip() {
     return;
   }
 
-  const shareUrl = updateSharedUrlFromCurrentInputs({ autoRun: true });
+  // One POST per click: every path below reuses this single promise, so a
+  // clipboard or share-sheet failure never creates a second stored trip
+  // (which would burn quota and orphan the first row).
+  const fallbackUrl = updateSharedUrlFromCurrentInputs({ autoRun: true });
+  const shortUrlPromise = createShortShareUrl(fallbackUrl);
+
+  // Without Web Share, hand the clipboard a PROMISE for the URL so the write
+  // starts inside the click's transient user activation — awaiting a slow or
+  // timing-out trip POST first can outlive that window, and some browsers
+  // then refuse the write entirely.
+  if (!navigator.share && navigator.clipboard?.write && window.ClipboardItem) {
+    try {
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          "text/plain": shortUrlPromise.then((url) => new Blob([url], { type: "text/plain" }))
+        })
+      ]);
+      setStatus("Link copied", "Copied a share link that refreshes this trip when opened.");
+      return;
+    } catch (error) {
+      if (error?.name === "AbortError") return;
+      console.error(error);
+      // Fall through to the await-then-share path below.
+    }
+  }
+
+  // Web Share must also run inside the click's activation, so never wait the
+  // POST's full 8s for it: after 3s share the legacy long URL instead (the
+  // documented fallback); a fast short link still wins the race.
+  const shareUrl = navigator.share
+    ? await Promise.race([
+      shortUrlPromise,
+      new Promise((resolve) => setTimeout(() => resolve(fallbackUrl), 3000))
+    ])
+    : await shortUrlPromise;
   // Intentionally omit `text` — share targets that don't fully support Web Share
   // concatenate text + url into one blob, which auto-linkers then fold back into
   // the URL and corrupt the query string (e.g. run=1 becomes run=1 Birdtrip…).
@@ -2689,13 +2985,58 @@ async function shareCurrentTrip() {
   } catch (error) {
     if (error?.name === "AbortError") return;
     console.error(error);
-    setStatus("Share failed", "The share link could not be copied.");
+    // Activation may have expired during the network wait; surface the link
+    // itself so one manual copy still succeeds.
+    setStatus("Copy this share link", shareUrl);
+  }
+}
+
+// Prefer a short server-stored link (/t/<slug>); fall back to the legacy
+// long query-parameter URL when the share service is disabled or down.
+async function createShortShareUrl(fallbackUrl) {
+  if (state.config.tripSharing?.enabled === false) return fallbackUrl;
+  try {
+    const response = await fetch("/api/trips", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(buildShareTripData()),
+      // Without a deadline a stalled insert would leave Share hanging with
+      // neither the short link nor the long-URL fallback.
+      signal: AbortSignal.timeout(8000)
+    });
+    if (!response.ok) throw new Error(`The share service responded ${response.status}`);
+    const payload = await response.json();
+    if (!payload?.slug) throw new Error("The share service returned no link");
+    return new URL(`/t/${payload.slug}`, window.location.href).toString();
+  } catch (error) {
+    console.error(error);
+    return fallbackUrl;
+  }
+}
+
+// Safari throttles history state calls (~100 per 30s window and throws
+// SecurityError beyond it), so keystroke-driven refreshes are debounced and
+// every replaceState is allowed to fail without breaking the interaction.
+let sharedUrlRefreshTimer = null;
+function scheduleSharedUrlRefresh() {
+  if (sharedUrlRefreshTimer) clearTimeout(sharedUrlRefreshTimer);
+  sharedUrlRefreshTimer = setTimeout(() => {
+    sharedUrlRefreshTimer = null;
+    refreshSharedUrlIfPresent();
+  }, 250);
+}
+
+function replaceHistoryUrl(url) {
+  try {
+    window.history.replaceState(null, "", url);
+  } catch (error) {
+    console.warn(`Address bar update skipped: ${error.message}`);
   }
 }
 
 function updateSharedUrlFromCurrentInputs(options = {}) {
   const url = buildShareUrl(options);
-  window.history.replaceState(null, "", preserveAuthFlag(url));
+  replaceHistoryUrl(preserveAuthFlag(url.toString()));
   return url;
 }
 
@@ -2712,36 +3053,94 @@ function preserveAuthFlag(urlString) {
 
 function clearSharedUrl() {
   const url = new URL(window.location.href);
-  if (url.searchParams.get("bt") !== SHARE_URL_VERSION) return;
+  if (url.searchParams.get("bt") !== SHARE_URL_VERSION && !sharedTripSlugFromLocation()) return;
+  url.pathname = "/";
   url.search = "";
   url.hash = "";
-  window.history.replaceState(null, "", preserveAuthFlag(url.toString()));
+  replaceHistoryUrl(preserveAuthFlag(url.toString()));
 }
 
 function refreshSharedUrlIfPresent() {
-  if (new URLSearchParams(window.location.search).get("bt") !== SHARE_URL_VERSION) return;
-  updateSharedUrlFromCurrentInputs({ autoRun: Boolean(state.params) });
+  // For an existing query-parameter share, patch just ranking state. Rebuilding
+  // from live form fields could capture edits the user has not re-submitted,
+  // yielding a run=1 URL for a search the displayed results don't reflect.
+  const url = new URL(window.location.href);
+  if (url.searchParams.get("bt") !== SHARE_URL_VERSION) {
+    // A /t/<slug> link is an immutable snapshot; once the trip changes, swap
+    // the address bar to a live query-parameter URL so copying stays accurate.
+    if (sharedTripSlugFromLocation()) {
+      updateSharedUrlFromCurrentInputs({ autoRun: Boolean(state.params) });
+    }
+    return;
+  }
+  if (state.balance !== DEFAULT_BALANCE) {
+    url.searchParams.set("balance", String(state.balance));
+  } else {
+    url.searchParams.delete("balance");
+  }
+  url.searchParams.delete("pin");
+  for (const id of state.pinnedIds.slice(0, 5)) url.searchParams.append("pin", id);
+  replaceHistoryUrl(url);
+}
+
+function buildShareTripData() {
+  // Every text field is capped with the same cleaner and limit the reader
+  // applies in sanitizeSharedSearch, so what a recipient loads is exactly
+  // what the creator shared — never a silently truncated variant.
+  const data = {
+    version: 1,
+    mode: state.mode,
+    origin: cleanSharedText(els.origin.value, 160),
+    mapProvider: providerFromInput(),
+    maxDetour: clamp(Number(els.maxDetour.value || 60), 0, 240),
+    recentDays: clamp(Number(els.recentDays.value || 14), 1, 30),
+    radiusKm: clamp(Number(els.radiusKm.value || 25), 1, 50),
+    maxStops: clamp(Number(els.maxStops.value || 10), 3, 20),
+    autoRun: true
+  };
+  if (state.mode === "route") data.destination = cleanSharedText(els.destination.value, 160);
+  if (state.mode === "species" && els.speciesQuery.value.trim()) {
+    data.species = cleanSharedText(els.speciesQuery.value, 80);
+  }
+  const departTime = cleanTimeString(els.departTime.value);
+  if (departTime) data.departTime = departTime;
+  // Cap at the same length the stored-trip reader accepts, so what a
+  // recipient loads is exactly what the creator shared.
+  const targets = cleanSharedTargets(els.targets.value, STORED_TARGETS_MAX_LENGTH);
+  if (targets) data.targets = targets;
+  if (state.balance !== DEFAULT_BALANCE) data.balance = state.balance;
+  const pins = state.pinnedIds.slice(0, 5);
+  if (pins.length) data.pins = pins;
+  return data;
 }
 
 function buildShareUrl(options = {}) {
   const { autoRun = false } = options;
+  const data = buildShareTripData();
   const url = new URL(window.location.href);
+  url.pathname = "/";
   url.search = "";
   url.hash = "";
   url.searchParams.set("bt", SHARE_URL_VERSION);
-  url.searchParams.set("mode", state.mode);
-  url.searchParams.set("origin", els.origin.value.trim());
-  if (state.mode === "route") url.searchParams.set("destination", els.destination.value.trim());
-  if (state.mode === "species" && els.speciesQuery.value.trim()) {
-    url.searchParams.set("species", els.speciesQuery.value.trim());
+  url.searchParams.set("mode", data.mode);
+  url.searchParams.set("origin", data.origin);
+  if (data.mode === "route") url.searchParams.set("destination", data.destination || "");
+  if (data.species) url.searchParams.set("species", data.species);
+  url.searchParams.set("mapProvider", data.mapProvider);
+  url.searchParams.set("maxDetour", String(data.maxDetour));
+  url.searchParams.set("recentDays", String(data.recentDays));
+  url.searchParams.set("radiusKm", String(data.radiusKm));
+  url.searchParams.set("maxStops", String(data.maxStops));
+  if (data.departTime) url.searchParams.set("departTime", data.departTime);
+  // The stored channel allows 10k of targets, but a query URL is read back
+  // through the 1200-character legacy cap — re-cap here so the fallback link
+  // round-trips exactly (and stays within practical URL length limits).
+  if (data.targets) {
+    const urlTargets = cleanSharedTargets(data.targets, URL_TARGETS_MAX_LENGTH);
+    if (urlTargets) url.searchParams.set("targets", urlTargets);
   }
-  url.searchParams.set("mapProvider", providerFromInput());
-  url.searchParams.set("maxDetour", String(clamp(Number(els.maxDetour.value || 60), 0, 240)));
-  url.searchParams.set("recentDays", String(clamp(Number(els.recentDays.value || 14), 1, 30)));
-  url.searchParams.set("radiusKm", String(clamp(Number(els.radiusKm.value || 25), 1, 50)));
-  url.searchParams.set("maxStops", String(clamp(Number(els.maxStops.value || 10), 3, 20)));
-  if (els.targets.value.trim()) url.searchParams.set("targets", els.targets.value.trim());
-  for (const id of state.pinnedIds.slice(0, 5)) url.searchParams.append("pin", id);
+  if (data.balance !== undefined) url.searchParams.set("balance", String(data.balance));
+  for (const id of data.pins || []) url.searchParams.append("pin", id);
   if (autoRun) url.searchParams.set("run", "1");
   return url.toString();
 }
@@ -2905,11 +3304,15 @@ function updateInputSummaries() {
   renderInsights();
 }
 
+// Deduped: the same species entered twice must count as one target everywhere
+// downstream (targetSlots normalization, targetMatches, route target rescue).
 function parseTargetsInput() {
-  return els.targets.value
-    .split(/\n|,/)
-    .map((target) => normalizeName(target))
-    .filter(Boolean);
+  return Array.from(new Set(
+    els.targets.value
+      .split(/\n|,/)
+      .map((target) => normalizeName(target))
+      .filter(Boolean)
+  ));
 }
 
 async function handleLifeListFile(event) {
@@ -2968,6 +3371,195 @@ function updateLifeListStatus() {
   els.clearLifeListButton.disabled = false;
 }
 
+function handleDepartTimeChange() {
+  if (state.params) state.params.departTime = cleanTimeString(els.departTime.value);
+  savePreferences();
+  refreshSharedUrlIfPresent();
+  renderResultsIfPresent();
+}
+
+function setResultOrder(order) {
+  if (state.resultOrder === order) return;
+  state.resultOrder = order;
+  const byArrival = order === "arrival";
+  els.orderByScore.classList.toggle("is-active", !byArrival);
+  els.orderByArrival.classList.toggle("is-active", byArrival);
+  els.orderByScore.setAttribute("aria-pressed", String(!byArrival));
+  els.orderByArrival.setAttribute("aria-pressed", String(byArrival));
+  if (state.results.length) {
+    renderResults();
+    renderMarkers();
+    if (window.lucide) window.lucide.createIcons();
+  }
+}
+
+// The departure time means clock time at the route origin. Without a
+// lat/lng-to-IANA-timezone database we approximate: when the browser's UTC
+// offset is plausible for the origin longitude (the common case — planning a
+// trip in your own region), the browser timezone IS the route timezone and is
+// used exactly, DST included. When it clearly is not (viewing a shared route
+// from another part of the world), fall back to a longitude-based offset so
+// departure, arrivals, and sunrise/sunset all stay in route-local time
+// instead of shifting by the viewer's offset.
+// The browser offset is sampled at the instant being displayed (atMs), not at
+// render time, so a route straddling a DST transition shows post-transition
+// clocks with the post-transition offset.
+function routeTimeContext(atMs = Date.now()) {
+  const browserOffsetMinutes = -new Date(atMs).getTimezoneOffset();
+  const approxOffsetMinutes = timing?.approximateUtcOffsetMinutes?.(state.route?.origin?.lng);
+  if (!Number.isFinite(approxOffsetMinutes) || Math.abs(browserOffsetMinutes - approxOffsetMinutes) <= 90) {
+    return { offsetMinutes: browserOffsetMinutes, approximate: false };
+  }
+  return { offsetMinutes: approxOffsetMinutes, approximate: true };
+}
+
+// Clock display context for a single stop. Routes can cross time zones, so a
+// stop whose rounded solar zone differs from the origin's is displayed with
+// the origin's display offset shifted by the solar difference (approximate),
+// while stops in the origin's zone keep the route context unchanged.
+function stopTimeContext(lng, atMs = Date.now()) {
+  const routeContext = routeTimeContext(atMs);
+  const stopOffset = timing?.stopClockOffsetMinutes?.({
+    originDisplayOffsetMinutes: routeContext.offsetMinutes,
+    originLng: state.route?.origin?.lng,
+    stopLng: lng
+  });
+  if (!stopOffset?.shifted) return routeContext;
+  return { offsetMinutes: stopOffset.offsetMinutes, approximate: true };
+}
+
+function departureTimestamp() {
+  const value = cleanTimeString(state.params?.departTime);
+  if (!value) return null;
+  const [hours, minutes] = value.split(":").map(Number);
+  const context = routeTimeContext();
+  if (!context.approximate) {
+    const now = new Date();
+    // On a spring-forward date the requested wall time may not exist (02:30 on
+    // the skip day); the multi-argument Date constructor silently normalizes
+    // it forward (to 03:30). That normalized instant is the only real instant
+    // near the request, so it is used as-is; departureDstSkipNote() discloses
+    // the shift wherever timing estimates are shown.
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes).getTime();
+  }
+  const offsetMs = context.offsetMinutes * 60000;
+  const routeNow = new Date(Date.now() + offsetMs);
+  return Date.UTC(routeNow.getUTCFullYear(), routeNow.getUTCMonth(), routeNow.getUTCDate(), hours, minutes) - offsetMs;
+}
+
+// Non-empty exactly when today's spring-forward transition skips the requested
+// departure wall time: the constructed Date's clock is compared against the
+// parsed input, and on mismatch the note names the departure the estimates
+// really use. The approximate (fixed-offset) branch of departureTimestamp()
+// never normalizes, so no check is needed there. Leading space matches the
+// sentence-part convention in timingSentence().
+function departureDstSkipNote() {
+  const value = cleanTimeString(state.params?.departTime);
+  if (!value || routeTimeContext().approximate) return "";
+  const [hours, minutes] = value.split(":").map(Number);
+  const now = new Date();
+  const date = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes);
+  if (date.getHours() === hours && date.getMinutes() === minutes) return "";
+  return ` Daylight saving time skips a ${value} departure today, so estimates leave at ${formatClock(date.getTime())}.`;
+}
+
+function candidateTiming(candidate) {
+  if (!timing || state.params?.mode !== "route") return null;
+  const departureMs = departureTimestamp();
+  const durationSeconds = state.route?.durationSeconds;
+  if (!departureMs || !Number.isFinite(durationSeconds) || !Number.isFinite(candidate.routeProgress)) return null;
+  const arrivalMs = timing.estimateArrivalMs({
+    departureMs,
+    routeProgress: candidate.routeProgress,
+    routeDurationSeconds: durationSeconds,
+    addedMinutes: candidate.addedMinutes
+  });
+  const sun = timing.sunTimes(arrivalMs, candidate.lat, candidate.lng);
+  if (!Number.isFinite(arrivalMs) || !sun) return null;
+  const habitat = timing.inferStopTiming(candidate.name);
+  const assessment = timing.assessArrival({
+    arrivalMs,
+    sunriseMs: sun.sunriseMs,
+    sunsetMs: sun.sunsetMs,
+    polar: sun.polar,
+    window: habitat.window
+  });
+  if (!assessment) return null;
+  return { arrivalMs, sun, habitat, assessment, lng: candidate.lng };
+}
+
+function formatClock(ms, context = routeTimeContext(ms)) {
+  if (!context.approximate) {
+    return new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  }
+  return new Date(ms + context.offsetMinutes * 60000)
+    .toLocaleTimeString([], { hour: "numeric", minute: "2-digit", timeZone: "UTC" });
+}
+
+// Day marker (" +1d", " -1d", …) appended to an arrival clock when the
+// displayed arrival date differs from the displayed departure date, so
+// tomorrow's 1:05 AM is distinguishable from today's. Days are counted on the
+// clocks the user actually sees: the departure on the origin's displayed
+// clock and the arrival on the stop's (they differ when the route crosses
+// time zones — a 10 PM west-coast departure heading east already reads as
+// "tomorrow" on an eastern stop's clock, which must not swallow the arrival's
+// real +1d). The difference can be negative: a 12:15 AM departure reaching a
+// stop displayed an hour farther west can arrive at 11:45 PM on the previous
+// displayed date, which must read " -1d" rather than look a day late.
+// Browser-local calendar days are used when the context is exact,
+// fixed-offset days when it is approximate.
+function arrivalDayMarker(arrivalMs, context) {
+  const departureMs = departureTimestamp();
+  if (departureMs === null || !Number.isFinite(arrivalMs)) return "";
+  let days;
+  if (context.approximate) {
+    days = timing?.calendarDaysApart?.({
+      fromMs: departureMs,
+      toMs: arrivalMs,
+      fromOffsetMinutes: routeTimeContext(departureMs).offsetMinutes,
+      toOffsetMinutes: context.offsetMinutes
+    });
+  } else {
+    const localDayStartMs = (ms) => {
+      const local = new Date(ms);
+      return Date.UTC(local.getFullYear(), local.getMonth(), local.getDate());
+    };
+    days = Math.round((localDayStartMs(arrivalMs) - localDayStartMs(departureMs)) / 86400000);
+  }
+  return Number.isFinite(days) && days !== 0 ? ` ${days > 0 ? `+${days}` : days}d` : "";
+}
+
+// The one arrival-clock string every surface (chips, details, report) shares:
+// clock time plus the overnight day marker.
+function arrivalClockLabel(stopTiming, context = stopTimeContext(stopTiming.lng, stopTiming.arrivalMs)) {
+  return `${formatClock(stopTiming.arrivalMs, context)}${arrivalDayMarker(stopTiming.arrivalMs, context)}`;
+}
+
+function timingChipLabel(stopTiming) {
+  switch (stopTiming.assessment.quality) {
+    case "prime": return "prime time";
+    case "good": return "good timing";
+    case "fair": return "ok timing";
+    case "dark": return "in the dark";
+    default: return stopTiming.habitat.bestLabel;
+  }
+}
+
+function timingSentence(stopTiming) {
+  const context = stopTimeContext(stopTiming.lng, stopTiming.arrivalMs);
+  const arrival = arrivalClockLabel(stopTiming, context);
+  const habitatName = stopTiming.habitat.habitat === "general" ? "This stop" : `This ${stopTiming.habitat.habitat} stop`;
+  // Each solar clock gets a context sampled at its own instant: a sunrise or
+  // sunset can sit on the far side of a DST transition from the arrival, where
+  // the arrival's offset would misstate it by an hour.
+  const sunPart = stopTiming.sun.polar
+    ? ""
+    : ` Sunrise ${formatClock(stopTiming.sun.sunriseMs, stopTimeContext(stopTiming.lng, stopTiming.sun.sunriseMs))},` +
+      ` sunset ${formatClock(stopTiming.sun.sunsetMs, stopTimeContext(stopTiming.lng, stopTiming.sun.sunsetMs))}.`;
+  const zonePart = context.approximate ? " Times are approximate local time at this stop." : "";
+  return `You'd reach this stop around ${arrival} — ${stopTiming.assessment.note}. ${habitatName} is ${stopTiming.habitat.bestLabel}.${sunPart}${zonePart}${departureDstSkipNote()}`;
+}
+
 function renderResultsIfPresent() {
   if (!state.results.length) {
     els.liferCount.textContent = state.lifeList.species.size ? "0" : "-";
@@ -2978,26 +3570,49 @@ function renderResultsIfPresent() {
   renderMarkers();
   renderReport();
   if (state.selectedId) {
-    const candidate = state.results.find((item) => item.id === state.selectedId);
+    const candidate = candidateById(state.selectedId);
     if (candidate) renderDetails(candidate);
   }
 }
 
 function applyLifeListToCurrentResults() {
-  if (!state.results.length) return;
+  // Restored trips have no candidate pool — re-scoring their truncated visible
+  // results would silently reorder the saved trip. A fresh search picks the
+  // life list up ("Run search again for full reranking"). The ranking stays
+  // locked, but lifer metadata (chips, reasons, details, report) must still
+  // track the imported list rather than the one saved with the trip.
+  if (state.balanceLocked) {
+    const lifeList = new Set(state.lifeList.species);
+    const restored = state.restoredSelectedStop
+      ? state.results.concat(state.restoredSelectedStop)
+      : state.results;
+    for (const candidate of restored) {
+      candidate.liferSpecies = lifeList.size
+        ? Array.from(candidate.species.values()).filter((obs) => !isSeenObservation(obs, lifeList))
+        : [];
+    }
+    return;
+  }
+  const pool = state.candidatePool.length ? state.candidatePool : state.results;
+  if (!pool.length) return;
   const params = {
     ...(state.params || {}),
     maxDetour: state.params?.maxDetour ?? clamp(Number(els.maxDetour.value || 60), 0, 240),
     lifeList: new Set(state.lifeList.species)
   };
-  for (const candidate of state.results) {
+  for (const candidate of pool) {
     candidate.liferSpecies = params.lifeList.size
       ? Array.from(candidate.species.values()).filter((obs) => !isSeenObservation(obs, params.lifeList))
       : [];
   }
-  const currentCandidates = state.results.filter((candidate) => candidate.scoringVersion === SCORING_VERSION);
+  // Legacy-scored candidates (older saved trips) keep their stored score.
+  const currentCandidates = pool.filter((candidate) => candidate.scoringVersion === SCORING_VERSION);
   if (currentCandidates.length) scoreCandidates(currentCandidates, params);
-  state.results.sort((a, b) => b.score - a.score);
+  if (state.candidatePool.length) {
+    deriveVisibleResults();
+  } else {
+    state.results.sort(compareByRankUtility);
+  }
 }
 
 function parseLifeListText(text, fileName = "") {
@@ -3147,6 +3762,10 @@ function cleanSpeciesName(value) {
 
 function clearSearchArtifacts() {
   state.results = [];
+  state.candidatePool = [];
+  state.restoredSelectedStop = null;
+  state.balanceLocked = false;
+  syncBalanceControls();
   state.selectedId = null;
   state.comparisonIds = [];
   state.pinnedIds = [];
@@ -3359,6 +3978,7 @@ async function useCurrentLocationForOrigin() {
     unlockSharedField("origin");
     updateInputSummaries();
     savePreferences();
+    refreshSharedUrlIfPresent();
   } catch (error) {
     const message = describeGeolocationError(error);
     setFieldError("origin", message);
@@ -3566,6 +4186,9 @@ function selectAutocompleteItem(field, index) {
     unlockSharedField(field);
     savePreferences();
   }
+  // Accepting a suggestion assigns the value programmatically (no input
+  // event), so invalidate any loaded /t/<slug> snapshot URL here too.
+  refreshSharedUrlIfPresent();
 }
 
 function handleAutocompleteOutsideClick(event) {
@@ -3742,6 +4365,8 @@ function selectSpeciesItem(index) {
   hideSpeciesAutocomplete();
   unlockSharedField("speciesQuery");
   savePreferences();
+  // Same as location autocomplete: programmatic assignment fires no event.
+  refreshSharedUrlIfPresent();
 }
 
 function hideSpeciesAutocomplete() {
@@ -3796,6 +4421,11 @@ function syncTargetsFromRows() {
   // of waiting for an unrelated savePreferences() trigger. The account write
   // this queues is debounced in queueProfileUpsert().
   savePreferences();
+  // Row removal, list paste, and suggestion picks mutate the hidden textarea
+  // programmatically (no form input/change event), so invalidate any loaded
+  // /t/<slug> snapshot URL here. Hydration never calls this — it only renders
+  // rows from the textarea — so an unedited shared trip keeps its short URL.
+  refreshSharedUrlIfPresent();
 }
 
 function renderTargetRows() {
@@ -4732,11 +5362,21 @@ async function evaluateDetours(candidates, origin, destination, baseDurationSeco
   const practical = [];
   const ordered = orderRoutingCandidates(candidates, params);
   const initialCount = Math.min(ordered.length, Math.max(params.maxStops, 15), MAX_INITIAL_DETOURS);
+  // Evaluation-breadth target, separate from pool retention: keep
+  // evaluating past the first round until max(2 × maxStops, 12) practical
+  // members exist, so balance changes have candidates from outside the top
+  // maxStops to promote. The pool itself is the per-level union selected
+  // later (selectNotableCandidates), which only retains already-evaluated
+  // candidates and costs no extra route calls. Still capped by
+  // MAX_TOTAL_DETOURS to bound route-API usage — at high maxStops the
+  // practical set may stay smaller than the target.
+  const refillTarget = Math.max(params.maxStops * 2, 12);
   let attempted = 0;
   let failed = 0;
 
-  const evaluateRange = async (start, end) => {
+  const evaluateRange = async (start, end, target = Infinity) => {
     for (let index = start; index < end; index += 3) {
+      if (practical.length >= target) break;
       const batch = ordered.slice(index, Math.min(index + 3, end));
       setStatus("Checking detours", `Evaluating route impact ${index + 1}-${index + batch.length} of up to ${Math.min(ordered.length, MAX_TOTAL_DETOURS)}.`);
       const results = await Promise.all(batch.map(async (candidate) => {
@@ -4762,10 +5402,10 @@ async function evaluateDetours(candidates, origin, destination, baseDurationSeco
   };
 
   await evaluateRange(0, initialCount);
-  if (practical.length < params.maxStops && attempted < Math.min(ordered.length, MAX_TOTAL_DETOURS)) {
+  if (practical.length < refillTarget && attempted < Math.min(ordered.length, MAX_TOTAL_DETOURS)) {
     const refillEnd = Math.min(ordered.length, MAX_TOTAL_DETOURS);
     setStatus("Checking more detours", `The first round found ${practical.length} stops within budget; checking additional candidates.`);
-    await evaluateRange(attempted, refillEnd);
+    await evaluateRange(attempted, refillEnd, refillTarget);
   }
   if (failed) {
     addWarning(`${failed} of ${attempted} detour estimates failed and those stops were skipped.`);
@@ -4818,23 +5458,6 @@ function orderRoutingCandidates(candidates, params) {
   return ordered;
 }
 
-async function addNotableObservations(candidates, params) {
-  if (params.mode === "area" && state.areaCenter) {
-    await addAreaNotableObservations(candidates, params);
-    return;
-  }
-  await fetchNotablesPerCandidate(selectNotableCandidates(candidates, params), params);
-}
-
-function selectNotableCandidates(candidates, params) {
-  const top = candidates.slice(0, Math.max(params.maxStops, 6));
-  const topIds = new Set(top.map((candidate) => candidate.id));
-  for (const candidate of candidates) {
-    if (candidate.preserved && !topIds.has(candidate.id)) top.push(candidate);
-  }
-  return top;
-}
-
 async function fetchNotablesPerCandidate(list, params) {
   let failed = 0;
   for (let i = 0; i < list.length; i += 1) {
@@ -4875,7 +5498,10 @@ async function addAreaNotableObservations(candidates, params) {
       { token: params.token }
     );
   } catch {
-    await fetchNotablesPerCandidate(selectNotableCandidates(candidates, params), params);
+    // Fallback must cover the whole area pool, not the route-mode bound:
+    // every area candidate stays rankable, so partial notable data would
+    // bias re-ranking against the unfetched tail.
+    await fetchNotablesPerCandidate(candidates, params);
     return;
   }
   if (Array.isArray(feed) && feed.length >= feedMaxResults) {
@@ -4916,6 +5542,7 @@ function scoreCandidates(candidates, params) {
       allTimeSpeciesCount: candidate.allTimeSpeciesCount,
       weightedTargets,
       weightedUnseen,
+      targetSlots: params.targets.length,
       targetsEnabled,
       unseenEnabled,
       routeDistanceKm: candidate.routeDistanceKm,
@@ -4927,7 +5554,88 @@ function scoreCandidates(candidates, params) {
     candidate.scoringVersion = SCORING_VERSION;
     candidate.enabledScoreParts = result.enabledScoreParts;
     candidate.scoreParts = result.scoreParts;
-    candidate.score = result.score;
+    // siteQuality excludes personal value so targets/lifers can't mint a
+    // "Top hotspot"; birdPoints is the personalized non-practicality total.
+    candidate.siteQuality = Math.round((result.scoreParts.current + result.scoreParts.stable) / 45 * 100);
+    candidate.birdPoints = result.scoreParts.current + result.scoreParts.stable + result.scoreParts.personal;
+    candidate.birdMax = targetsEnabled || unseenEnabled ? 60 : 45;
+  }
+  // applyBalance recomputes candidate.score; at the default balance it matches
+  // ranking.calculateCandidateScore's normalized score exactly.
+  applyBalance(candidates);
+}
+
+function applyBalance(candidates, balanceIndex = state.balance) {
+  const level = BALANCE_LEVELS[balanceIndex] || BALANCE_LEVELS[DEFAULT_BALANCE];
+  for (const candidate of candidates) {
+    const practicality = Number(candidate.scoreParts?.practicality) || 0;
+    candidate.rankUtility = candidate.birdPoints + level.convMult * practicality;
+    // Legacy-scored candidates (saved trips from older scoring models) keep
+    // their saved score; the pill and tooltip present it on its legacy scale.
+    if (candidate.scoringVersion !== SCORING_VERSION) continue;
+    candidate.score = Math.round(candidate.rankUtility / (candidate.birdMax + level.convMult * 40) * 100);
+  }
+}
+
+function compareByRankUtility(a, b) {
+  return (b.rankUtility - a.rankUtility) || String(a.id).localeCompare(String(b.id));
+}
+
+// The visible list is always derived from the full scored pool so that
+// re-ranking (balance changes, life-list updates) can admit candidates from
+// outside the current top maxStops.
+function deriveVisibleResults() {
+  applyBalance(state.candidatePool);
+  const maxStops = Number.isFinite(state.params?.maxStops)
+    ? state.params.maxStops
+    : clamp(Number(els.maxStops.value || 10), 3, 20);
+  state.results = [...state.candidatePool].sort(compareByRankUtility).slice(0, maxStops);
+}
+
+function candidateById(id) {
+  return state.candidatePool.find((item) => item.id === id)
+    || state.results.find((item) => item.id === id)
+    || (state.restoredSelectedStop?.id === id ? state.restoredSelectedStop : null);
+}
+
+function setBalance(index, options = {}) {
+  // Non-integer or out-of-range imported values fall back to the default
+  // rather than clamping or rounding: a bogus balance=99 shouldn't read as
+  // "Less driving" and balance=0.6 shouldn't read as "Leaning birding".
+  const parsed = Number(index);
+  state.balance = Number.isInteger(parsed) && parsed >= 0 && parsed < BALANCE_LEVELS.length
+    ? parsed
+    : DEFAULT_BALANCE;
+  syncBalanceControls();
+  if (options.skipRerank || state.balanceLocked || !state.candidatePool.length) return;
+  deriveVisibleResults();
+  renderResults();
+  renderMarkers();
+  renderReport();
+  updateVisibleDetails();
+  refreshSharedUrlIfPresent();
+}
+
+function syncBalanceControls() {
+  if (!els.balanceSlider) return;
+  const level = BALANCE_LEVELS[state.balance] || BALANCE_LEVELS[DEFAULT_BALANCE];
+  const pairs = [
+    [els.balanceSlider, els.balanceHint],
+    [els.balanceSliderResults, els.balanceHintResults]
+  ];
+  for (const [slider, hint] of pairs) {
+    if (!slider) continue;
+    slider.value = String(state.balance);
+    slider.disabled = state.balanceLocked;
+    slider.setAttribute("aria-valuetext", level.label);
+    if (hint) {
+      hint.textContent = state.balanceLocked
+        ? "Saved trips keep their original ranking."
+        : level.label;
+    }
+  }
+  if (els.balanceFieldResults) {
+    els.balanceFieldResults.hidden = state.mode === "species" || !state.results.length;
   }
 }
 
@@ -4992,7 +5700,8 @@ function parseObservationDate(value) {
 }
 
 function pinnedStops() {
-  const byId = new Map(state.results.map((candidate) => [candidate.id, candidate]));
+  const source = state.candidatePool.length ? state.candidatePool : state.results;
+  const byId = new Map(source.map((candidate) => [candidate.id, candidate]));
   const stops = state.pinnedIds.map((id) => byId.get(id)).filter(Boolean);
   if (stops.length !== state.pinnedIds.length) {
     state.pinnedIds = stops.map((stop) => stop.id);
@@ -5005,7 +5714,7 @@ function isPinned(id) {
 }
 
 function togglePinned(id) {
-  const candidate = state.results.find((item) => item.id === id);
+  const candidate = candidateById(id);
   if (!candidate) return;
   if (isPinned(id)) {
     state.pinnedIds = state.pinnedIds.filter((pinnedId) => pinnedId !== id);
@@ -5249,7 +5958,7 @@ function bestWithinBudget(minutes) {
 }
 
 function compareBirdingRouteValue(a, b) {
-  if (b.score !== a.score) return b.score - a.score;
+  if (b.rankUtility !== a.rankUtility) return b.rankUtility - a.rankUtility;
   const bValue = birdingValuePerMinute(b);
   const aValue = birdingValuePerMinute(a);
   if (bValue !== aValue) return bValue - aValue;
@@ -5498,22 +6207,61 @@ function renderResults() {
   els.resultsList.innerHTML = "";
 
   if (!state.results.length) {
+    els.orderToggle.hidden = true;
     els.resultsList.className = "results-list empty";
     els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="search-x"></i><p>No stops matched the current constraints.</p></div>';
     if (window.lucide) window.lucide.createIcons();
     return;
   }
 
-  const scale = scoreScale(state.results);
-  state.results.forEach((candidate, index) => {
-    const node = els.resultTemplate.content.cloneNode(true);
+  const orderableByArrival = !isArea && state.results.some((candidate) => Number.isFinite(candidate.routeProgress));
+  els.orderToggle.hidden = !orderableByArrival;
+  const byArrival = orderableByArrival && state.resultOrder === "arrival";
+  const displayResults = displayOrderedResults();
+  const outOfRankPinned = outOfRankPinnedStops();
+  // The pill scale must cover every rendered card, including out-of-rank pins.
+  const scale = scoreScale(state.results.concat(outOfRankPinned));
+  displayResults.forEach((candidate, index) => {
+    els.resultsList.appendChild(buildStopCard(candidate, index, { outOfRank: false, scale, byArrival }));
+  });
+
+  if (outOfRankPinned.length) {
+    const heading = document.createElement("p");
+    heading.className = "out-of-rank-heading";
+    heading.textContent = "Pinned — outside current top results";
+    els.resultsList.appendChild(heading);
+    outOfRankPinned.forEach((candidate, offset) => {
+      // Give each out-of-rank card a distinct index so candidateSpeciesPreview
+      // derives unique tooltip IDs (duplicate IDs break aria-describedby).
+      els.resultsList.appendChild(buildStopCard(candidate, state.results.length + offset, { outOfRank: true, scale, byArrival: false }));
+    });
+  }
+
+  renderComparison();
+  syncBalanceControls();
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function outOfRankPinnedStops() {
+  return pinnedStops().filter((stop) => !state.results.some((item) => item.id === stop.id));
+}
+
+function buildStopCard(candidate, index, { outOfRank, scale, byArrival }) {
+  const isArea = state.params?.mode === "area";
+  const node = els.resultTemplate.content.cloneNode(true);
+  {
     const card = node.querySelector(".stop-card");
     card.dataset.id = candidate.id;
     if (candidate.id === state.selectedId) card.classList.add("is-selected");
     if (isPinned(candidate.id)) card.classList.add("is-pinned");
+    if (outOfRank) card.classList.add("is-out-of-rank");
     const rank = node.querySelector(".rank");
-    rank.textContent = String(index + 1);
-    rank.title = `Rank ${index + 1} of ${state.results.length} by score`;
+    rank.textContent = outOfRank ? "📌" : String(index + 1);
+    rank.title = outOfRank
+      ? "Pinned stop outside the current top results"
+      : byArrival
+        ? `Stop ${index + 1} of ${state.results.length} in drive order`
+        : `Rank ${index + 1} of ${state.results.length} by score`;
     node.querySelector(".stop-name").textContent = candidate.name;
     node.querySelector(".stop-preview").textContent = speciesPreview(candidate);
     node.querySelector(".stop-chips").innerHTML = candidateChips(candidate, index);
@@ -5591,14 +6339,13 @@ function renderResults() {
     dir.setAttribute("aria-label", `Directions to ${candidate.name}`);
     ebird.setAttribute("aria-label", `${candidate.name} on eBird`);
     const mainButton = node.querySelector(".stop-main");
-    mainButton.setAttribute("aria-label", `View ${candidate.name}, rank ${index + 1} of ${state.results.length}, score ${candidate.score} of ${scale.max}`);
+    mainButton.setAttribute("aria-label", outOfRank
+      ? `View ${candidate.name}, pinned outside current top results, score ${candidate.score} of ${scale.max}`
+      : `View ${candidate.name}, ${byArrival ? "stop" : "rank"} ${index + 1} of ${state.results.length}, score ${candidate.score} of ${scale.max}`);
     mainButton.addEventListener("click", () => selectCandidate(candidate.id));
     setupCandidateSpeciesPreviews(card);
-    els.resultsList.appendChild(node);
-  });
-
-  renderComparison();
-  if (window.lucide) window.lucide.createIcons();
+  }
+  return node;
 }
 
 function setMetricTooltip(element, text) {
@@ -5608,13 +6355,30 @@ function setMetricTooltip(element, text) {
   element.tabIndex = 0;
 }
 
+// Single source of truth for result ordering so card ordinals and map marker
+// numbers always agree, whichever order toggle is active.
+function displayOrderedResults() {
+  const byArrival = state.params?.mode !== "area"
+    && state.resultOrder === "arrival"
+    && state.results.some((candidate) => Number.isFinite(candidate.routeProgress));
+  if (!byArrival) return state.results;
+  return [...state.results].sort((a, b) => (Number.isFinite(a.routeProgress) ? a.routeProgress : 1) - (Number.isFinite(b.routeProgress) ? b.routeProgress : 1));
+}
+
 function renderMarkers() {
   if (!state.mapAdapter) return;
-  state.mapAdapter.setMarkers(state.results, state.selectedId, selectCandidate);
+  const markers = displayOrderedResults().concat(outOfRankPinnedStops());
+  // Re-ranking can push the selected, unpinned stop out of the visible top N
+  // while its detail panel stays open (see updateVisibleDetails). Include it
+  // alongside the out-of-rank pins so its marker survives the rebuild.
+  const selected = state.selectedId && !markers.some((item) => item.id === state.selectedId)
+    ? candidateById(state.selectedId)
+    : null;
+  state.mapAdapter.setMarkers(selected ? markers.concat(selected) : markers, state.selectedId, selectCandidate);
 }
 
 function selectCandidate(id) {
-  const candidate = state.results.find((item) => item.id === id);
+  const candidate = candidateById(id);
   if (!candidate) return;
   state.selectedId = id;
   renderDetails(candidate);
@@ -5640,6 +6404,7 @@ function renderDetails(candidate) {
     : candidate.species.size
       ? `These are reports from the selected ${state.params?.recentDays || 14}-day window, not encounter predictions.`
       : `No species reports were returned for this hotspot in the selected ${state.params?.recentDays || 14}-day window.`;
+  const stopTiming = candidateTiming(candidate);
 
   els.detailsContent.innerHTML = `
     <h3>${escapeHtml(candidate.name)}</h3>
@@ -5649,6 +6414,13 @@ function renderDetails(candidate) {
       <p>${escapeHtml(candidateReasonText(candidate, isArea))}</p>
       <p><small>${escapeHtml(evidenceNote)}</small></p>
     </section>
+    ${stopTiming ? `
+      <section class="reason-line timing-line timing-${stopTiming.assessment.quality}">
+        <h4>Arrival Timing</h4>
+        <p>${escapeHtml(timingSentence(stopTiming))}</p>
+        <p><small>Estimated from your departure time plus driving along the route; time spent birding at earlier stops is not included.</small></p>
+      </section>
+    ` : ""}
     <div class="detail-grid">
       <div><b>${candidate.species.size}</b><small>recent species</small></div>
       <div><b>${candidate.observations.length}</b><small>records</small></div>
@@ -5724,7 +6496,7 @@ function updateSelectedCard() {
 }
 
 function toggleComparison(id) {
-  const candidate = state.results.find((item) => item.id === id);
+  const candidate = candidateById(id);
   if (!candidate) return;
   if (state.comparisonIds.includes(id)) {
     state.comparisonIds = state.comparisonIds.filter((item) => item !== id);
@@ -5747,7 +6519,7 @@ function clearComparison() {
 
 function syncComparisonButtons() {
   els.resultsList.querySelectorAll(".stop-card").forEach((card) => {
-    const candidate = state.results.find((item) => item.id === card.dataset.id);
+    const candidate = candidateById(card.dataset.id);
     const button = card.querySelector(".compare-toggle");
     if (!candidate || !button) return;
     const isCompared = state.comparisonIds.includes(candidate.id);
@@ -5760,7 +6532,8 @@ function syncComparisonButtons() {
 }
 
 function renderComparison() {
-  state.comparisonIds = state.comparisonIds.filter((id) => state.results.some((candidate) => candidate.id === id));
+  // Resolve through candidateById so out-of-rank pinned stops stay comparable.
+  state.comparisonIds = state.comparisonIds.filter((id) => candidateById(id));
   if (!state.results.length) {
     els.comparisonPanel.hidden = true;
     els.comparisonContent.innerHTML = "";
@@ -5769,7 +6542,7 @@ function renderComparison() {
 
   els.comparisonPanel.hidden = false;
   const compared = state.comparisonIds
-    .map((id) => state.results.find((candidate) => candidate.id === id))
+    .map((id) => candidateById(id))
     .filter(Boolean);
 
   els.comparisonSummary.textContent = compared.length
@@ -5866,8 +6639,12 @@ function compareFreshnessCell(candidate) {
 
 function compareScoreCell(candidate) {
   const isArea = state.params?.mode === "area";
+  // Legacy-scored candidates (restored trips) keep their saved score, so label
+  // it with its own legacy maximum instead of pretending it is out of 100.
+  const scale = scoreScale([candidate]);
   return `
-    <b>${candidate.score} total</b>
+    <b>${candidate.score} of ${scale.max}</b>
+    ${scale.legacy ? "<small>legacy scoring model</small>" : ""}
     <div class="comparison-score">
       ${scoreComponents(candidate, isArea).map((part) => compactScorePart(part.label, part.value, part.max)).join("")}
     </div>
@@ -5887,7 +6664,9 @@ function compactScorePart(label, value, max) {
 
 function updateVisibleDetails() {
   if (els.detailsPanel.hidden || !state.selectedId) return;
-  const candidate = state.results.find((item) => item.id === state.selectedId);
+  // Resolve through the pool: re-ranking can push the selected stop out of the
+  // visible top N while its detail panel stays open.
+  const candidate = candidateById(state.selectedId);
   if (candidate) renderDetails(candidate);
 }
 
@@ -5940,12 +6719,22 @@ function scoreScale(candidates) {
   return { includesLifers, max, legacy: true };
 }
 
+// For current-model candidates, Overall is the balance-weighted blend of the two
+// normalized subscores; the raw component breakdown explains the Birding side
+// without needing to sum to the headline. Legacy candidates (restored trips
+// scored under an older model) keep their saved score and scale.
 function scoreTooltip(candidate, isArea, scale) {
   const breakdown = scoreComponents(candidate, isArea)
-    .filter((part) => scale.includesLifers || part.key !== "lifers")
+    .filter((part) => part.key !== "lifers" || part.value > 0)
     .map((part) => `${part.label} ${part.value.toFixed(1)}/${part.max}`)
     .join(", ");
-  return `${candidate.scoringVersion === SCORING_VERSION ? "Score" : "Legacy score"} ${candidate.score} of ${scale.max} — ${breakdown}`;
+  if (candidate.scoringVersion !== SCORING_VERSION) {
+    return `Legacy score ${candidate.score} of ${scale.max} — ${breakdown}`;
+  }
+  const birdPct = Math.round((Number(candidate.birdPoints) || 0) / (Number(candidate.birdMax) || 45) * 100);
+  const convPct = Math.round((Number(candidate.scoreParts?.practicality) || 0) / 40 * 100);
+  const level = BALANCE_LEVELS[state.balance] || BALANCE_LEVELS[DEFAULT_BALANCE];
+  return `Overall ${candidate.score} of 100 — Birding ${birdPct}/100, Convenience ${convPct}/100, Preference: ${level.label} — ${breakdown}`;
 }
 
 function scoreRow(label, value, max) {
@@ -6076,6 +6865,10 @@ function candidateChips(candidate, index) {
     }));
   }
   if (isHotspot(candidate)) chips.push('<span class="stop-chip chip-hotspot">top hotspot</span>');
+  const stopTiming = candidateTiming(candidate);
+  if (stopTiming) {
+    chips.push(`<span class="stop-chip chip-time-${stopTiming.assessment.quality}" title="${escapeHtml(timingSentence(stopTiming))}">~${escapeHtml(arrivalClockLabel(stopTiming))} · ${escapeHtml(timingChipLabel(stopTiming))}</span>`);
+  }
   return chips.join("");
 }
 
@@ -6149,8 +6942,22 @@ function positionCandidateSpeciesPreview(menu) {
   menu.style.setProperty("--stop-chip-bridge-dropdown-right", `${dropdownOffset + dropdownWidth - bridgeLeft}px`);
 }
 
+// Classification uses siteQuality (recent evidence + hotspot history, /45 in
+// the current model; species + activity + notable, /80 in the legacy model),
+// never the balance-weighted display score: sliding toward convenience or
+// importing a life list must not mint or revoke "Top hotspot".
 function isHotspot(candidate) {
-  return candidate.score >= 65 || candidate.species.size >= 40;
+  return siteQualityOf(candidate) >= 55 || candidate.species.size >= 40;
+}
+
+function siteQualityOf(candidate) {
+  if (Number.isFinite(candidate.siteQuality)) return candidate.siteQuality;
+  const parts = candidate.scoreParts || {};
+  if (Number.isFinite(parts.current) || Number.isFinite(parts.stable)) {
+    return Math.round(((Number(parts.current) || 0) + (Number(parts.stable) || 0)) / 45 * 100);
+  }
+  const raw = (Number(parts.species) || 0) + (Number(parts.activity) || 0) + (Number(parts.notable) || 0);
+  return Math.round(raw / 80 * 100);
 }
 
 function uniqueNotableCount(candidate) {
@@ -6679,11 +7486,16 @@ function buildReportMarkup() {
     return `<div><dt>${escapeHtml(label)}</dt><dd>${renderedValue}</dd></div>`;
   };
 
+  const departureMs = isArea ? null : departureTimestamp();
+  const departParam = departureMs
+    ? param("Leave at", `${formatClock(departureMs)}${routeTimeContext(departureMs).approximate ? " (approximate local time at the origin)" : ""}`)
+    : "";
   const paramsBlock = `
     <h2>Search parameters</h2>
     <dl class="report-params">
       ${param(isArea ? "Location" : "Origin", p.origin)}
       ${isArea ? "" : param("Destination", p.destination)}
+      ${departParam}
       ${param("Map service", providerLabel(p.mapProvider))}
       ${isArea ? "" : param("Max added", `${p.maxDetour} min`)}
       ${param(isArea ? "Area radius" : "Corridor radius", `${p.radiusKm} km`)}
@@ -6719,11 +7531,13 @@ function buildReportMarkup() {
         const notable = prioritizedNotableReports(candidate, 12);
         const unseenNearbyCount = unseenNotableSpecies(candidate).length;
         const links = candidateLinks(candidate);
+        const stopTiming = candidateTiming(candidate);
         return `
           <div class="report-stop">
             <h3>${index + 1}. ${escapeHtml(candidate.name)}</h3>
             <p class="report-stop-meta">
               Score ${candidate.score} ·
+              ${stopTiming ? `arrive ~${escapeHtml(arrivalClockLabel(stopTiming))} (${escapeHtml(timingChipLabel(stopTiming))}) ·` : ""}
               ${isArea
                 ? `~${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi from center ·`
                 : `+${Math.round(candidate.addedMinutes)} min · +${candidate.addedMiles.toFixed(1)} mi detour · ~${formatMiles(kmToMiles(candidate.routeDistanceKm))} mi off route ·`}
@@ -7467,7 +8281,9 @@ function markerHtml(candidate, index, selectedId) {
     return `<div class="bird-marker marker-sighting ${candidate.id === selectedId ? "marker-selected" : ""}">${label}</div>`;
   }
   const pinnedIndex = state.pinnedIds.indexOf(candidate.id);
-  const label = pinnedIndex >= 0 ? `P${pinnedIndex + 1}` : index + 1;
+  // Unpinned candidates past the visible list (the selected out-of-rank stop)
+  // have no rank, so a rank-style number would be misleading.
+  const label = pinnedIndex >= 0 ? `P${pinnedIndex + 1}` : index < state.results.length ? index + 1 : "•";
   return `<div class="bird-marker ${markerClass(candidate)} ${candidate.id === selectedId ? "marker-selected" : ""}">${label}</div>`;
 }
 
@@ -7524,4 +8340,4 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
-init();
+init().catch((error) => console.error(error));
