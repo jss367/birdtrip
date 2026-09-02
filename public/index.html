@@ -28,6 +28,8 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
     integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
   <link rel="stylesheet" href="./styles.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.4/dist/umd/supabase.js"
+    integrity="sha384-ysv13JVP3fufiEXfjML9OdCa/rRbMJvUBOWyor82wfuK8INNZAvmbxHgKIHi+oqz" crossorigin="anonymous"></script>
 </head>
 <body>
   <div class="app-shell">
@@ -49,6 +51,19 @@
         <button type="button" id="settingsButton" class="icon-button" title="Settings">
           <i data-lucide="settings"></i>
         </button>
+        <div id="authBar" class="auth-bar" hidden>
+          <button id="signInButton" type="button" class="auth-button" hidden>
+            Sign in with Google
+          </button>
+          <div id="signedInBox" class="auth-signed-in" hidden>
+            <img id="userAvatar" class="auth-avatar" alt="" />
+            <span id="userEmail" class="auth-email"></span>
+            <button id="signOutButton" type="button" class="auth-button-secondary">
+              Sign out
+            </button>
+          </div>
+          <span id="authStatus" class="auth-status" hidden></span>
+        </div>
       </div>
     </header>
 
@@ -541,9 +556,23 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
-  <script src="./ranking.js"></script>
-  <script src="./timing.js"></script>
-  <script src="./navigation-export.js"></script>
-  <script src="./app.js"></script>
+  <div id="authMergeModal" class="modal-backdrop" hidden role="dialog" aria-modal="true" aria-labelledby="authMergeTitle">
+    <div class="merge-modal">
+      <h2 id="authMergeTitle">Reconcile your account</h2>
+      <p>This browser and your account have different data. Pick which to keep for each item.</p>
+      <ul id="authMergeList" class="merge-list"></ul>
+      <div class="modal-actions">
+        <button id="authMergeConfirm" type="button" class="ghost-button">Apply</button>
+      </div>
+    </div>
+  </div>
+  <!-- Deferred so they execute after the deferred Supabase SDK in the head
+       (defer preserves document order); a parser-blocking app.js could call
+       auth.init() before the SDK ran and permanently disable sign-in. -->
+  <script defer src="./ranking.js"></script>
+  <script defer src="./timing.js"></script>
+  <script defer src="./auth.js"></script>
+  <script defer src="./navigation-export.js"></script>
+  <script defer src="./app.js"></script>
 </body>
 </html>

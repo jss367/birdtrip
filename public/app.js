@@ -226,6 +226,10 @@ const PREF_FIELDS = [
   "targets",
   "speciesQuery"
 ];
+// Fields that have their own column in the profiles row and explicit merge
+// handling; must NOT be re-applied by the silent preferences merge or we'd
+// clobber the user's conflict choice.
+const ACCOUNT_OWNED_FIELDS = new Set(["targets"]);
 
 function normalizeMode(mode) {
   return mode === "area" || mode === "species" ? mode : "route";
@@ -287,6 +291,9 @@ async function init() {
 
   els.form.addEventListener("submit", (event) => {
     event.preventDefault();
+    // Manually running the search adopts the current inputs as the user's
+    // own (runSearch persists them), so any shared-link locks lift here.
+    unlockAllSharedFields();
     runSearch();
   });
   // Editing any shareable input invalidates a loaded /t/<slug> snapshot URL:
@@ -318,12 +325,19 @@ async function init() {
     updateSetupStatus();
   });
   els.mapProvider.addEventListener("change", () => {
+    unlockSharedField("mapProvider");
     state.userSelectedProvider = true;
     setMapProvider(providerFromInput());
   });
   els.lifeListInput.addEventListener("change", handleLifeListFile);
   els.clearLifeListButton.addEventListener("click", clearLifeList);
-  els.maxDetour.addEventListener("input", updateInputSummaries);
+  els.maxDetour.addEventListener("input", () => {
+    unlockSharedField("maxDetour");
+    updateInputSummaries();
+  });
+  for (const field of ["recentDays", "radiusKm", "maxStops"]) {
+    els[field].addEventListener("input", () => unlockSharedField(field));
+  }
   els.balanceSlider.addEventListener("input", () => setBalance(els.balanceSlider.value));
   els.balanceSliderResults.addEventListener("input", () => setBalance(els.balanceSliderResults.value));
   els.shareTripButton.addEventListener("click", shareCurrentTrip);
@@ -394,14 +408,22 @@ async function initializeStartupMap(preferredProvider, sharedSearch) {
   }
 
   await waitForAppConfig();
+  // A restored account session hydrates during config load and may apply the
+  // account's map provider; wait for it so this pass can't reset that choice
+  // with the pre-hydration `preferredProvider` captured in init(). (The map is
+  // already usable on OSM from the pass above.)
+  await accountHydrationReady;
   try {
-    await setMapProvider(resolveProvider(preferredProvider || state.config.defaultMapProvider || providerFromInput()), { persist: false });
+    await setMapProvider(resolveProvider(accountMapProvider || preferredProvider || state.config.defaultMapProvider || providerFromInput()), { persist: false });
   } catch (error) {
     addWarning(`Map could not be initialized: ${error.message}. Searches can continue with the current setup.`);
     renderWarnings();
   }
   if (sharedSearch?.autoRun && hasRunnableSearchInputs()) {
     setStatus("Refreshing shared trip", "Loading the route and latest birding stops from this link.");
+    // Let a signed-in user's profile hydration finish first so the search
+    // runs with the account's life list, targets, and eBird token.
+    await accountHydrationReady;
     // The visitor just opened a short /t/<slug> link and has changed nothing,
     // so the hydration auto-run must not replace it with the long query URL.
     // Any later user action (pinning, re-running a search) swaps it as usual.
@@ -414,7 +436,11 @@ async function initializeStartupMap(preferredProvider, sharedSearch) {
 
 async function reapplyStartupProvider(preferredProvider) {
   if (state.userSelectedProvider) return;
-  const nextProvider = resolveProvider(preferredProvider || state.config.defaultMapProvider || providerFromInput());
+  // As in initializeStartupMap: an account provider hydrated in the meantime
+  // outranks the pre-hydration preference captured at startup.
+  await accountHydrationReady;
+  if (state.userSelectedProvider) return;
+  const nextProvider = resolveProvider(accountMapProvider || preferredProvider || state.config.defaultMapProvider || providerFromInput());
   if (state.provider === nextProvider) return;
   try {
     await setMapProvider(nextProvider, { persist: false });
@@ -477,6 +503,24 @@ function sanitizeSharedSearch(raw, options = {}) {
   return shared.origin ? shared : null;
 }
 
+// Fields a bt=1 shared link explicitly supplied. Account hydration must not
+// overwrite these: the recipient should see the sender's trip, not their own
+// stored defaults. The life list and eBird token still hydrate normally.
+// Locked fields are display-only in the other direction too: buildProfilePatch
+// excludes them from account write-back. A field unlocks (becomes the user's
+// own data) when they explicitly edit it, or all at once when they explicitly
+// adopt the current inputs: running the search themselves, loading a saved
+// trip, or applying the sample.
+const sharedFieldLocks = new Set();
+
+function unlockSharedField(field) {
+  sharedFieldLocks.delete(field);
+}
+
+function unlockAllSharedFields() {
+  sharedFieldLocks.clear();
+}
+
 function sharedTripSlugFromLocation() {
   const match = window.location.pathname.match(/^\/t\/([A-Za-z0-9]{8,64})\/?$/);
   return match ? match[1] : null;
@@ -528,6 +572,17 @@ function applySharedSearch(shared) {
   // the sender shared, not arrival warnings from their own previous state.
   els.departTime.value = shared.departTime || "";
   if (shared.targets) els.targets.value = shared.targets;
+  // Record which inputs the link set (origin, destination, mapProvider, and
+  // departTime are always explicitly managed above) so hydration leaves them
+  // alone. departTime is locked even when the link omitted it: a signed-in
+  // recipient's account hydration would otherwise refill their own stored
+  // time before an autoRun search, and later profile writes would carry the
+  // sender's time into their account.
+  sharedFieldLocks.add("origin").add("destination").add("mapProvider").add("departTime");
+  if (shared.mode === "species" && shared.species) sharedFieldLocks.add("speciesQuery");
+  for (const field of ["maxDetour", "recentDays", "radiusKm", "maxStops", "targets"]) {
+    if (shared[field]) sharedFieldLocks.add(field);
+  }
   // "0" is a valid position; only an absent/invalid param falls back to default.
   setBalance(shared.balance === null || shared.balance === "" ? DEFAULT_BALANCE : Number(shared.balance), { skipRerank: true });
   state.pendingPinnedIds = shared.pins || [];
@@ -625,6 +680,15 @@ function saveSessionApiToken() {
   }
 }
 
+function readStoredPrefs() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem("routeBirdingPrefs") || "null");
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 function savePreferences() {
   const payload = {};
   for (const field of PREF_FIELDS) payload[field] = els[field].value;
@@ -641,6 +705,11 @@ function savePreferences() {
       displayNames: state.lifeList.displayNames
     };
   }
+  // Diff against the cache this save overwrites: with no account baseline
+  // yet, it is the only record of which profile columns this save touched.
+  // No prior cache means nothing to compare, so every column counts.
+  const previous = readStoredPrefs();
+  const changedColumns = previous ? profileColumnsChangedBetween(previous, payload) : PROFILE_COLUMNS;
   try {
     localStorage.setItem("routeBirdingPrefs", JSON.stringify(payload));
   } catch {
@@ -649,6 +718,974 @@ function savePreferences() {
     addWarning("The imported life list was too large to save in this browser, but it will work until the page is refreshed.");
     renderWarnings();
   }
+  queueProfileUpsert(changedColumns);
+}
+
+const PROFILE_UPSERT_DEBOUNCE_MS = 750;
+// Pause before the one retry of the failed startup profile fetch.
+const PROFILE_FETCH_RETRY_DELAY_MS = 1500;
+// Marks that this browser has already reconciled its anonymous data with a
+// given account, so later sessions hydrate from the account instead of
+// re-running the merge (which would resurrect data deleted on other devices).
+// It also names the owner of the cached data: a different user signing in
+// while it is set is isolated from that data (see runMergeAndHydrate).
+const SYNCED_USER_KEY = "routeBirdingSyncedUser";
+// The profile columns a signed-in mutation left ahead of the account (JSON
+// array), recorded the moment the write is queued and cleared only when a
+// flush confirms nothing unconfirmed remains (successful upsert, or a diff
+// showing local already matches the account). Persisted so a reload that
+// beats the 750 ms debounce - or follows a failed upsert - can't treat the
+// stale account as canonical and hydrate it over the unconfirmed local edits:
+// runMergeAndHydrate routes through the merge flow while any column is
+// listed, and only the listed columns get local-wins treatment there; the
+// rest hydrate from the account (clears included), so an unconfirmed
+// life-list import can't make this browser's untouched targets or
+// preferences override what another device wrote since.
+const PROFILE_DIRTY_KEY = "routeBirdingProfileDirty";
+const PROFILE_COLUMNS = ["life_list", "targets", "ebird_token", "preferences"];
+// Records which account the local data retained through an involuntary
+// session loss belongs to. Consulted at the next sign-in: the owner returning
+// reconciles through the merge flow as usual, but a DIFFERENT user must not
+// inherit that data - it is wiped before their account is touched, so the
+// merge can't read the prior user's life list, targets, or eBird token as
+// anonymous local state and upload it into the new account.
+const RETAINED_OWNER_KEY = "routeBirdingRetainedOwner";
+// In-memory mirror of RETAINED_OWNER_KEY so the different-user guard still
+// works within a page session when localStorage is unavailable.
+let retainedDataOwnerId = null;
+let profileUpsertTimer = 0;
+let profileUpsertFailed = false;
+
+function readDirtyProfileColumns() {
+  let raw = null;
+  try {
+    raw = localStorage.getItem(PROFILE_DIRTY_KEY);
+  } catch {
+    return new Set();
+  }
+  if (!raw) return new Set();
+  // "1" is the pre-column format: treat it as every column unconfirmed.
+  if (raw === "1") return new Set(PROFILE_COLUMNS);
+  try {
+    const parsed = JSON.parse(raw);
+    return new Set(Array.isArray(parsed)
+      ? parsed.filter((column) => PROFILE_COLUMNS.includes(column))
+      : PROFILE_COLUMNS);
+  } catch {
+    return new Set(PROFILE_COLUMNS);
+  }
+}
+
+function markProfileDirty(columns) {
+  if (!columns.length) return;
+  const dirty = readDirtyProfileColumns();
+  for (const column of columns) dirty.add(column);
+  try {
+    localStorage.setItem(PROFILE_DIRTY_KEY, JSON.stringify(Array.from(dirty)));
+  } catch {
+    // Storage unavailable; hydration protection degrades to in-session only.
+  }
+}
+
+// True when this browser has reconciled with some account and neither an
+// explicit sign-out nor an involuntary session loss has cleared the record:
+// the case where a restored session would hydrate the account as canonical.
+function syncedUserMarkerPresent() {
+  try {
+    return Boolean(localStorage.getItem(SYNCED_USER_KEY));
+  } catch {
+    return false;
+  }
+}
+
+// True when local data was retained through an involuntary session loss and
+// still belongs to the account that lost the session: the sync marker is
+// gone, but the data still descends from that account's canonical state.
+function retainedOwnerPresent() {
+  if (retainedDataOwnerId) return true;
+  try {
+    return Boolean(localStorage.getItem(RETAINED_OWNER_KEY));
+  } catch {
+    return false;
+  }
+}
+
+function clearProfileDirtyIfIdle() {
+  // Later mutations may already be queued behind the flush that just
+  // confirmed; they rebuild their patch from live state when they run, so
+  // the flag must survive until a flush leaves nothing else outstanding.
+  if (profileUpsertTimer || profileUpsertPending) return;
+  try {
+    localStorage.removeItem(PROFILE_DIRTY_KEY);
+  } catch {
+    // Storage unavailable; worst case the next sign-in runs the merge flow.
+  }
+}
+
+// Set by the first-reconciliation merge; committed to SYNCED_USER_KEY only
+// once the merged profile is confirmed to match the account (successful
+// upsert, or nothing left to write). If the write fails, the marker stays
+// unset so the next load re-runs the merge instead of treating the stale
+// account as canonical and wiping the locally imported data.
+let pendingSyncedUserId = null;
+
+function commitPendingSyncedUser() {
+  if (!pendingSyncedUserId) return;
+  const user = window.birdtripAuth && window.birdtripAuth.user;
+  if (!user || user.id !== pendingSyncedUserId) return;
+  try {
+    localStorage.setItem(SYNCED_USER_KEY, pendingSyncedUserId);
+    // Reconciliation confirmed: any data retained through an earlier
+    // involuntary session loss is now synced with its owner's account.
+    localStorage.removeItem(RETAINED_OWNER_KEY);
+  } catch {
+    // Storage unavailable; the merge flow will simply run again next session.
+  }
+  retainedDataOwnerId = null;
+  pendingSyncedUserId = null;
+}
+
+// Set by hydrate/merge to suppress the write-through that would otherwise
+// echo just-fetched account data back to the account.
+let suppressProfileUpsert = false;
+
+// Last known server-side profile (set on hydrate/merge, advanced on each
+// successful upsert). Used to send only the columns that actually changed,
+// so a stale browser can't clobber columns another device updated.
+let lastSyncedProfile = null;
+
+// Whether the account already has a profiles row (set on hydrate/merge from
+// getProfile, and after the first successful upsert). When it doesn't, the
+// first upsert is an insert and must send every column: a diff-only payload
+// would leave the omitted NOT NULL columns to the database, which the client
+// can't rely on across schema/client versions.
+let profileRowExists = false;
+
+// JSON.stringify with object keys sorted recursively. Needed because jsonb
+// columns come back from Postgres with keys reordered, so a plain stringify
+// would flag identical values as changed.
+function stableStringify(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const body = Object.keys(value).sort()
+      .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
+      .join(",");
+    return `{${body}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function normalizeProfileColumns(profile) {
+  return {
+    life_list: (profile.life_list && typeof profile.life_list === "object") ? profile.life_list : {},
+    targets: typeof profile.targets === "string" ? profile.targets : "",
+    ebird_token: typeof profile.ebird_token === "string" && profile.ebird_token.length
+      ? profile.ebird_token : null,
+    preferences: (profile.preferences && typeof profile.preferences === "object") ? profile.preferences : {}
+  };
+}
+
+function buildProfilePatch() {
+  const lifeListEmpty = state.lifeList.species.size === 0;
+  // Fields a shared link populated (sharedFieldLocks) are display-only until
+  // the user explicitly edits or adopts them: carry the account's last synced
+  // value through instead of the live form value, so an unrelated later save
+  // (e.g. a life-list import) can't write the sender's route or targets into
+  // the recipient's account.
+  const synced = lastSyncedProfile || {};
+  return {
+    life_list: lifeListEmpty ? {} : {
+      source: state.lifeList.source,
+      fileName: state.lifeList.fileName,
+      importedAt: state.lifeList.importedAt,
+      species: Array.from(state.lifeList.species),
+      displayNames: state.lifeList.displayNames
+    },
+    targets: sharedFieldLocks.has("targets")
+      ? (typeof synced.targets === "string" ? synced.targets : "")
+      : (els.targets.value || ""),
+    ebird_token: els.rememberToken.checked ? (els.apiToken.value || null) : null,
+    preferences: PREF_FIELDS.reduce((acc, field) => {
+      if (ACCOUNT_OWNED_FIELDS.has(field)) return acc;
+      if (sharedFieldLocks.has(field)) {
+        // Echo the account's own value (or omit the key if it never stored
+        // one) so the diff against lastSyncedProfile sees no change.
+        const prev = (synced.preferences && typeof synced.preferences === "object")
+          ? synced.preferences[field] : undefined;
+        if (typeof prev === "string") acc[field] = prev;
+        return acc;
+      }
+      acc[field] = els[field].value;
+      return acc;
+    }, {})
+  };
+}
+
+// The profile columns a browser-cache payload (savePreferences' shape) maps
+// to. Shared-link-locked fields are display-only (see buildProfilePatch), so
+// they are held constant here and never read as a local edit.
+function profileColumnsFromPrefs(payload) {
+  const prefs = {};
+  for (const field of PREF_FIELDS) {
+    if (ACCOUNT_OWNED_FIELDS.has(field) || sharedFieldLocks.has(field)) continue;
+    prefs[field] = typeof payload[field] === "string" ? payload[field] : "";
+  }
+  return normalizeProfileColumns({
+    life_list: payload.lifeList,
+    targets: sharedFieldLocks.has("targets") ? "" : payload.targets,
+    ebird_token: payload.rememberToken === true ? payload.apiToken : null,
+    preferences: prefs
+  });
+}
+
+// Columns that differ between two cache snapshots. Used when no account
+// baseline exists: every earlier local edit is already recorded dirty (or was
+// confirmed by an upsert), so a column the previous snapshot agrees with was
+// not touched by the save that produced the next one.
+function profileColumnsChangedBetween(previous, next) {
+  const before = profileColumnsFromPrefs(previous);
+  const after = profileColumnsFromPrefs(next);
+  return PROFILE_COLUMNS.filter((column) => stableStringify(before[column]) !== stableStringify(after[column]));
+}
+
+// Columns whose live value differs from the last known account state. With
+// no baseline (the profile fetch failed, or nobody is signed in) every column
+// counts as changed: the conservative reading for a browser that can't tell.
+function changedProfileColumns() {
+  const full = buildProfilePatch();
+  if (!lastSyncedProfile) return { full, changed: { ...full } };
+  const changed = {};
+  for (const column of Object.keys(full)) {
+    if (stableStringify(full[column]) !== stableStringify(lastSyncedProfile[column])) {
+      changed[column] = full[column];
+    }
+  }
+  return { full, changed };
+}
+
+// Serializes account writes: exactly one upsert is in flight at a time. A
+// write can outlast the debounce, and overlapping upserts could complete out
+// of order, letting an older payload clobber a newer one (and leave
+// lastSyncedProfile reflecting whichever response landed last).
+let profileUpsertChain = Promise.resolve();
+// True while a flush is queued on the chain but not yet started. One pending
+// flush is enough for any number of queued mutations: it rebuilds the patch
+// from live state when it actually runs, so they coalesce into it.
+let profileUpsertPending = false;
+
+// `columns`: the profile columns the caller's save changed, per its cache
+// diff (savePreferences). Only consulted before an account baseline exists;
+// once one does, the diff against it is authoritative.
+function queueProfileUpsert(columns = PROFILE_COLUMNS) {
+  if (suppressProfileUpsert) return;
+  if (!window.birdtripAuth || !window.birdtripAuth.user) {
+    // Nobody is signed in *yet*. The form is interactive before /api/config
+    // and getSession() resolve, so a persisted session may still be
+    // restoring; if this browser last synced with an account, that restore
+    // would see the intact sync marker, treat the account as canonical, and
+    // hydrate it over this edit. Record the edit as unconfirmed now so
+    // runMergeAndHydrate reconciles it instead. The same holds for edits
+    // made while signed out with the marker still set (a session that
+    // expired between loads): they belong in the merge, not under the
+    // account. An involuntary session loss removes the marker but records
+    // the retained data's owner instead; edits made in that state are
+    // equally unconfirmed, and the flag is what lets the owner's next
+    // sign-in keep them (dirtyLocalWins in runMergeAndHydrate) rather than
+    // restore the stale account over them. Every startup-time save is
+    // suppressed or persist:false, so only real user edits reach here.
+    // No account baseline exists here, so record the columns the save's own
+    // cache diff reports (not every column): a column this edit left alone
+    // still matches the last confirmed sync, and the account, possibly
+    // updated from another device since, stays canonical for it.
+    if (syncedUserMarkerPresent() || retainedOwnerPresent()) markProfileDirty(columns);
+    return;
+  }
+  // The columns now ahead of the account stay recorded until an upsert (or a
+  // no-change diff) confirms them. Recorded against the account baseline
+  // rather than the caller's cache diff: the baseline is what the account
+  // actually holds, so it also catches columns the cache already disagreed
+  // with (e.g. a queued write the user has since edited again).
+  markProfileDirty(Object.keys(changedProfileColumns().changed));
+  if (profileUpsertTimer) clearTimeout(profileUpsertTimer);
+  profileUpsertTimer = setTimeout(() => {
+    profileUpsertTimer = 0;
+    if (profileUpsertPending) return;
+    profileUpsertPending = true;
+    profileUpsertChain = profileUpsertChain
+      .then(() => {
+        profileUpsertPending = false;
+        return flushProfileUpsert();
+      })
+      .catch(() => {
+        // flushProfileUpsert handles its own errors; this guards anything
+        // unexpected so a rejection can't poison the chain and silently
+        // stall every later write.
+        profileUpsertPending = false;
+        reportProfileUpsertFailure();
+      });
+  }, PROFILE_UPSERT_DEBOUNCE_MS);
+}
+
+async function flushProfileUpsert() {
+  // The chain can start this long after the timer fired (queued behind a slow
+  // write); the user may have signed out or switched accounts since.
+  if (!window.birdtripAuth || !window.birdtripAuth.user) return;
+  // Without a baseline (the profile fetch failed at sign-in), writing the
+  // browser cache wholesale could silently overwrite columns another device
+  // updated in the meantime. Retry reconciliation instead: it re-fetches
+  // the account, merges or hydrates against the fresh state, and queues its
+  // own write-back for anything that still differs. (No deadlock with this
+  // chain: queueProfileUpsert only appends to it, never awaits it.) Only if
+  // the account is still unreachable does the write stay local.
+  if (!lastSyncedProfile) {
+    await runMergeAndHydrate();
+    if (!lastSyncedProfile) reportProfileUpsertFailure();
+    return;
+  }
+  // Send only columns that changed since the last known server state so a
+  // stale browser can't overwrite columns another device updated.
+  const { full, changed } = changedProfileColumns();
+  if (!Object.keys(changed).length) {
+    // Local state already matches the account, so a first reconciliation
+    // (if one is pending) is complete without a write.
+    commitPendingSyncedUser();
+    clearProfileDirtyIfIdle();
+    return;
+  }
+  // The first write for an account with no profiles row is an insert: send
+  // every column so the row is created whole (a partial insert would leave
+  // the required columns to database defaults the client can't guarantee).
+  const patch = profileRowExists ? changed : full;
+  let result = null;
+  try {
+    result = await window.birdtripAuth.upsertProfile(patch);
+  } catch {
+    // upsertProfile catches internally; this guards anything unexpected so
+    // the failure warning below still fires instead of an unhandled rejection.
+    result = null;
+  }
+  if (!result || !result.ok) {
+    reportProfileUpsertFailure();
+  } else {
+    profileRowExists = true;
+    // Serialized writes apply in order, so advancing the baseline here always
+    // reflects the latest applied write, never a stale overlapping response.
+    lastSyncedProfile = { ...lastSyncedProfile, ...patch };
+    profileUpsertFailed = false;
+    commitPendingSyncedUser();
+    clearProfileDirtyIfIdle();
+  }
+}
+
+function reportProfileUpsertFailure() {
+  if (profileUpsertFailed) return;
+  addWarning("Couldn't save to your account - still saved in this browser.");
+  renderWarnings();
+  profileUpsertFailed = true;
+}
+
+// Reentrancy guard: the auth listener can fire repeatedly during sign-in.
+let mergeAndHydrateInFlight = false;
+
+// Resolves once the current sign-in's merge/hydrate has finished (immediately
+// when nobody is signed in). The shared-link auto-run awaits this so a run=1
+// search doesn't start before the account life list, targets, and eBird token
+// are available.
+let accountHydrationReady = Promise.resolve();
+
+// Clears user-specific state from memory and localStorage on sign-out so a
+// shared browser doesn't leak the previous user's life list, targets, or
+// token to whoever uses the app next. Non-sensitive search preferences
+// (map provider, radius, recent days, etc.) survive.
+function clearStateOnSignOut() {
+  lastSyncedProfile = null;
+  profileRowExists = false;
+  pendingSyncedUserId = null;
+  // Drop any write still debouncing: it belongs to the account that just
+  // signed out and would only produce a spurious "couldn't save" warning.
+  if (profileUpsertTimer) {
+    clearTimeout(profileUpsertTimer);
+    profileUpsertTimer = 0;
+  }
+  // Forget the reconciliation marker: data added anonymously after an explicit
+  // sign-out should go through the merge flow on the next sign-in. Any
+  // retained-data ownership record goes with it - the data is wiped below.
+  retainedDataOwnerId = null;
+  try {
+    localStorage.removeItem(SYNCED_USER_KEY);
+    localStorage.removeItem(RETAINED_OWNER_KEY);
+  } catch {
+    // Storage unavailable; worst case the next sign-in skips the merge dialog.
+  }
+  wipeLocalUserData();
+}
+
+// Wipes the user-owned data (life list, targets, eBird token) from memory,
+// the form, and browser storage. Used by the explicit sign-out handoff and by
+// the different-user guard in runMergeAndHydrate. Targets a shared link
+// populated stay put: while the sharedFieldLocks lock holds they are the
+// displayed trip's data, not the departing account's (buildProfilePatch keeps
+// locked fields out of account writes, so they can't leak into a profile
+// either), and clearing them would leave already-rendered shared results
+// inconsistent with the inputs.
+function wipeLocalUserData() {
+  state.lifeList = {
+    source: "",
+    fileName: "",
+    importedAt: "",
+    species: new Set(),
+    displayNames: []
+  };
+  if (!sharedFieldLocks.has("targets")) els.targets.value = "";
+  els.apiToken.value = "";
+  els.rememberToken.checked = false;
+  // Also drop the sessionStorage copy of the token, or reloading this tab
+  // would restore the previous user's eBird credential on a shared browser.
+  saveSessionApiToken();
+  // The dirty flag protected exactly the local data wiped here.
+  try {
+    localStorage.removeItem(PROFILE_DIRTY_KEY);
+  } catch {
+    // Storage unavailable; worst case the next sign-in runs the merge flow.
+  }
+  updateLifeListStatus();
+  updateInputSummaries();
+  updateSetupStatus();
+  // Persist the cleared state to localStorage immediately.
+  suppressProfileUpsert = true;
+  try { savePreferences(); } finally { suppressProfileUpsert = false; }
+}
+
+// The session dropped without the user asking for it (failed token refresh or
+// restore). Unlike an explicit sign-out this is not a privacy handoff: keep
+// the locally cached life list, targets, and token - they may hold edits that
+// never reached the account - and fall back to anonymous mode. Only the sync
+// bookkeeping is reset; clearing SYNCED_USER_KEY makes the next sign-in
+// reconcile through the merge flow instead of treating the account as
+// canonical and wiping those unsynced local edits. The retained data is
+// recorded as belonging to the user who lost the session, so a different user
+// signing in on this browser can't inherit it (see runMergeAndHydrate).
+function handleInvoluntarySessionLoss(lostUserId) {
+  lastSyncedProfile = null;
+  profileRowExists = false;
+  pendingSyncedUserId = null;
+  // Drop any write still debouncing: it can't complete without a session.
+  if (profileUpsertTimer) {
+    clearTimeout(profileUpsertTimer);
+    profileUpsertTimer = 0;
+  }
+  retainedDataOwnerId = lostUserId || null;
+  try {
+    localStorage.removeItem(SYNCED_USER_KEY);
+    if (lostUserId) localStorage.setItem(RETAINED_OWNER_KEY, lostUserId);
+  } catch {
+    // Storage unavailable; worst case the next sign-in skips the merge dialog,
+    // and the in-memory owner still guards this page session.
+  }
+  addWarning("You were signed out because your session expired. Your data is still in this browser - sign in again to sync it.");
+  renderWarnings();
+}
+
+const MERGE_OPTIONS_LIST_CONFLICT = [
+  { value: "use-account", label: "Use account" },
+  { value: "keep-local", label: "Use this browser" },
+  { value: "merge-union", label: "Merge (union)" }
+];
+const MERGE_OPTIONS_SCALAR_CONFLICT = [
+  { value: "use-account", label: "Use account" },
+  { value: "keep-local", label: "Use this browser" }
+];
+
+async function runMergeAndHydrate() {
+  if (mergeAndHydrateInFlight) return;
+  if (!window.birdtripAuth || !window.birdtripAuth.user) return;
+  const userIdAtStart = window.birdtripAuth.user.id;
+  mergeAndHydrateInFlight = true;
+  try {
+    // Local data that still belongs to another account must not reach this
+    // one. Two records can name that owner: the retained-owner record from
+    // an involuntary session loss this page observed, and the sync marker
+    // itself when the session was lost while the app was closed (a revoked
+    // or expired refresh token: startup then sees no session at all, so no
+    // loss handler ran and the marker survived with the owner's cached life
+    // list, targets, and eBird token). If someone else signs in on this
+    // browser, wipe that data before touching their account: the merge
+    // below would otherwise read it as anonymous local state and upload the
+    // prior user's data into the new account. The owner returning keeps the
+    // data and reconciles as usual; the retained-owner record clears once
+    // that reconciliation is confirmed (commitPendingSyncedUser) or on an
+    // explicit sign-out.
+    let retainedOwner = retainedDataOwnerId;
+    let markerOwner = null;
+    try {
+      if (!retainedOwner) retainedOwner = localStorage.getItem(RETAINED_OWNER_KEY);
+      markerOwner = localStorage.getItem(SYNCED_USER_KEY);
+    } catch {
+      // Storage unavailable; nothing recorded to act on.
+    }
+    const foreignOwner = (retainedOwner && retainedOwner !== userIdAtStart)
+      || (markerOwner && markerOwner !== userIdAtStart);
+    if (foreignOwner) {
+      wipeLocalUserData();
+      retainedDataOwnerId = null;
+      retainedOwner = null;
+      try {
+        localStorage.removeItem(RETAINED_OWNER_KEY);
+        localStorage.removeItem(SYNCED_USER_KEY);
+      } catch {
+        // Storage unavailable; the in-memory owner is already cleared.
+      }
+    }
+
+    let account = await window.birdtripAuth.getProfile();
+    // The user may have signed out (or switched accounts) while we were awaiting.
+    if (!window.birdtripAuth.user || window.birdtripAuth.user.id !== userIdAtStart) return;
+    if (!account) {
+      // A transient failure of this sole startup fetch would otherwise leave
+      // stale browser cache in place for the whole session for a user who
+      // never mutates anything (the later retry in flushProfileUpsert only
+      // runs once a mutation queues a write). Retry once after a short delay
+      // before falling back to browser state.
+      await new Promise((resolve) => setTimeout(resolve, PROFILE_FETCH_RETRY_DELAY_MS));
+      if (!window.birdtripAuth.user || window.birdtripAuth.user.id !== userIdAtStart) return;
+      account = await window.birdtripAuth.getProfile();
+      if (!window.birdtripAuth.user || window.birdtripAuth.user.id !== userIdAtStart) return;
+    }
+    if (!account) {
+      addWarning("Couldn't load your account data - using browser state for now.");
+      renderWarnings();
+      return;
+    }
+
+    lastSyncedProfile = normalizeProfileColumns(account);
+    profileRowExists = account.row_exists === true;
+
+    // The anonymous-data merge only makes sense the first time this browser
+    // meets this account. On later sessions (restored session, page reload)
+    // the account is canonical: hydrate from it, including cleared fields, so
+    // deletions made on another device aren't resurrected from localStorage.
+    let markerMatches = false;
+    try {
+      markerMatches = localStorage.getItem(SYNCED_USER_KEY) === userIdAtStart;
+    } catch {
+      // Storage unavailable; fall back to the merge flow.
+    }
+    const dirtyColumns = readDirtyProfileColumns();
+    // A recorded dirty column means a queued write was never confirmed (a
+    // reload beat the debounce, the upsert failed, or the user edited while
+    // this fetch was in flight): the account may be behind this browser, so
+    // reconcile through the merge flow instead of hydrating the stale
+    // account over the unconfirmed local edits.
+    const alreadySynced = markerMatches && dirtyColumns.size === 0;
+    if (alreadySynced) {
+      const hydrated = hydrateFromAccount(account);
+      suppressProfileUpsert = true;
+      try { savePreferences(); } finally { suppressProfileUpsert = false; }
+      // Await any map-adapter transition the hydration started, so the
+      // startup passes (which run after accountHydrationReady) see a settled
+      // adapter instead of racing a second transition against this one.
+      await hydrated;
+      return;
+    }
+
+    // Reaching the merge with an ownership tie between the local data and
+    // this account (the sync marker, or the retained-data owner when an
+    // involuntary session loss removed the marker) means the local state
+    // descends from this account's canonical state plus the columns recorded
+    // dirty (unconfirmed edits). Those columns keep local: an empty local
+    // field is then an intentional clear that must win over the stale
+    // account value and be written back - not "never set" data to refill
+    // from the account. Columns NOT recorded dirty were never edited here
+    // since the last confirmed sync, so the account (possibly updated from
+    // another device meanwhile, clears included) is canonical for them -
+    // exactly as the alreadySynced hydrate above would have treated them had
+    // no column been dirty. They take no part in the local-wins or
+    // conflict-dialog branches below: a stale local value must neither be
+    // offered as a choice nor written back over the other device's change.
+    // Without the ownership tie (e.g. a failed first-ever merge write-back
+    // left columns recorded), an empty local field really may mean
+    // never-set, so the first-sign-in merge rules apply unchanged.
+    const ownershipTie = markerMatches || retainedOwner === userIdAtStart;
+    const dirtyLocalWins = (column) => ownershipTie && dirtyColumns.has(column);
+    const accountCanonical = (column) => ownershipTie && !dirtyColumns.has(column);
+
+    const conflicts = [];
+    const decisions = {};
+
+    // life_list
+    const localLLSize = state.lifeList.species.size;
+    const accountLLArr = (account.life_list && Array.isArray(account.life_list.species))
+      ? account.life_list.species : [];
+    const accountLLSize = accountLLArr.length;
+    const lifeListEqual = localLLSize === accountLLSize && localLLSize > 0
+      && accountLLArr.every((s) => state.lifeList.species.has(normalizeName(s)));
+    if (accountCanonical("life_list")) {
+      decisions.lifeList = "use-account";
+    } else if (!localLLSize && !accountLLSize) {
+      decisions.lifeList = "noop";
+    } else if (!accountLLSize && localLLSize) {
+      decisions.lifeList = "keep-local";
+    } else if (accountLLSize && !localLLSize) {
+      // keep-local under dirtyLocalWins: the empty list is an unconfirmed
+      // local clear, and the write-back below propagates it to the account.
+      decisions.lifeList = dirtyLocalWins("life_list") ? "keep-local" : "use-account";
+    } else if (lifeListEqual) {
+      decisions.lifeList = "noop";
+    } else {
+      conflicts.push({
+        key: "lifeList",
+        label: `Life list (browser: ${localLLSize}, account: ${accountLLSize})`,
+        options: MERGE_OPTIONS_LIST_CONFLICT
+      });
+    }
+
+    // targets (free text)
+    const localTargets = (els.targets.value || "").trim();
+    const accountTargets = (account.targets || "").trim();
+    if (sharedFieldLocks.has("targets")) {
+      // The targets on screen came from a shared link: they're the sender's
+      // data on display, not this browser's, so they take no part in
+      // reconciliation. "Use account" must not replace the shared trip's
+      // targets on screen, and "use this browser" must not write the
+      // sender's targets into the recipient's account. The account value
+      // stays the write baseline (buildProfilePatch carries it through while
+      // the lock holds), and the field joins the account normally once the
+      // user explicitly edits or adopts it.
+      decisions.targets = "noop";
+    } else if (accountCanonical("targets")) {
+      decisions.targets = "use-account";
+    } else if (!localTargets && !accountTargets) {
+      decisions.targets = "noop";
+    } else if (!accountTargets && localTargets) {
+      decisions.targets = "keep-local";
+    } else if (accountTargets && !localTargets) {
+      decisions.targets = dirtyLocalWins("targets") ? "keep-local" : "use-account";
+    } else if (localTargets === accountTargets) {
+      decisions.targets = "noop";
+    } else {
+      conflicts.push({
+        key: "targets",
+        label: "Target species",
+        options: MERGE_OPTIONS_SCALAR_CONFLICT
+      });
+    }
+
+    // ebird_token
+    const localToken = els.rememberToken.checked ? (els.apiToken.value || "") : "";
+    const accountToken = account.ebird_token || "";
+    if (accountCanonical("ebird_token")) {
+      decisions.token = "use-account";
+    } else if (!localToken && !accountToken) {
+      decisions.token = "noop";
+    } else if (!accountToken && localToken) {
+      decisions.token = "keep-local";
+    } else if (accountToken && !localToken) {
+      decisions.token = dirtyLocalWins("ebird_token") ? "keep-local" : "use-account";
+    } else if (localToken === accountToken) {
+      decisions.token = "noop";
+    } else {
+      conflicts.push({
+        key: "token",
+        label: "eBird API token",
+        options: MERGE_OPTIONS_SCALAR_CONFLICT
+      });
+    }
+
+    // Preferences merge silently: account-wins for any non-empty account value,
+    // local wins where account is empty. Excludes ACCOUNT_OWNED_FIELDS, which
+    // have their own column + explicit conflict handling above. Under
+    // dirtyLocalWins local preferences (including clears) are the newest
+    // edits, so they stand and the write-back carries them to the account;
+    // a clean column under an ownership tie hydrates canonically instead.
+    if (accountCanonical("preferences")) {
+      decisions.preferences = "use-account";
+    } else if (dirtyLocalWins("preferences")) {
+      decisions.preferences = "keep-local";
+    } else {
+      decisions.preferences = "merge-silently";
+    }
+
+    if (conflicts.length) {
+      const choices = await showMergeDialog(conflicts);
+      // Re-check user after awaiting modal.
+      if (!window.birdtripAuth.user || window.birdtripAuth.user.id !== userIdAtStart) return;
+      for (const c of conflicts) {
+        decisions[c.key] = choices[c.key] || c.options[0].value;
+      }
+    }
+
+    const applied = applyMergeDecisions(account, decisions);
+
+    // Don't persist the reconciliation marker yet: it becomes durable only
+    // after the write-back below confirms the account holds the merged state.
+    pendingSyncedUserId = userIdAtStart;
+    suppressProfileUpsert = true;
+    try { savePreferences(); } finally { suppressProfileUpsert = false; }
+    // Write the merged state back to the account (covers keep-local and union cases).
+    queueProfileUpsert();
+    // Same as the hydrate branch: keep any adapter transition the merge
+    // started inside accountHydrationReady.
+    await applied;
+  } finally {
+    mergeAndHydrateInFlight = false;
+  }
+}
+
+function applyMergeDecisions(account, decisions) {
+  // "use-account" applies the account column canonically, clears included:
+  // for a clean column under an ownership tie an empty account value is a
+  // deletion made on another device and must empty the local copy too. The
+  // dialog choice and the one-sided-empty-local branches only reach here
+  // with a non-empty account value, where this equals applyAccountProfile.
+  // life_list
+  if (decisions.lifeList === "use-account") {
+    hydrateLifeListFromAccount(account);
+  } else if (decisions.lifeList === "merge-union") {
+    const accountSpecies = (account.life_list && Array.isArray(account.life_list.species))
+      ? account.life_list.species : [];
+    const accountDisplay = (account.life_list && Array.isArray(account.life_list.displayNames))
+      ? account.life_list.displayNames : [];
+    accountSpecies.map(normalizeName).filter(Boolean).forEach((s) => state.lifeList.species.add(s));
+    const seen = new Set(state.lifeList.displayNames.map((s) => s.toLowerCase()));
+    accountDisplay.map(String).forEach((name) => {
+      const key = name.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        state.lifeList.displayNames.push(name);
+      }
+    });
+    if (!state.lifeList.source && account.life_list && account.life_list.source) {
+      state.lifeList.source = account.life_list.source;
+    }
+    updateLifeListStatus();
+  }
+  // "keep-local" / "Use this browser" / "noop": leave local state alone.
+
+  // targets
+  if (decisions.targets === "use-account") {
+    hydrateTargetsFromAccount(account);
+  }
+
+  // token
+  if (decisions.token === "use-account") {
+    hydrateTokenFromAccount(account);
+  }
+
+  // preferences: silent account-wins per non-empty field, skipping any field
+  // that has its own column + explicit conflict handling. "keep-local"
+  // (dirty reconciliation) leaves every local preference in place instead;
+  // "use-account" (clean column under an ownership tie) hydrates them
+  // canonically, clears included.
+  const transitions = [];
+  if (decisions.preferences === "use-account") {
+    transitions.push(hydratePreferencesFromAccount(account));
+  } else if (decisions.preferences === "merge-silently"
+      && account.preferences && typeof account.preferences === "object") {
+    for (const field of PREF_FIELDS) {
+      if (ACCOUNT_OWNED_FIELDS.has(field)) continue;
+      const value = account.preferences[field];
+      if (typeof value === "string" && value.length) {
+        const transition = applyPreferenceField(field, value);
+        if (transition) transitions.push(transition);
+      }
+    }
+  }
+
+  updateInputSummaries();
+  // As in hydrateFromAccount: the caller awaits any map-adapter swap so it
+  // finishes inside accountHydrationReady.
+  return Promise.all(transitions);
+}
+
+function showMergeDialog(conflicts) {
+  return new Promise((resolve) => {
+    const modal = document.querySelector("#authMergeModal");
+    const list = document.querySelector("#authMergeList");
+    const confirm = document.querySelector("#authMergeConfirm");
+    if (!modal || !list || !confirm) {
+      resolve({});
+      return;
+    }
+    list.innerHTML = "";
+    const choices = {};
+    for (const c of conflicts) {
+      const li = document.createElement("li");
+      const label = document.createElement("label");
+      label.textContent = c.label;
+      const select = document.createElement("select");
+      for (const opt of c.options) {
+        const o = document.createElement("option");
+        o.value = opt.value;
+        o.textContent = opt.label;
+        select.appendChild(o);
+      }
+      select.addEventListener("change", () => { choices[c.key] = select.value; });
+      choices[c.key] = c.options[0].value;
+      li.appendChild(label);
+      li.appendChild(select);
+      list.appendChild(li);
+    }
+    modal.hidden = false;
+    const onConfirm = () => {
+      confirm.removeEventListener("click", onConfirm);
+      document.removeEventListener("keydown", onKey);
+      modal.hidden = true;
+      resolve(choices);
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") onConfirm();
+    };
+    confirm.addEventListener("click", onConfirm);
+    document.addEventListener("keydown", onKey);
+  });
+}
+
+// Applies the account as the canonical source of truth, including clears:
+// unlike applyAccountProfile (which only applies non-empty values during the
+// first-sign-in merge), an empty account field here empties the local one.
+// The per-column helpers below are also what applyMergeDecisions uses for a
+// "use-account" decision, so a single column can be hydrated the same way.
+function hydrateFromAccount(account) {
+  hydrateLifeListFromAccount(account);
+  hydrateTargetsFromAccount(account);
+  hydrateTokenFromAccount(account);
+  const transitions = hydratePreferencesFromAccount(account);
+  updateInputSummaries();
+  // The map-adapter swap (if the provider changed) outlives this call; the
+  // caller awaits it so accountHydrationReady covers the whole transition.
+  return transitions;
+}
+
+function hydrateLifeListFromAccount(account) {
+  const hasLifeList = account.life_list && typeof account.life_list === "object"
+    && Array.isArray(account.life_list.species) && account.life_list.species.length;
+  if (hasLifeList) {
+    applyAccountProfile(account, { lifeList: true });
+  } else {
+    state.lifeList = {
+      source: "",
+      fileName: "",
+      importedAt: "",
+      species: new Set(),
+      displayNames: []
+    };
+    updateLifeListStatus();
+  }
+}
+
+function hydrateTargetsFromAccount(account) {
+  if (!sharedFieldLocks.has("targets")) {
+    els.targets.value = typeof account.targets === "string" ? account.targets : "";
+  }
+}
+
+function hydrateTokenFromAccount(account) {
+  if (typeof account.ebird_token === "string" && account.ebird_token.length) {
+    els.apiToken.value = account.ebird_token;
+    els.rememberToken.checked = true;
+  } else if (els.rememberToken.checked) {
+    // The local token claimed account persistence but the account no longer
+    // has one (cleared elsewhere) - drop it. A session-only token
+    // (rememberToken unchecked) was never account state, so it survives.
+    els.apiToken.value = "";
+    els.rememberToken.checked = false;
+    // Also drop the sessionStorage copy: with rememberToken now unchecked,
+    // restorePreferences() would otherwise resurrect the deleted credential
+    // from sessionStorage on the next reload of this tab.
+    saveSessionApiToken();
+  }
+  updateSetupStatus();
+}
+
+// Preferences are canonical here too, including clears: a key present with
+// an empty string is a value the user cleared on another device, so apply
+// it (otherwise this browser's stale cache survives and the next save
+// writes the deleted value back). An absent key means the account never
+// stored the field, so the local value stands. applyPreferenceField still
+// skips shared-link-locked fields. Resolves once any map-adapter swap the
+// provider preference started has finished.
+function hydratePreferencesFromAccount(account) {
+  const prefs = (account.preferences && typeof account.preferences === "object")
+    ? account.preferences : {};
+  const transitions = [];
+  for (const field of PREF_FIELDS) {
+    if (ACCOUNT_OWNED_FIELDS.has(field)) continue;
+    if (!Object.prototype.hasOwnProperty.call(prefs, field)) continue;
+    const value = prefs[field];
+    if (typeof value !== "string") continue;
+    // The provider select always holds a concrete value; an empty string
+    // would be malformed data, not a clear.
+    if (!value.length && field === "mapProvider") continue;
+    const transition = applyPreferenceField(field, value);
+    if (transition) transitions.push(transition);
+  }
+  return Promise.all(transitions);
+}
+
+function applyAccountProfile(profile, which) {
+  if (which.lifeList && profile.life_list && typeof profile.life_list === "object"
+      && Array.isArray(profile.life_list.species) && profile.life_list.species.length) {
+    state.lifeList = {
+      source: typeof profile.life_list.source === "string" ? profile.life_list.source : "",
+      fileName: typeof profile.life_list.fileName === "string" ? profile.life_list.fileName : "",
+      importedAt: typeof profile.life_list.importedAt === "string" ? profile.life_list.importedAt : "",
+      species: new Set(profile.life_list.species.map(normalizeName).filter(Boolean)),
+      displayNames: (profile.life_list.displayNames || []).map(String).filter(Boolean)
+    };
+    updateLifeListStatus();
+  }
+
+  if (which.targets && typeof profile.targets === "string" && profile.targets.length
+      && !sharedFieldLocks.has("targets")) {
+    els.targets.value = profile.targets;
+  }
+
+  if (which.token && typeof profile.ebird_token === "string" && profile.ebird_token.length) {
+    els.apiToken.value = profile.ebird_token;
+    els.rememberToken.checked = true;
+    updateSetupStatus();
+  }
+
+  if (which.preferences && profile.preferences && typeof profile.preferences === "object") {
+    for (const field of PREF_FIELDS) {
+      const value = profile.preferences[field];
+      if (typeof value === "string" && value.length) {
+        applyPreferenceField(field, value);
+      }
+    }
+  }
+
+  updateInputSummaries();
+}
+
+// Map provider applied from the account during hydration/merge. The startup
+// map passes captured their preferred provider before hydration ran, so they
+// consult this to avoid resetting the account preference back to the
+// pre-hydration value (see initializeStartupMap / reapplyStartupProvider).
+let accountMapProvider = null;
+
+// mapProvider owns real state (state.provider + the map adapter) through
+// setMapProvider(); assigning the <select> directly would leave searches on
+// the old provider while autocomplete and links use the new one. The select
+// and state.provider update synchronously; the adapter swap finishes async
+// and is RETURNED so hydration can fold it into accountHydrationReady. If
+// hydration resolved while the swap was still loading the Google script, the
+// startup map pass would see a null adapter mid-transition and start a
+// second overlapping transition to the same provider - two adapters, the
+// first never destroyed.
+function applyPreferenceField(field, value) {
+  // Explicit shared-link fields outrank hydrated account defaults.
+  if (sharedFieldLocks.has(field)) return null;
+  if (field === "mapProvider") {
+    accountMapProvider = value;
+    return setMapProvider(value, { persist: false }).catch((err) => {
+      console.warn("Applying account map provider failed:", err && err.message);
+    });
+  }
+  els[field].value = value;
+  return null;
 }
 
 function setSearchMode(mode, options = {}) {
@@ -829,6 +1866,9 @@ async function loadSelectedTrip() {
       ...(trip.settings || {}),
       searchMode: trip.settings?.searchMode || trip.state?.params?.mode || state.mode
     };
+    // Loading their own saved trip replaces any shared-link values with the
+    // user's explicit choice, so the loaded values persist normally.
+    unlockAllSharedFields();
     applyTripSettings(settings);
     updateSetupStatus();
     updateInputSummaries();
@@ -1232,6 +2272,49 @@ async function loadAppConfig() {
   }
   setupProviderControl();
   updateSetupStatus();
+  if (window.birdtripAuth && typeof window.birdtripAuth.init === "function") {
+    try {
+      await window.birdtripAuth.init(state.config);
+    } catch (err) {
+      console.warn("Auth init failed:", err && err.message);
+    }
+    if (typeof window.birdtripAuth.onChange === "function") {
+      // Start from null: onChange fires immediately with the current user, so a
+      // session restored during init() (before this listener existed) still
+      // triggers the initial merge/hydrate for returning signed-in users.
+      let previousUserId = null;
+      window.birdtripAuth.onChange((user) => {
+        const nextUserId = user ? user.id : null;
+        if (nextUserId === previousUserId) return;
+        const priorUserId = previousUserId;
+        const wasSignedIn = Boolean(priorUserId);
+        const isSignedIn = Boolean(nextUserId);
+        previousUserId = nextUserId;
+        if (isSignedIn) {
+          // onChange fires synchronously with a restored session while
+          // loadAppConfig() is still awaited, so this promise is in place
+          // before waitForAppConfig() releases the startup auto-run.
+          accountHydrationReady = runMergeAndHydrate().catch((err) => {
+            console.warn("Account hydration failed:", err && err.message);
+          });
+        } else if (wasSignedIn) {
+          // Only a user-requested sign-out is a privacy handoff that wipes
+          // local data. A null session from a failed token refresh/restore
+          // must not erase the cached life list, targets, and token (which
+          // may hold unsynced edits). auth.js sets explicitSignOut both for
+          // a sign-out clicked in this tab and for one broadcast from another
+          // tab (via its localStorage marker), so every open tab wipes.
+          const explicit = Boolean(window.birdtripAuth.explicitSignOut);
+          window.birdtripAuth.explicitSignOut = false;
+          if (explicit) {
+            clearStateOnSignOut();
+          } else {
+            handleInvoluntarySessionLoss(priorUserId);
+          }
+        }
+      });
+    }
+  }
 }
 
 function setupProviderControl() {
@@ -1366,6 +2449,8 @@ function loadGoogleMapsScript(key) {
 }
 
 function useSampleRoute() {
+  // Explicitly replacing the inputs with the sample supersedes a shared trip.
+  unlockAllSharedFields();
   if (state.mode === "species") {
     els.origin.value = "Papago Park, Phoenix, AZ";
     els.speciesQuery.value = "Rosy-faced Lovebird";
@@ -2144,8 +3229,19 @@ function replaceHistoryUrl(url) {
 
 function updateSharedUrlFromCurrentInputs(options = {}) {
   const url = buildShareUrl(options);
-  replaceHistoryUrl(url);
+  replaceHistoryUrl(preserveAuthFlag(url.toString()));
   return url;
+}
+
+// The auth opt-in lives in the query string, so in-page history rewrites must
+// carry it forward or a reload would silently skip Supabase session init and
+// hide the account UI. Copied public share links intentionally omit it, which
+// is why this applies only at the replaceState call sites.
+function preserveAuthFlag(urlString) {
+  if (new URLSearchParams(window.location.search).get("auth") !== "1") return urlString;
+  const url = new URL(urlString, window.location.href);
+  url.searchParams.set("auth", "1");
+  return url.toString();
 }
 
 function clearSharedUrl() {
@@ -2154,7 +3250,7 @@ function clearSharedUrl() {
   url.pathname = "/";
   url.search = "";
   url.hash = "";
-  replaceHistoryUrl(url);
+  replaceHistoryUrl(preserveAuthFlag(url.toString()));
 }
 
 function refreshSharedUrlIfPresent() {
@@ -2469,6 +3565,9 @@ function updateLifeListStatus() {
 }
 
 function handleDepartTimeChange() {
+  // The user editing the control adopts it: it leaves shared-link display
+  // mode and persists (and syncs) like any other preference from here on.
+  unlockSharedField("departTime");
   if (state.params) state.params.departTime = cleanTimeString(els.departTime.value);
   savePreferences();
   refreshSharedUrlIfPresent();
@@ -3072,6 +4171,7 @@ async function useCurrentLocationForOrigin() {
     autocomplete.origin.activeIndex = -1;
     autocomplete.origin.lastQuery = displayName;
     hideAutocomplete("origin");
+    unlockSharedField("origin");
     updateInputSummaries();
     savePreferences();
     refreshSharedUrlIfPresent();
@@ -3102,6 +4202,7 @@ function setupLocationAutocomplete(field) {
   ctx.listEl = listEl;
 
   inputEl.addEventListener("input", () => {
+    unlockSharedField(field);
     ctx.resolved = null;
     const value = inputEl.value.trim();
     if (ctx.timer) clearTimeout(ctx.timer);
@@ -3278,6 +4379,7 @@ function selectAutocompleteItem(field, index) {
   hideAutocomplete(field);
   clearFieldErrors();
   if (inputEl === els.origin || inputEl === els.destination) {
+    unlockSharedField(field);
     savePreferences();
   }
   // Accepting a suggestion assigns the value programmatically (no input
@@ -3308,6 +4410,7 @@ function setupSpeciesAutocomplete() {
   const ctx = speciesAutocomplete;
 
   inputEl.addEventListener("input", () => {
+    unlockSharedField("speciesQuery");
     state.species = null;
     clearSpeciesError();
     const value = inputEl.value.trim();
@@ -3456,6 +4559,7 @@ function selectSpeciesItem(index) {
   ctx.lastQuery = item.comName;
   clearSpeciesError();
   hideSpeciesAutocomplete();
+  unlockSharedField("speciesQuery");
   savePreferences();
   // Same as location autocomplete: programmatic assignment fires no event.
   refreshSharedUrlIfPresent();
@@ -3505,7 +4609,14 @@ function serializeTargetRows() {
 
 function syncTargetsFromRows() {
   els.targets.value = serializeTargetRows();
+  unlockSharedField("targets");
   updateInputSummaries();
+  // Every call site is a user edit in the target-row editor (typing, removal,
+  // paste, autocomplete pick) — hydration writes els.targets directly and
+  // renderTargetRows() never calls back here — so persist right away instead
+  // of waiting for an unrelated savePreferences() trigger. The account write
+  // this queues is debounced in queueProfileUpsert().
+  savePreferences();
   // Row removal, list paste, and suggestion picks mutate the hidden textarea
   // programmatically (no form input/change event), so invalidate any loaded
   // /t/<slug> snapshot URL here. Hydration never calls this — it only renders

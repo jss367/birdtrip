@@ -3377,6 +3377,103 @@ button.stop-chip {
   }
 }
 
+.auth-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.auth-bar[hidden] {
+  display: none;
+}
+
+.auth-button,
+.auth-button-secondary {
+  font: inherit;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: white;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.auth-button:hover,
+.auth-button-secondary:hover {
+  border-color: var(--accent-strong);
+}
+
+.auth-signed-in {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.auth-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--accent-soft);
+}
+
+.auth-email {
+  font-size: 0.85rem;
+  color: var(--text-muted, #475569);
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.auth-status {
+  font-size: 0.8rem;
+  color: var(--text-muted, #475569);
+}
+
+.merge-modal {
+  width: min(480px, 100%);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  box-shadow: var(--shadow);
+  padding: 22px;
+}
+
+.merge-modal h2 {
+  margin: 0 0 6px;
+  font-size: 1.1rem;
+}
+
+.merge-modal p {
+  margin: 0 0 14px;
+  color: var(--text-muted, #475569);
+  font-size: 0.9rem;
+}
+
+.merge-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.merge-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.merge-list select {
+  font: inherit;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: white;
+}
+
 /* Migration timing page */
 .timing-search {
   grid-template-columns: minmax(0, 1fr) auto auto;
