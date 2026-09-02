@@ -749,6 +749,18 @@ function syncedUserMarkerPresent() {
   }
 }
 
+// True when local data was retained through an involuntary session loss and
+// still belongs to the account that lost the session: the sync marker is
+// gone, but the data still descends from that account's canonical state.
+function retainedOwnerPresent() {
+  if (retainedDataOwnerId) return true;
+  try {
+    return Boolean(localStorage.getItem(RETAINED_OWNER_KEY));
+  } catch {
+    return false;
+  }
+}
+
 function clearProfileDirtyIfIdle() {
   // Later mutations may already be queued behind the flush that just
   // confirmed; they rebuild their patch from live state when they run, so
@@ -883,9 +895,13 @@ function queueProfileUpsert() {
     // runMergeAndHydrate reconciles it instead. The same holds for edits
     // made while signed out with the marker still set (a session that
     // expired between loads): they belong in the merge, not under the
-    // account. Every startup-time save is suppressed or persist:false, so
-    // only real user edits reach here.
-    if (syncedUserMarkerPresent()) markProfileDirty();
+    // account. An involuntary session loss removes the marker but records
+    // the retained data's owner instead; edits made in that state are
+    // equally unconfirmed, and the flag is what lets the owner's next
+    // sign-in keep them (dirtyLocalWins in runMergeAndHydrate) rather than
+    // restore the stale account over them. Every startup-time save is
+    // suppressed or persist:false, so only real user edits reach here.
+    if (syncedUserMarkerPresent() || retainedOwnerPresent()) markProfileDirty();
     return;
   }
   // Local state is now ahead of the account until an upsert confirms it.
