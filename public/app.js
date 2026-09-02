@@ -680,6 +680,15 @@ function saveSessionApiToken() {
   }
 }
 
+function readStoredPrefs() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem("routeBirdingPrefs") || "null");
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 function savePreferences() {
   const payload = {};
   for (const field of PREF_FIELDS) payload[field] = els[field].value;
@@ -696,6 +705,11 @@ function savePreferences() {
       displayNames: state.lifeList.displayNames
     };
   }
+  // Diff against the cache this save overwrites: with no account baseline
+  // yet, it is the only record of which profile columns this save touched.
+  // No prior cache means nothing to compare, so every column counts.
+  const previous = readStoredPrefs();
+  const changedColumns = previous ? profileColumnsChangedBetween(previous, payload) : PROFILE_COLUMNS;
   try {
     localStorage.setItem("routeBirdingPrefs", JSON.stringify(payload));
   } catch {
@@ -704,7 +718,7 @@ function savePreferences() {
     addWarning("The imported life list was too large to save in this browser, but it will work until the page is refreshed.");
     renderWarnings();
   }
-  queueProfileUpsert();
+  queueProfileUpsert(changedColumns);
 }
 
 const PROFILE_UPSERT_DEBOUNCE_MS = 750;
@@ -909,6 +923,33 @@ function buildProfilePatch() {
   };
 }
 
+// The profile columns a browser-cache payload (savePreferences' shape) maps
+// to. Shared-link-locked fields are display-only (see buildProfilePatch), so
+// they are held constant here and never read as a local edit.
+function profileColumnsFromPrefs(payload) {
+  const prefs = {};
+  for (const field of PREF_FIELDS) {
+    if (ACCOUNT_OWNED_FIELDS.has(field) || sharedFieldLocks.has(field)) continue;
+    prefs[field] = typeof payload[field] === "string" ? payload[field] : "";
+  }
+  return normalizeProfileColumns({
+    life_list: payload.lifeList,
+    targets: sharedFieldLocks.has("targets") ? "" : payload.targets,
+    ebird_token: payload.rememberToken === true ? payload.apiToken : null,
+    preferences: prefs
+  });
+}
+
+// Columns that differ between two cache snapshots. Used when no account
+// baseline exists: every earlier local edit is already recorded dirty (or was
+// confirmed by an upsert), so a column the previous snapshot agrees with was
+// not touched by the save that produced the next one.
+function profileColumnsChangedBetween(previous, next) {
+  const before = profileColumnsFromPrefs(previous);
+  const after = profileColumnsFromPrefs(next);
+  return PROFILE_COLUMNS.filter((column) => stableStringify(before[column]) !== stableStringify(after[column]));
+}
+
 // Columns whose live value differs from the last known account state. With
 // no baseline (the profile fetch failed, or nobody is signed in) every column
 // counts as changed: the conservative reading for a browser that can't tell.
@@ -934,7 +975,10 @@ let profileUpsertChain = Promise.resolve();
 // from live state when it actually runs, so they coalesce into it.
 let profileUpsertPending = false;
 
-function queueProfileUpsert() {
+// `columns`: the profile columns the caller's save changed, per its cache
+// diff (savePreferences). Only consulted before an account baseline exists;
+// once one does, the diff against it is authoritative.
+function queueProfileUpsert(columns = PROFILE_COLUMNS) {
   if (suppressProfileUpsert) return;
   if (!window.birdtripAuth || !window.birdtripAuth.user) {
     // Nobody is signed in *yet*. The form is interactive before /api/config
@@ -951,14 +995,18 @@ function queueProfileUpsert() {
     // sign-in keep them (dirtyLocalWins in runMergeAndHydrate) rather than
     // restore the stale account over them. Every startup-time save is
     // suppressed or persist:false, so only real user edits reach here.
-    // No account baseline exists here, so every column is recorded.
-    if (syncedUserMarkerPresent() || retainedOwnerPresent()) markProfileDirty(PROFILE_COLUMNS);
+    // No account baseline exists here, so record the columns the save's own
+    // cache diff reports (not every column): a column this edit left alone
+    // still matches the last confirmed sync, and the account, possibly
+    // updated from another device since, stays canonical for it.
+    if (syncedUserMarkerPresent() || retainedOwnerPresent()) markProfileDirty(columns);
     return;
   }
   // The columns now ahead of the account stay recorded until an upsert (or a
   // no-change diff) confirms them. Recorded against the account baseline
-  // rather than per call site: every mutation funnels through
-  // savePreferences(), which doesn't know which field the user touched.
+  // rather than the caller's cache diff: the baseline is what the account
+  // actually holds, so it also catches columns the cache already disagreed
+  // with (e.g. a queued write the user has since edited again).
   markProfileDirty(Object.keys(changedProfileColumns().changed));
   if (profileUpsertTimer) clearTimeout(profileUpsertTimer);
   profileUpsertTimer = setTimeout(() => {
