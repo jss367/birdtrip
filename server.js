@@ -1349,15 +1349,16 @@ const server = http.createServer((req, res) => {
 if (require.main === module) {
   // Make process-level failures visible in the logs before the host restarts
   // the service. The exit preserves Node's default fail-fast behaviour; the
-  // logging is what was missing.
-  process.on("uncaughtException", (error) => {
-    console.error("[fatal] uncaught exception", error);
+  // logging is what was missing. stderr is written synchronously because
+  // console.error can be asynchronous when piped, and process.exit would
+  // otherwise drop the message.
+  const fatal = (label, error) => {
+    const detail = error instanceof Error ? error.stack || error.message : String(error);
+    fs.writeSync(2, `[fatal] ${label}\n${detail}\n`);
     process.exit(1);
-  });
-  process.on("unhandledRejection", (reason) => {
-    console.error("[fatal] unhandled promise rejection", reason);
-    process.exit(1);
-  });
+  };
+  process.on("uncaughtException", (error) => fatal("uncaught exception", error));
+  process.on("unhandledRejection", (reason) => fatal("unhandled promise rejection", reason));
   server.listen(PORT, () => {
     console.log(`Birdtrip running at http://localhost:${PORT}`);
   });

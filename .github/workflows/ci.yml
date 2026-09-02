@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -50,9 +53,14 @@ jobs:
       - run: docker build -t birdtrip:ci .
       - name: Boot the image and hit /healthz
         run: |
-          docker run -d --rm --name birdtrip -p 4177:4177 birdtrip:ci
-          for i in $(seq 1 20); do
+          # No --rm: a container that dies on startup must survive long enough
+          # for its logs to be collected below.
+          docker run -d --name birdtrip -p 4177:4177 birdtrip:ci
+          for _ in $(seq 1 20); do
             if curl -fsS http://127.0.0.1:4177/healthz; then exit 0; fi
             sleep 1
           done
           echo "server never became healthy"; docker logs birdtrip; exit 1
+      - name: Clean up container
+        if: always()
+        run: docker rm -f birdtrip || true

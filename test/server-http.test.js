@@ -48,13 +48,15 @@ test("malformed percent-encoding in a static path returns 400 instead of crashin
   assert.equal(await healthy(), true);
 });
 
-test("unparsable Host header returns 400 instead of crashing", async () => {
+// The server never reads the Host header (URLs are parsed against a fixed
+// base), so a garbage value is simply ignored rather than crashing the process.
+test("unparsable Host header is ignored instead of crashing", async () => {
   const response = await rawRequest([
     "GET /healthz HTTP/1.1",
     "Host: [",
     "Connection: close"
   ]);
-  assert.match(response, /^HTTP\/1\.1 (200|400) /);
+  assert.match(response, /^HTTP\/1\.1 200 /);
   assert.equal(await healthy(), true);
 });
 
