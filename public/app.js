@@ -714,13 +714,18 @@ const PROFILE_FETCH_RETRY_DELAY_MS = 1500;
 // given account, so later sessions hydrate from the account instead of
 // re-running the merge (which would resurrect data deleted on other devices).
 const SYNCED_USER_KEY = "routeBirdingSyncedUser";
-// Set the moment a signed-in mutation queues an account write, cleared only
-// when a flush confirms nothing unconfirmed remains (successful upsert, or a
-// diff showing local already matches the account). Persisted so a reload that
+// The profile columns a signed-in mutation left ahead of the account (JSON
+// array), recorded the moment the write is queued and cleared only when a
+// flush confirms nothing unconfirmed remains (successful upsert, or a diff
+// showing local already matches the account). Persisted so a reload that
 // beats the 750 ms debounce - or follows a failed upsert - can't treat the
 // stale account as canonical and hydrate it over the unconfirmed local edits:
-// runMergeAndHydrate routes through the merge flow while this is set.
+// runMergeAndHydrate routes through the merge flow while any column is
+// listed, and only the listed columns get local-wins treatment there, so an
+// unconfirmed life-list import can't make this browser's untouched targets
+// or preferences override what another device wrote since.
 const PROFILE_DIRTY_KEY = "routeBirdingProfileDirty";
+const PROFILE_COLUMNS = ["life_list", "targets", "ebird_token", "preferences"];
 // Records which account the local data retained through an involuntary
 // session loss belongs to. Consulted at the next sign-in: the owner returning
 // reconciles through the merge flow as usual, but a DIFFERENT user must not
@@ -734,9 +739,32 @@ let retainedDataOwnerId = null;
 let profileUpsertTimer = 0;
 let profileUpsertFailed = false;
 
-function markProfileDirty() {
+function readDirtyProfileColumns() {
+  let raw = null;
   try {
-    localStorage.setItem(PROFILE_DIRTY_KEY, "1");
+    raw = localStorage.getItem(PROFILE_DIRTY_KEY);
+  } catch {
+    return new Set();
+  }
+  if (!raw) return new Set();
+  // "1" is the pre-column format: treat it as every column unconfirmed.
+  if (raw === "1") return new Set(PROFILE_COLUMNS);
+  try {
+    const parsed = JSON.parse(raw);
+    return new Set(Array.isArray(parsed)
+      ? parsed.filter((column) => PROFILE_COLUMNS.includes(column))
+      : PROFILE_COLUMNS);
+  } catch {
+    return new Set(PROFILE_COLUMNS);
+  }
+}
+
+function markProfileDirty(columns) {
+  if (!columns.length) return;
+  const dirty = readDirtyProfileColumns();
+  for (const column of columns) dirty.add(column);
+  try {
+    localStorage.setItem(PROFILE_DIRTY_KEY, JSON.stringify(Array.from(dirty)));
   } catch {
     // Storage unavailable; hydration protection degrades to in-session only.
   }
@@ -878,6 +906,21 @@ function buildProfilePatch() {
   };
 }
 
+// Columns whose live value differs from the last known account state. With
+// no baseline (the profile fetch failed, or nobody is signed in) every column
+// counts as changed: the conservative reading for a browser that can't tell.
+function changedProfileColumns() {
+  const full = buildProfilePatch();
+  if (!lastSyncedProfile) return { full, changed: { ...full } };
+  const changed = {};
+  for (const column of Object.keys(full)) {
+    if (stableStringify(full[column]) !== stableStringify(lastSyncedProfile[column])) {
+      changed[column] = full[column];
+    }
+  }
+  return { full, changed };
+}
+
 // Serializes account writes: exactly one upsert is in flight at a time. A
 // write can outlast the debounce, and overlapping upserts could complete out
 // of order, letting an older payload clobber a newer one (and leave
@@ -905,11 +948,15 @@ function queueProfileUpsert() {
     // sign-in keep them (dirtyLocalWins in runMergeAndHydrate) rather than
     // restore the stale account over them. Every startup-time save is
     // suppressed or persist:false, so only real user edits reach here.
-    if (syncedUserMarkerPresent() || retainedOwnerPresent()) markProfileDirty();
+    // No account baseline exists here, so every column is recorded.
+    if (syncedUserMarkerPresent() || retainedOwnerPresent()) markProfileDirty(PROFILE_COLUMNS);
     return;
   }
-  // Local state is now ahead of the account until an upsert confirms it.
-  markProfileDirty();
+  // The columns now ahead of the account stay recorded until an upsert (or a
+  // no-change diff) confirms them. Recorded against the account baseline
+  // rather than per call site: every mutation funnels through
+  // savePreferences(), which doesn't know which field the user touched.
+  markProfileDirty(Object.keys(changedProfileColumns().changed));
   if (profileUpsertTimer) clearTimeout(profileUpsertTimer);
   profileUpsertTimer = setTimeout(() => {
     profileUpsertTimer = 0;
@@ -946,15 +993,9 @@ async function flushProfileUpsert() {
     if (!lastSyncedProfile) reportProfileUpsertFailure();
     return;
   }
-  const full = buildProfilePatch();
   // Send only columns that changed since the last known server state so a
   // stale browser can't overwrite columns another device updated.
-  const changed = {};
-  for (const column of Object.keys(full)) {
-    if (stableStringify(full[column]) !== stableStringify(lastSyncedProfile[column])) {
-      changed[column] = full[column];
-    }
-  }
+  const { full, changed } = changedProfileColumns();
   if (!Object.keys(changed).length) {
     // Local state already matches the account, so a first reconciliation
     // (if one is pending) is complete without a write.
@@ -1167,19 +1208,18 @@ async function runMergeAndHydrate() {
     // the account is canonical: hydrate from it, including cleared fields, so
     // deletions made on another device aren't resurrected from localStorage.
     let markerMatches = false;
-    let dirtyFlagSet = false;
     try {
       markerMatches = localStorage.getItem(SYNCED_USER_KEY) === userIdAtStart;
-      dirtyFlagSet = localStorage.getItem(PROFILE_DIRTY_KEY) === "1";
     } catch {
       // Storage unavailable; fall back to the merge flow.
     }
-    // A set dirty flag means a queued write was never confirmed (a reload
-    // beat the debounce, the upsert failed, or the user edited while this
-    // fetch was in flight): the account may be behind this browser, so
+    const dirtyColumns = readDirtyProfileColumns();
+    // A recorded dirty column means a queued write was never confirmed (a
+    // reload beat the debounce, the upsert failed, or the user edited while
+    // this fetch was in flight): the account may be behind this browser, so
     // reconcile through the merge flow instead of hydrating the stale
     // account over the unconfirmed local edits.
-    const alreadySynced = markerMatches && !dirtyFlagSet;
+    const alreadySynced = markerMatches && dirtyColumns.size === 0;
     if (alreadySynced) {
       const hydrated = hydrateFromAccount(account);
       suppressProfileUpsert = true;
@@ -1191,17 +1231,20 @@ async function runMergeAndHydrate() {
       return;
     }
 
-    // Reaching the merge with the dirty flag set AND an ownership tie between
-    // the local data and this account (the sync marker, or the retained-data
-    // owner when an involuntary session loss removed the marker) means local
-    // state descends from this account's canonical state plus unconfirmed
-    // edits. An empty local field is then an intentional clear that must win
-    // over the stale account value and be written back - not "never set" data
-    // to refill from the account. Without the ownership tie (e.g. a failed
-    // first-ever merge write-back left the flag set), an empty local field
-    // really may mean never-set, so the account still wins those cases.
-    const dirtyLocalWins = dirtyFlagSet
-      && (markerMatches || retainedOwner === userIdAtStart);
+    // Reaching the merge with a column recorded dirty AND an ownership tie
+    // between the local data and this account (the sync marker, or the
+    // retained-data owner when an involuntary session loss removed the
+    // marker) means that column's local state descends from this account's
+    // canonical state plus unconfirmed edits. An empty local field is then an
+    // intentional clear that must win over the stale account value and be
+    // written back - not "never set" data to refill from the account.
+    // Columns NOT recorded dirty were never edited here since the last
+    // confirmed sync, so the account (possibly updated from another device
+    // meanwhile) stays canonical for them. Without the ownership tie (e.g. a
+    // failed first-ever merge write-back left columns recorded), an empty
+    // local field really may mean never-set, so the account still wins.
+    const ownershipTie = markerMatches || retainedOwner === userIdAtStart;
+    const dirtyLocalWins = (column) => ownershipTie && dirtyColumns.has(column);
 
     const conflicts = [];
     const decisions = {};
@@ -1220,7 +1263,7 @@ async function runMergeAndHydrate() {
     } else if (accountLLSize && !localLLSize) {
       // keep-local under dirtyLocalWins: the empty list is an unconfirmed
       // local clear, and the write-back below propagates it to the account.
-      decisions.lifeList = dirtyLocalWins ? "keep-local" : "use-account";
+      decisions.lifeList = dirtyLocalWins("life_list") ? "keep-local" : "use-account";
     } else if (lifeListEqual) {
       decisions.lifeList = "noop";
     } else {
@@ -1249,7 +1292,7 @@ async function runMergeAndHydrate() {
     } else if (!accountTargets && localTargets) {
       decisions.targets = "keep-local";
     } else if (accountTargets && !localTargets) {
-      decisions.targets = dirtyLocalWins ? "keep-local" : "use-account";
+      decisions.targets = dirtyLocalWins("targets") ? "keep-local" : "use-account";
     } else if (localTargets === accountTargets) {
       decisions.targets = "noop";
     } else {
@@ -1268,7 +1311,7 @@ async function runMergeAndHydrate() {
     } else if (!accountToken && localToken) {
       decisions.token = "keep-local";
     } else if (accountToken && !localToken) {
-      decisions.token = dirtyLocalWins ? "keep-local" : "use-account";
+      decisions.token = dirtyLocalWins("ebird_token") ? "keep-local" : "use-account";
     } else if (localToken === accountToken) {
       decisions.token = "noop";
     } else {
@@ -1284,7 +1327,7 @@ async function runMergeAndHydrate() {
     // have their own column + explicit conflict handling above. Under
     // dirtyLocalWins local preferences (including clears) are the newest
     // edits, so they stand and the write-back carries them to the account.
-    decisions.preferences = dirtyLocalWins ? "keep-local" : "merge-silently";
+    decisions.preferences = dirtyLocalWins("preferences") ? "keep-local" : "merge-silently";
 
     if (conflicts.length) {
       const choices = await showMergeDialog(conflicts);
