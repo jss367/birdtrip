@@ -20,6 +20,37 @@
     listeners: new Set()
   };
 
+  // Carries explicit sign-out intent to other open tabs. Supabase broadcasts
+  // a sign-out to every tab as a SIGNED_OUT event, but a failed token refresh
+  // surfaces the same way, and only the tab that clicked sign out has
+  // explicitSignOut set in memory. The initiating tab writes this marker
+  // before calling Supabase; other tabs read it when their SIGNED_OUT lands
+  // and wipe their local copy of the account data too. Cleared by the next
+  // sign-in (any tab), so it can't outlive the sign-out and mislabel a later
+  // refresh failure.
+  const SIGN_OUT_MARKER_KEY = "routeBirdingExplicitSignOut";
+  // True while this tab's signOut() awaits Supabase, so a session event that
+  // slips in meanwhile (a refresh completing) can't retire the intent early.
+  let signOutInFlight = false;
+
+  function writeSignOutMarker(present) {
+    try {
+      if (present) localStorage.setItem(SIGN_OUT_MARKER_KEY, "1");
+      else localStorage.removeItem(SIGN_OUT_MARKER_KEY);
+    } catch {
+      // Storage unavailable; other tabs fall back to treating the event as
+      // involuntary session loss, which keeps local data.
+    }
+  }
+
+  function signOutMarkerPresent() {
+    try {
+      return localStorage.getItem(SIGN_OUT_MARKER_KEY) === "1";
+    } catch {
+      return false;
+    }
+  }
+
   window.birdtripAuth = auth;
 
   auth.init = async function init(config) {
@@ -54,7 +85,14 @@
       console.warn("Initial session fetch failed:", err && err.message);
     }
 
-    auth.client.auth.onAuthStateChange((_event, newSession) => {
+    auth.client.auth.onAuthStateChange((event, newSession) => {
+      // A SIGNED_OUT broadcast from another tab's user-requested sign-out
+      // arrives with the marker set; a refresh failure in this tab does not.
+      // Gated on the event name so a stale marker can't set the flag from an
+      // unrelated null-session event (e.g. INITIAL_SESSION with no user).
+      if (event === "SIGNED_OUT" && !newSession && signOutMarkerPresent()) {
+        auth.explicitSignOut = true;
+      }
       setSession(newSession);
     });
 
@@ -86,13 +124,18 @@
     // while the call is still in flight, and the listeners must already know
     // that null session is user-requested.
     auth.explicitSignOut = true;
+    writeSignOutMarker(true);
+    signOutInFlight = true;
     try {
       ({ error } = await auth.client.auth.signOut());
     } catch (err) {
       error = err;
+    } finally {
+      signOutInFlight = false;
     }
     if (error) {
       auth.explicitSignOut = false;
+      writeSignOutMarker(false);
       console.warn("Sign-out failed:", error && error.message);
       showAuthStatus(`Sign-out failed: ${(error && error.message) || "please try again"}`);
       return;
@@ -162,6 +205,13 @@
     const fireListeners = !options || options.fireListeners !== false;
     auth.session = session || null;
     auth.user = session && session.user ? session.user : null;
+    if (auth.user && !signOutInFlight) {
+      // A live session (sign-in, restore) retires the cross-tab marker and
+      // the in-memory flag so a later involuntary session loss is not
+      // mistaken for a user-requested sign-out.
+      auth.explicitSignOut = false;
+      writeSignOutMarker(false);
+    }
     renderAuthState();
     if (!fireListeners) return;
     auth.listeners.forEach((fn) => {

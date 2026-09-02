@@ -2134,7 +2134,9 @@ async function loadAppConfig() {
           // Only a user-requested sign-out is a privacy handoff that wipes
           // local data. A null session from a failed token refresh/restore
           // must not erase the cached life list, targets, and token (which
-          // may hold unsynced edits).
+          // may hold unsynced edits). auth.js sets explicitSignOut both for
+          // a sign-out clicked in this tab and for one broadcast from another
+          // tab (via its localStorage marker), so every open tab wipes.
           const explicit = Boolean(window.birdtripAuth.explicitSignOut);
           window.birdtripAuth.explicitSignOut = false;
           if (explicit) {
