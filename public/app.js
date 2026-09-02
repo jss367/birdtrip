@@ -738,6 +738,17 @@ function markProfileDirty() {
   }
 }
 
+// True when this browser has reconciled with some account and neither an
+// explicit sign-out nor an involuntary session loss has cleared the record:
+// the case where a restored session would hydrate the account as canonical.
+function syncedUserMarkerPresent() {
+  try {
+    return Boolean(localStorage.getItem(SYNCED_USER_KEY));
+  } catch {
+    return false;
+  }
+}
+
 function clearProfileDirtyIfIdle() {
   // Later mutations may already be queued behind the flush that just
   // confirmed; they rebuild their patch from live state when they run, so
@@ -863,7 +874,20 @@ let profileUpsertPending = false;
 
 function queueProfileUpsert() {
   if (suppressProfileUpsert) return;
-  if (!window.birdtripAuth || !window.birdtripAuth.user) return;
+  if (!window.birdtripAuth || !window.birdtripAuth.user) {
+    // Nobody is signed in *yet*. The form is interactive before /api/config
+    // and getSession() resolve, so a persisted session may still be
+    // restoring; if this browser last synced with an account, that restore
+    // would see the intact sync marker, treat the account as canonical, and
+    // hydrate it over this edit. Record the edit as unconfirmed now so
+    // runMergeAndHydrate reconciles it instead. The same holds for edits
+    // made while signed out with the marker still set (a session that
+    // expired between loads): they belong in the merge, not under the
+    // account. Every startup-time save is suppressed or persist:false, so
+    // only real user edits reach here.
+    if (syncedUserMarkerPresent()) markProfileDirty();
+    return;
+  }
   // Local state is now ahead of the account until an upsert confirms it.
   markProfileDirty();
   if (profileUpsertTimer) clearTimeout(profileUpsertTimer);
