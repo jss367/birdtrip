@@ -273,15 +273,18 @@
     if (event.target.closest(".seasonal-month-cell")) els.tooltip.hidden = true;
   });
 
+  // An empty query clears the remembered place, so a failed search can't
+  // leave the previous location in the share URL or reload state.
   function persist(query) {
     try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ q: query }));
+      if (query) window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ q: query }));
+      else window.localStorage.removeItem(STORAGE_KEY);
     } catch {
       // Storage unavailable - the search still works, it just isn't remembered.
     }
     const url = new URL(window.location.href);
     url.search = "";
-    url.searchParams.set("q", query);
+    if (query) url.searchParams.set("q", query);
     window.history.replaceState(null, "", url);
   }
 
@@ -309,6 +312,7 @@
     if (ac.controller) ac.controller.abort();
     closeSuggestions();
     try {
+      persist("");
       setStatus("Finding location…");
       let place = ac.resolved && ac.resolved.name === query ? ac.resolved : null;
       if (!place) {

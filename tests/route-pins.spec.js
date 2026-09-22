@@ -61,6 +61,10 @@ test("selected unpinned stop that drops out of rank keeps its map marker", async
   await expect(selectedMarker).toHaveText("•");
   // The open details panel overlays the map, so bypass hit-testing.
   await selectedMarker.dispatchEvent("click");
+  // The click re-renders the markers; wait out Leaflet's 200ms popup fade so
+  // a popup that was closed by the rebuild has left the DOM.
+  await page.waitForTimeout(400);
+  await expect(page.locator(".leaflet-popup")).toHaveCount(1);
   await expect(page.locator(".leaflet-popup")).toContainText("Harbor Park");
 });
 
