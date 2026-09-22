@@ -48,6 +48,23 @@ test("malformed percent-encoding in a static path returns 400 instead of crashin
   assert.equal(await healthy(), true);
 });
 
+test("a NUL byte in a static path returns 400 instead of crashing", async () => {
+  const response = await rawRequest([
+    "GET /%00 HTTP/1.1",
+    "Host: localhost",
+    "Connection: close"
+  ]);
+  assert.match(response, /^HTTP\/1\.1 400 /);
+  assert.equal(await healthy(), true);
+});
+
+test("route coordinates must be exactly two numbers", async () => {
+  for (const origin of [",", "1,", ",2", "1,2,3"]) {
+    const response = await fetch(`http://127.0.0.1:${port}/api/route?origin=${encodeURIComponent(origin)}&destination=1,2`);
+    assert.equal(response.status, 400, origin);
+  }
+});
+
 // The server never reads the Host header (URLs are parsed against a fixed
 // base), so a garbage value is simply ignored rather than crashing the process.
 test("unparsable Host header is ignored instead of crashing", async () => {

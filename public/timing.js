@@ -62,24 +62,37 @@
     return Math.round(lng / 15) * 60 || 0; // "|| 0" normalizes -0
   }
 
+  // Whether a browser whose standard-time (non-DST) UTC offset is
+  // `standardOffsetMinutes` plausibly shares a civil timezone with a place at
+  // `lng`. Standard time is compared because daylight saving adds an hour on
+  // top of the usual drift between civil and solar time: Paris (solar UTC+0)
+  // is UTC+1 in winter but UTC+2 in summer, and only the former is within
+  // tolerance. Zones that run two hours ahead of solar time all year (western
+  // Spain, western China) still fail and fall back to the solar estimate.
+  function matchesSolarZone({ standardOffsetMinutes, lng }) {
+    const solarOffset = approximateUtcOffsetMinutes(lng);
+    if (!Number.isFinite(standardOffsetMinutes) || solarOffset === null) return true;
+    return Math.abs(standardOffsetMinutes - solarOffset) <= 90;
+  }
+
   // Resolve the UTC offset (in minutes) to use when displaying a stop's clock
   // times, given the offset already used for the route origin's clocks. Stops
-  // whose rounded solar zone matches the origin's keep the origin display
+  // within 15 degrees of longitude of the origin keep the origin display
   // offset unchanged (`shifted: false` — in the common case that offset is the
-  // browser timezone, exact and DST-correct). Stops a rounded hour or more
-  // away shift the origin display offset by the solar difference, which keeps
-  // DST consistent when both zones observe the same daylight-saving rules but
-  // is still an approximation (`shifted: true`).
+  // browser timezone, exact and DST-correct). Civil zones are rarely narrower
+  // than that, and comparing each point's rounded solar zone instead would
+  // shift clocks for a 20 km trip that straddles a rounding boundary. Stops
+  // farther away shift the origin display offset by the rounded solar
+  // difference, which keeps DST consistent when both zones observe the same
+  // daylight-saving rules but is still an approximation (`shifted: true`).
   function stopClockOffsetMinutes({ originDisplayOffsetMinutes, originLng, stopLng }) {
-    const originSolarOffset = approximateUtcOffsetMinutes(originLng);
-    const stopSolarOffset = approximateUtcOffsetMinutes(stopLng);
-    if (!Number.isFinite(originDisplayOffsetMinutes)
-      || originSolarOffset === null
-      || stopSolarOffset === null
-      || stopSolarOffset === originSolarOffset) {
+    const deltaLng = Number.isFinite(originLng) && Number.isFinite(stopLng)
+      ? positiveModulo(stopLng - originLng + 180, 360) - 180
+      : NaN;
+    if (!Number.isFinite(originDisplayOffsetMinutes) || !Number.isFinite(deltaLng) || Math.abs(deltaLng) < 15) {
       return { offsetMinutes: Number.isFinite(originDisplayOffsetMinutes) ? originDisplayOffsetMinutes : null, shifted: false };
     }
-    return { offsetMinutes: originDisplayOffsetMinutes + (stopSolarOffset - originSolarOffset), shifted: true };
+    return { offsetMinutes: originDisplayOffsetMinutes + (Math.round(deltaLng / 15) * 60 || 0), shifted: true };
   }
 
   // Whole calendar days between two instants as read off the clocks they are
@@ -121,7 +134,7 @@
       habitat: "marsh",
       window: "dawn",
       bestLabel: "best at dawn",
-      pattern: /\bmarsh(es|lands?)?\b|wetlands?\b|\bswamps?\b|slough|bog\b|fen\b|cienega|ciénega|estuar|riparian|oxbow|bosque|billabong/i
+      pattern: /\bmarsh(es|lands?)?\b|wetlands?\b|\bswamps?\b|slough|\bbogs?\b|\bfens?\b|cienega|ciénega|estuar|riparian|oxbow|bosque|billabong/i
     },
     {
       habitat: "open water",
@@ -133,7 +146,7 @@
       habitat: "woodland",
       window: "dawn",
       bestLabel: "best in early morning",
-      pattern: /forest|woods?\b|woodland|grove|canyon|arboretum|botanic|gardens?\b|cemetery|campus|greenway|nature (center|centre)|sanctuary|preserve|refuge|\btrail(head)?s?\b/i
+      pattern: /forest|\bwoods?\b|woodland|grove|canyon|arboretum|botanic|gardens?\b|cemetery|campus|greenway|nature (center|centre)|sanctuary|preserve|refuge|\btrail(head)?s?\b/i
     }
   ];
 
@@ -221,6 +234,7 @@
     calendarDaysApart,
     estimateArrivalMs,
     inferStopTiming,
+    matchesSolarZone,
     stopClockOffsetMinutes,
     sunTimes
   });

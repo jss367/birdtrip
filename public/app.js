@@ -1,5 +1,6 @@
 const state = {
   mode: "route",
+  searchInFlight: false,
   mapAdapter: null,
   route: null,
   routeName: "",
@@ -71,6 +72,9 @@ const MAX_TOTAL_DETOURS = 40;
 const MAX_ROUTE_TARGETS = 10;
 const MAX_ROUTE_TARGET_LOOKUPS = 20;
 const MAX_ROUTE_UNSEEN_PROBES = 10;
+// Rescued target hotspots are shortlisted ahead of everything else, so cap
+// them at half the evidence budget to leave room for the best general stops.
+const MAX_TARGET_RESCUE_HOTSPOTS = MAX_EVIDENCE_HOTSPOTS / 2;
 const SESSION_TOKEN_KEY = "birdtripEbirdApiToken";
 
 const els = {
@@ -527,7 +531,8 @@ function applySharedSearch(shared) {
   // time should clear any restored preference so the recipient sees the trip
   // the sender shared, not arrival warnings from their own previous state.
   els.departTime.value = shared.departTime || "";
-  if (shared.targets) els.targets.value = shared.targets;
+  // Same for targets: links omit them when the sender had none.
+  els.targets.value = shared.targets || "";
   // "0" is a valid position; only an absent/invalid param falls back to default.
   setBalance(shared.balance === null || shared.balance === "" ? DEFAULT_BALANCE : Number(shared.balance), { skipRerank: true });
   state.pendingPinnedIds = shared.pins || [];
@@ -585,7 +590,7 @@ function restorePreferences() {
     const parsed = JSON.parse(localStorage.getItem("routeBirdingPrefs") || "{}");
     if (parsed && typeof parsed === "object") saved = parsed;
   } catch {
-    localStorage.removeItem("routeBirdingPrefs");
+    removeLocalStorageItem("routeBirdingPrefs");
   }
   for (const field of PREF_FIELDS) {
     if (typeof saved[field] === "string") els[field].value = saved[field];
@@ -644,10 +649,26 @@ function savePreferences() {
   try {
     localStorage.setItem("routeBirdingPrefs", JSON.stringify(payload));
   } catch {
+    if (!payload.lifeList) return;
     delete payload.lifeList;
-    localStorage.setItem("routeBirdingPrefs", JSON.stringify(payload));
+    try {
+      localStorage.setItem("routeBirdingPrefs", JSON.stringify(payload));
+    } catch {
+      // Storage is blocked or full; preferences last until the page is refreshed.
+      return;
+    }
     addWarning("The imported life list was too large to save in this browser, but it will work until the page is refreshed.");
     renderWarnings();
+  }
+}
+
+// localStorage access itself throws when the browser blocks site storage, so
+// the recovery path for a corrupt entry must not assume it can remove it.
+function removeLocalStorageItem(key) {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // Storage unavailable; nothing to clean up.
   }
 }
 
@@ -719,7 +740,7 @@ function readSavedTrips() {
       .filter((trip) => trip && typeof trip.id === "string" && typeof trip.name === "string")
       .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
   } catch {
-    localStorage.removeItem(SAVED_TRIPS_KEY);
+    removeLocalStorageItem(SAVED_TRIPS_KEY);
     return [];
   }
 }
@@ -1291,6 +1312,8 @@ async function setMapProvider(provider, options = {}) {
     await initializeMap(nextProvider, { preserveData });
     if (persist) savePreferences();
   } catch (error) {
+    // The user already switched to another provider while this one loaded.
+    if (state.provider !== nextProvider) return;
     if (nextProvider === "google") {
       addWarning(`Google Maps could not be loaded: ${error.message}. Falling back to OpenStreetMap.`);
       state.provider = "osm";
@@ -1316,6 +1339,8 @@ async function initializeMap(provider, options = {}) {
   const results = preserveData ? state.results : [];
   const selectedId = preserveData ? state.selectedId : null;
   const sightingLocations = preserveData && Array.isArray(state.sightingLocations) ? state.sightingLocations : [];
+  const initId = (state.mapInitId || 0) + 1;
+  state.mapInitId = initId;
 
   if (state.mapAdapter) {
     state.mapAdapter.destroy();
@@ -1325,6 +1350,9 @@ async function initializeMap(provider, options = {}) {
 
   if (provider === "google") {
     await loadGoogleMapsScript(state.config.providers.google.browserKey);
+    // A later initializeMap call (the user switched back to OSM while the
+    // Google script loaded) owns the container now; don't stack a second map.
+    if (initId !== state.mapInitId) return;
     state.mapAdapter = new GoogleMapAdapter(container);
   } else {
     state.mapAdapter = new LeafletMapAdapter(container);
@@ -1466,6 +1494,11 @@ function clearResults() {
 }
 
 async function runSearch(options = {}) {
+  // Two overlapping searches share state.route and state.candidatePool, so a
+  // second one (e.g. a shared link's auto-run after the user already clicked
+  // Find Stops) is dropped rather than interleaved.
+  if (state.searchInFlight) return;
+  state.searchInFlight = true;
   const { persistPreferences = true, preserveSharedUrl = false } = options;
   if (persistPreferences) savePreferences();
   state.ebirdModalPrompted = false;
@@ -1493,6 +1526,14 @@ async function runSearch(options = {}) {
     setStatus("Search failed", error.message || "Something went wrong.");
     console.error(error);
   } finally {
+    // Early exits ("No candidates", "No stops within budget") and failures
+    // only update the status line; replace the loading placeholder so the
+    // results list doesn't claim a search is still running.
+    if (els.resultsList.querySelector(".search-loading")) {
+      els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="binoculars"></i><p>No results for this search.</p></div>';
+      if (window.lucide) window.lucide.createIcons();
+    }
+    state.searchInFlight = false;
     setBusy(false);
   }
 }
@@ -2503,17 +2544,25 @@ function setResultOrder(order) {
 // clocks with the post-transition offset.
 function routeTimeContext(atMs = Date.now()) {
   const browserOffsetMinutes = -new Date(atMs).getTimezoneOffset();
-  const approxOffsetMinutes = timing?.approximateUtcOffsetMinutes?.(state.route?.origin?.lng);
-  if (!Number.isFinite(approxOffsetMinutes) || Math.abs(browserOffsetMinutes - approxOffsetMinutes) <= 90) {
+  const originLng = state.route?.origin?.lng;
+  const approxOffsetMinutes = timing?.approximateUtcOffsetMinutes?.(originLng);
+  // DST only ever moves clocks forward, so the smaller of the January and
+  // July offsets is the browser zone's standard time in either hemisphere.
+  const year = new Date(atMs).getFullYear();
+  const standardOffsetMinutes = Math.min(
+    -new Date(year, 0, 1).getTimezoneOffset(),
+    -new Date(year, 6, 1).getTimezoneOffset()
+  );
+  if (!Number.isFinite(approxOffsetMinutes) || timing.matchesSolarZone({ standardOffsetMinutes, lng: originLng })) {
     return { offsetMinutes: browserOffsetMinutes, approximate: false };
   }
   return { offsetMinutes: approxOffsetMinutes, approximate: true };
 }
 
 // Clock display context for a single stop. Routes can cross time zones, so a
-// stop whose rounded solar zone differs from the origin's is displayed with
-// the origin's display offset shifted by the solar difference (approximate),
-// while stops in the origin's zone keep the route context unchanged.
+// stop 15 or more degrees of longitude from the origin is displayed with the
+// origin's display offset shifted by the solar difference (approximate),
+// while nearer stops keep the route context unchanged.
 function stopTimeContext(lng, atMs = Date.now()) {
   const routeContext = routeTimeContext(atMs);
   const stopOffset = timing?.stopClockOffsetMinutes?.({
@@ -2883,7 +2932,7 @@ function clearSearchArtifacts() {
   els.detailsPanel.hidden = true;
   if (state.mapAdapter) state.mapAdapter.clear();
   els.resultsList.className = "results-list empty";
-  els.resultsList.innerHTML = `<div class="empty-state"><i data-lucide="loader"></i><p>${state.mode === "species" ? "Mapping sightings..." : state.mode === "area" ? "Searching area..." : "Searching route corridor..."}</p></div>`;
+  els.resultsList.innerHTML = `<div class="empty-state search-loading"><i data-lucide="loader"></i><p>${state.mode === "species" ? "Mapping sightings..." : state.mode === "area" ? "Searching area..." : "Searching route corridor..."}</p></div>`;
   els.notableCount.textContent = "-";
   els.hotspotCount.textContent = "-";
   els.candidateCount.textContent = "-";
@@ -4191,7 +4240,7 @@ async function rescueTargetHotspots(hotspots, ranked, center, params) {
   if (failed) {
     addWarning(`${failed} target-species lookups failed; some target locations may be missing from the ranking.`);
   }
-  const limit = 40;
+  const limit = MAX_TARGET_RESCUE_HOTSPOTS;
   if (rescued.size > limit) {
     addWarning(`Target species were reported at ${rescued.size} additional hotspots; only the ${limit} closest were checked.`);
   }
@@ -4253,12 +4302,15 @@ async function rescueRouteTargetHotspots(hotspots, ranked, samples, params) {
   if (failed) {
     addWarning(`${failed} route target lookups failed; some target locations may be missing from the shortlist.`);
   }
-  if (rescued.size > MAX_EVIDENCE_HOTSPOTS) {
-    addWarning(`Targets were reported at ${rescued.size} additional route hotspots; only ${MAX_EVIDENCE_HOTSPOTS} can receive detailed evidence.`);
+  if (rescued.size > MAX_TARGET_RESCUE_HOTSPOTS) {
+    addWarning(`Targets were reported at ${rescued.size} additional route hotspots; only ${MAX_TARGET_RESCUE_HOTSPOTS} spread along the route can receive detailed evidence.`);
   }
-  return Array.from(rescued.values())
-    .sort((a, b) => a.routeProgress - b.routeProgress)
-    .slice(0, MAX_EVIDENCE_HOTSPOTS);
+  // Spread the rescues along the whole route rather than taking the first N,
+  // which would cluster every rescued stop near the origin.
+  return evenlySpacedItems(
+    Array.from(rescued.values()).sort((a, b) => a.routeProgress - b.routeProgress),
+    MAX_TARGET_RESCUE_HOTSPOTS
+  );
 }
 
 function evenlySpacedItems(items, limit) {
@@ -5256,9 +5308,16 @@ function downloadGpxRoute() {
   setStatus("GPX downloaded", `${stops.length ? `${stops.length} pinned ${pluralize("stop", stops.length)} and ` : ""}the route endpoints are ready to import into a navigation app.`);
 }
 
+// YYYY-MM-DD on the user's own calendar; toISOString() is UTC and names an
+// evening export in the Americas after tomorrow.
+function localDateStamp(date = new Date()) {
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
 function navigationFileName(name) {
   const base = slugify(name) || "route";
-  const date = new Date().toISOString().slice(0, 10);
+  const date = localDateStamp();
   return `birdtrip-${base}-navigation-${date}.gpx`;
 }
 
@@ -6133,7 +6192,9 @@ function observationAgeDays(obsDt) {
     observedAt.getMonth(),
     observedAt.getDate()
   ).getTime();
-  return Math.max(0, Math.floor((todayMidnight - observedMidnight) / 86400000));
+  // Round, not floor: a span that includes a 23-hour spring-forward day is
+  // an hour short of a whole number of days.
+  return Math.max(0, Math.round((todayMidnight - observedMidnight) / 86400000));
 }
 
 function isSeenObservation(obs, lifeList) {
@@ -6359,10 +6420,26 @@ function buildReportMapMarkup(isArea, orderedStops) {
     state.origin ? { ...state.origin, label: isArea ? "C" : "S", name: isArea ? "Search center" : "Start" } : null,
     !isArea && state.destination ? { ...state.destination, label: "E", name: "End" } : null
   ].filter(Boolean);
+  // The search radius in degrees at the area center, so the drawn radius
+  // matches the stops' projection instead of being a fixed pixel size.
+  const radiusKm = Number(state.params?.radiusKm);
+  const radiusDegrees = isArea && state.areaCenter && radiusKm > 0
+    ? {
+      lat: radiusKm / 111.32,
+      lng: radiusKm / (111.32 * Math.max(Math.cos(state.areaCenter.lat * Math.PI / 180), 0.01))
+    }
+    : null;
+  const radiusExtents = radiusDegrees
+    ? [
+      { lat: state.areaCenter.lat + radiusDegrees.lat, lng: state.areaCenter.lng + radiusDegrees.lng },
+      { lat: state.areaCenter.lat - radiusDegrees.lat, lng: state.areaCenter.lng - radiusDegrees.lng }
+    ]
+    : [];
   const allPoints = [
     ...routeCoordinates.map(([lng, lat]) => ({ lat, lng })),
     ...stopPins,
-    ...endpointPins
+    ...endpointPins,
+    ...radiusExtents
   ].filter((point) => Number.isFinite(point.lat) && Number.isFinite(point.lng));
 
   if (!allPoints.length) {
@@ -6397,6 +6474,12 @@ function buildReportMapMarkup(isArea, orderedStops) {
     .map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`)
     .join(" ");
   const centerPoint = isArea && state.areaCenter ? project(state.areaCenter) : null;
+  const radiusEllipse = centerPoint && radiusDegrees
+    ? {
+      rx: (radiusDegrees.lng / (maxLng - minLng)) * (width - pad * 2),
+      ry: (radiusDegrees.lat / (maxLat - minLat)) * (height - pad * 2)
+    }
+    : null;
   const stopMarkers = stopPins.map((pin) => {
     const point = project(pin);
     return `
@@ -6424,7 +6507,7 @@ function buildReportMapMarkup(isArea, orderedStops) {
       </div>
       <svg class="report-map" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(isArea ? "Schematic area map" : "Schematic route map")}">
         <rect class="report-map-bg" x="0" y="0" width="${width}" height="${height}"></rect>
-        ${isArea && centerPoint ? `<circle class="report-map-radius" cx="${centerPoint.x.toFixed(1)}" cy="${centerPoint.y.toFixed(1)}" r="${Math.min(width, height) * 0.34}"></circle>` : ""}
+        ${radiusEllipse ? `<ellipse class="report-map-radius" cx="${centerPoint.x.toFixed(1)}" cy="${centerPoint.y.toFixed(1)}" rx="${radiusEllipse.rx.toFixed(1)}" ry="${radiusEllipse.ry.toFixed(1)}"></ellipse>` : ""}
         ${routePath ? `<polyline class="report-map-route" points="${routePath}"></polyline>` : ""}
         ${endpointMarkers}
         ${stopMarkers}
@@ -7010,7 +7093,7 @@ function reportFileName() {
       : `${state.params.origin} to ${state.params.destination}`;
   const base = slugify(state.routeName || fallback)
     || `${mode === "area" ? "area" : mode === "species" ? "species" : "trip"}-report`;
-  const date = new Date().toISOString().slice(0, 10);
+  const date = localDateStamp();
   return `birdtrip-${base}-${date}.html`;
 }
 
@@ -7046,6 +7129,7 @@ class LeafletMapAdapter {
     this.itineraryLayer = null;
     this.areaLayer = null;
     this.markerLayer = null;
+    this.pendingPopupId = null;
   }
 
   init() {
@@ -7131,8 +7215,18 @@ class LeafletMapAdapter {
         })
       });
       marker.bindPopup(markerPopup(candidate));
-      marker.on("click", () => onSelect(candidate.id));
+      marker.on("click", () => {
+        // onSelect re-renders the markers, and removing the clicked marker
+        // closes the popup Leaflet just opened; reopen it on the replacement.
+        this.pendingPopupId = candidate.id;
+        try {
+          onSelect(candidate.id);
+        } finally {
+          this.pendingPopupId = null;
+        }
+      });
       marker.addTo(this.markerLayer);
+      if (this.pendingPopupId !== null && candidate.id === this.pendingPopupId) marker.openPopup();
     });
   }
 

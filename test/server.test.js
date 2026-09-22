@@ -170,13 +170,30 @@ test("concurrent callers with different timeout policies use separate fetches", 
   try {
     const url = `https://example.test/timeout-policy-${Date.now()}`;
     const [unbounded, bounded] = await Promise.allSettled([
-      fetchJson(url),
+      fetchJson(url, {}, { timeoutMs: 0 }),
       fetchJson(url, {}, { timeoutMs: 5 })
     ]);
     assert.equal(unbounded.status, "fulfilled");
     assert.equal(bounded.status, "rejected");
     assert.equal(bounded.reason.status, 504);
     assert.equal(calls, 2);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("upstream fetches get a timeout unless one is explicitly disabled", async () => {
+  const originalFetch = global.fetch;
+  const signals = [];
+  global.fetch = async (_url, options) => {
+    signals.push(options.signal);
+    return { ok: true, text: async () => "[]" };
+  };
+  try {
+    await fetchJson(`https://example.test/default-timeout-${Date.now()}`);
+    await fetchJson(`https://example.test/no-timeout-${Date.now()}`, {}, { timeoutMs: 0 });
+    assert.ok(signals[0], "default call should carry an abort signal");
+    assert.equal(signals[1], undefined);
   } finally {
     global.fetch = originalFetch;
   }
@@ -278,6 +295,32 @@ test("concurrent cold seasonality requests share one upstream build", async () =
   } finally {
     global.fetch = originalFetch;
   }
+});
+
+test("api logs redact coordinates and geocode queries", () => {
+  const { EventEmitter } = require("node:events");
+  const lines = [];
+  const original = console.log;
+  console.log = (line) => lines.push(String(line));
+  try {
+    for (const path of [
+      "/api/route?origin=-117.16,32.71&destination=-116.5,33.8&via=-117,33",
+      "/api/ebird/hotspots?lat=32.71&lng=-117.16&dist=5",
+      "/api/geocode?q=123+Main+St"
+    ]) {
+      const res = new EventEmitter();
+      res.statusCode = 200;
+      logApiRequest({ method: "GET" }, res, `http://localhost${path}`);
+      res.emit("finish");
+    }
+  } finally {
+    console.log = original;
+  }
+  assert.equal(lines.length, 3);
+  for (const line of lines) {
+    assert.doesNotMatch(line, /32\.71|117|Main/);
+  }
+  assert.match(lines[1], /dist=5/);
 });
 
 test("api logs redact shared trip slugs", () => {

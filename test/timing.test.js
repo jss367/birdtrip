@@ -52,6 +52,42 @@ test("approximate UTC offset tracks longitude in whole hours", () => {
   assert.equal(timing.approximateUtcOffsetMinutes(NaN), null);
 });
 
+test("browser zones match origins by standard time so daylight saving does not break the match", () => {
+  // Paris and Madrid are solar UTC+0 but civil UTC+1 (UTC+2 in summer).
+  assert.equal(timing.matchesSolarZone({ standardOffsetMinutes: 60, lng: 2.35 }), true);
+  assert.equal(timing.matchesSolarZone({ standardOffsetMinutes: 60, lng: -3.7 }), true);
+  // Atlanta and Detroit are solar UTC-6 but on Eastern time.
+  assert.equal(timing.matchesSolarZone({ standardOffsetMinutes: -300, lng: -84.39 }), true);
+  assert.equal(timing.matchesSolarZone({ standardOffsetMinutes: -300, lng: -83.05 }), true);
+  // A New York viewer opening a Denver or Sydney trip is clearly elsewhere.
+  assert.equal(timing.matchesSolarZone({ standardOffsetMinutes: -300, lng: -104.99 }), false);
+  assert.equal(timing.matchesSolarZone({ standardOffsetMinutes: -300, lng: 151.21 }), false);
+  // Unknown inputs don't force the approximate mode.
+  assert.equal(timing.matchesSolarZone({ standardOffsetMinutes: -300, lng: undefined }), true);
+});
+
+test("stops near the origin keep its clock even across a solar-zone rounding boundary", () => {
+  // New York -> Atlanta and Berlin -> Amsterdam stay in one civil zone.
+  assert.deepEqual(
+    timing.stopClockOffsetMinutes({ originDisplayOffsetMinutes: -4 * 60, originLng: -74.006, stopLng: -84.39 }),
+    { offsetMinutes: -4 * 60, shifted: false }
+  );
+  assert.deepEqual(
+    timing.stopClockOffsetMinutes({ originDisplayOffsetMinutes: 2 * 60, originLng: 13.4, stopLng: 4.9 }),
+    { offsetMinutes: 2 * 60, shifted: false }
+  );
+  // Bern -> Basel is 25 km but straddles the 7.5 degree rounding line.
+  assert.deepEqual(
+    timing.stopClockOffsetMinutes({ originDisplayOffsetMinutes: 2 * 60, originLng: 7.45, stopLng: 7.59 }),
+    { offsetMinutes: 2 * 60, shifted: false }
+  );
+  // Longitude differences wrap across the antimeridian.
+  assert.deepEqual(
+    timing.stopClockOffsetMinutes({ originDisplayOffsetMinutes: 12 * 60, originLng: 179, stopLng: -179 }),
+    { offsetMinutes: 12 * 60, shifted: false }
+  );
+});
+
 test("stop clock offsets shift by each stop's solar zone on cross-timezone routes", () => {
   // New York -> Los Angeles viewed from New York in summer: the origin is
   // displayed with the exact browser offset (EDT, UTC-4). LA sits three
@@ -191,6 +227,10 @@ test("habitat keywords only match whole words, not place-name substrings", () =>
   assert.equal(timing.inferStopTiming("Napier Overlook").habitat, "general");
   assert.equal(timing.inferStopTiming("Riverside Trailer Park").habitat, "general");
   assert.equal(timing.inferStopTiming("Blakely Island").habitat, "general");
+  assert.equal(timing.inferStopTiming("Westhafen").habitat, "general");
+  assert.equal(timing.inferStopTiming("Hollywood Park").habitat, "general");
+  assert.equal(timing.inferStopTiming("Wicken Fen").habitat, "marsh");
+  assert.equal(timing.inferStopTiming("Cranberry Bogs").habitat, "marsh");
   // Genuine habitat forms still match.
   assert.equal(timing.inferStopTiming("Great Marshes Overlook").habitat, "marsh");
   assert.equal(timing.inferStopTiming("Marshlands Conservancy").habitat, "marsh");
