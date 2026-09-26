@@ -139,4 +139,4 @@ async function stubApis(page) {
   });
 }
 
-module.exports = { stubApis, HOTSPOTS, CENTER };
+module.exports = { stubApis, recentFor, HOTSPOTS, CENTER };

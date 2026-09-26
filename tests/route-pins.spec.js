@@ -82,3 +82,14 @@ test("shared URL keeps a pin that is out-of-rank at the shared balance", async (
   await expect(outOfRank.locator(".stop-name")).toHaveText("Harbor Park");
   await expect(page.locator("#balanceSliderResults")).toHaveValue("0");
 });
+
+test("OpenStreetMap full-route links keep every pinned stop and the destination", async ({ page }) => {
+  await runRouteSearch(page, { maxStops: 5 });
+  await page.locator('.stop-card:has-text("Harbor Park") .stop-pin').click();
+  await page.locator('.stop-card:has-text("Near Pond") .stop-pin').click();
+  await expect(page.locator('.stop-pin[aria-pressed="true"]')).toHaveCount(2);
+  // openstreetmap.org/directions only reads two route points, so a start,
+  // two stops, and a destination must go to a multi-waypoint router.
+  const link = page.locator('#report a:has-text("Full route directions")');
+  await expect(link).toHaveAttribute("href", /^https:\/\/map\.project-osrm\.org\/\?(loc=[^&]+&){3}loc=[^&]+$/);
+});

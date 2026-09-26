@@ -4,6 +4,13 @@ const state = {
   mapAdapter: null,
   route: null,
   routeName: "",
+  // The route the trip-name field currently describes, and whether the user
+  // typed in it since; a new route replaces an untouched name so Save can't
+  // overwrite the previous route's saved trip.
+  tripNameRoute: "",
+  tripNameEdited: false,
+  // Share URL of the search currently displayed, captured when it ran.
+  searchUrl: null,
   results: [],
   resultOrder: "score",
   candidatePool: [],
@@ -351,6 +358,9 @@ async function init() {
   els.loadTripButton.addEventListener("click", () => loadSelectedTrip());
   els.deleteTripButton.addEventListener("click", deleteSelectedTrip);
   els.savedTripSelect.addEventListener("change", handleSavedTripSelection);
+  els.tripName.addEventListener("input", () => {
+    state.tripNameEdited = true;
+  });
   els.tripName.addEventListener("keydown", (event) => {
     if (event.key !== "Enter") return;
     event.preventDefault();
@@ -544,7 +554,9 @@ function applySharedSearch(shared) {
 }
 
 function cleanSharedText(value, maxLength) {
-  return String(value || "").replace(/\s+/g, " ").trim().slice(0, maxLength);
+  // Drop a high surrogate orphaned by the cut: an emoji straddling the limit
+  // would otherwise leave half a character, which Postgres JSONB rejects.
+  return String(value || "").replace(/\s+/g, " ").trim().slice(0, maxLength).replace(/[\uD800-\uDBFF]$/, "");
 }
 
 function cleanSharedTargets(value, maxLength) {
@@ -793,6 +805,11 @@ function handleSavedTripSelection() {
   const trip = currentSavedTrip();
   if (trip) {
     els.tripName.value = trip.name;
+    // The selected name belongs to that trip's route, not the one on screen;
+    // unbind it so the next search renames the field instead of keeping a
+    // name that Save would match to (and overwrite) the selected trip.
+    state.tripNameRoute = "";
+    state.tripNameEdited = false;
     updateSavedTripControls(`${trip.name} is selected.`);
   } else {
     updateSavedTripControls("Trips stay in this browser.");
@@ -801,6 +818,22 @@ function handleSavedTripSelection() {
 
 function currentSavedTrip() {
   return state.savedTrips.find((trip) => trip.id === els.savedTripSelect.value) || null;
+}
+
+function syncTripNameToRoute() {
+  // Keep a name the user typed for this search, and a saved trip's name while
+  // it still describes the same route; otherwise name the trip after the new
+  // route. Saving matches trips by name, so a stale name would overwrite the
+  // previous route's saved trip.
+  const keepName = els.tripName.value.trim()
+    && (state.tripNameEdited || state.tripNameRoute === state.routeName);
+  if (!keepName) els.tripName.value = state.routeName;
+  bindTripNameToRoute();
+}
+
+function bindTripNameToRoute() {
+  state.tripNameRoute = state.routeName;
+  state.tripNameEdited = false;
 }
 
 function saveCurrentTrip() {
@@ -837,6 +870,7 @@ function saveCurrentTrip() {
 
   state.savedTrips = nextSavedTrips;
   els.tripName.value = name;
+  bindTripNameToRoute();
   renderSavedTrips(id);
   updateSavedTripControls(`Saved ${name} locally.`);
 }
@@ -858,12 +892,19 @@ async function loadSelectedTrip() {
     await setMapProvider(settings.mapProvider || state.provider, { persist: false, preserveData: false });
     restoreTripState(trip);
     // Loading a saved trip replaces every shareable input programmatically,
-    // so any loaded /t/<slug> snapshot URL no longer matches — invalidate it
+    // so any share URL in the address bar no longer matches — rebuild it
     // only after restoreTripState has set the trip's pins, or the rebuilt URL
-    // would serialize the previous trip's pinnedIds.
-    refreshSharedUrlIfPresent();
+    // would serialize the previous trip's pinnedIds. Like runSearch, write the
+    // URL even from a bare "/", and clear a stale one for a settings-only trip.
+    state.searchUrl = state.params ? buildShareUrl({ autoRun: true }) : null;
+    if (state.searchUrl) {
+      replaceHistoryUrl(state.searchUrl);
+    } else {
+      clearSharedUrl();
+    }
     savePreferences();
     els.tripName.value = trip.name;
+    bindTripNameToRoute();
     renderSavedTrips(trip.id);
     updateSavedTripControls(`Loaded ${trip.name}.`);
     setStatus("Trip loaded", `${trip.name} restored from this browser.`);
@@ -1445,6 +1486,7 @@ function resetAutocomplete(field) {
 }
 
 function clearResults() {
+  state.searchUrl = null;
   state.results = [];
   state.candidatePool = [];
   state.restoredSelectedStop = null;
@@ -1521,7 +1563,8 @@ async function runSearch(options = {}) {
       await runRouteSearch(params);
     }
     applyPendingSharedPins();
-    if (!preserveSharedUrl) updateSharedUrlFromCurrentInputs({ autoRun: true });
+    state.searchUrl = buildShareUrl({ autoRun: true });
+    if (!preserveSharedUrl) replaceHistoryUrl(state.searchUrl);
   } catch (error) {
     setStatus("Search failed", error.message || "Something went wrong.");
     console.error(error);
@@ -1594,7 +1637,7 @@ async function runRouteSearch(params) {
   state.origin = origin;
   state.destination = destination;
   state.routeName = `${shortName(origin.name)} to ${shortName(destination.name)}`;
-  if (!els.tripName.value.trim()) els.tripName.value = state.routeName;
+  syncTripNameToRoute();
 
   setStatus("Routing", "Drawing the direct route.");
   const route = await apiJson(routeUrl("/api/route", origin, destination, null, params.mapProvider));
@@ -1727,7 +1770,7 @@ async function runAreaSearch(params) {
   state.origin = center;
   state.areaCenter = center;
   state.routeName = shortName(center.name) || params.origin;
-  if (!els.tripName.value.trim()) els.tripName.value = state.routeName;
+  syncTripNameToRoute();
   renderArea(center, params.radiusKm);
   updateAreaSummary(params.radiusKm);
 
@@ -1816,7 +1859,12 @@ async function runSpeciesSearch(params) {
   state.areaCenter = center;
   const speciesLabel = params.species?.comName || params.speciesQuery;
   state.routeName = `${speciesLabel} near ${shortName(center.name) || params.origin}`;
-  if (!els.tripName.value.trim()) els.tripName.value = state.routeName;
+  const tripNameBeforeSearch = {
+    value: els.tripName.value,
+    edited: state.tripNameEdited,
+    route: state.tripNameRoute
+  };
+  syncTripNameToRoute();
   renderArea(center, params.radiusKm);
   updateAreaSummary(params.radiusKm);
 
@@ -1864,7 +1912,16 @@ async function runSpeciesSearch(params) {
     state.species = resolvedSpecies;
     els.speciesQuery.value = resolvedSpecies.comName;
     state.routeName = `${resolvedSpecies.comName} near ${shortName(center.name) || params.origin}`;
-    if (!els.tripName.value.trim()) els.tripName.value = state.routeName;
+    // Re-decide the name from the pre-search state, as if the resolved
+    // species had been known up front: the provisional sync above bound the
+    // field to the unresolved query, which would otherwise discard a name
+    // the user typed. Skip the reset if the user typed during the request.
+    if (!state.tripNameEdited) {
+      els.tripName.value = tripNameBeforeSearch.value;
+      state.tripNameEdited = tripNameBeforeSearch.edited;
+      state.tripNameRoute = tripNameBeforeSearch.route;
+    }
+    syncTripNameToRoute();
   }
 
   const observations = Array.isArray(payload.observations) ? payload.observations : [];
@@ -2199,17 +2256,25 @@ function clearSharedUrl() {
 }
 
 function refreshSharedUrlIfPresent() {
-  // For an existing query-parameter share, patch just ranking state. Rebuilding
-  // from live form fields could capture edits the user has not re-submitted,
-  // yielding a run=1 URL for a search the displayed results don't reflect.
-  const url = new URL(window.location.href);
-  if (url.searchParams.get("bt") !== SHARE_URL_VERSION) {
+  // Rebuild from the displayed search's URL, patched with the settings that
+  // apply live. Rebuilding from live form fields could capture edits the user
+  // has not re-submitted, yielding a run=1 URL the results don't reflect.
+  const current = new URL(window.location.href);
+  const isQueryShare = current.searchParams.get("bt") === SHARE_URL_VERSION;
+  if (!isQueryShare && !sharedTripSlugFromLocation()) return;
+  if (!isQueryShare && !state.searchUrl) {
     // A /t/<slug> link is an immutable snapshot; once the trip changes, swap
     // the address bar to a live query-parameter URL so copying stays accurate.
-    if (sharedTripSlugFromLocation()) {
-      updateSharedUrlFromCurrentInputs({ autoRun: Boolean(state.params) });
-    }
+    updateSharedUrlFromCurrentInputs({ autoRun: Boolean(state.params) });
     return;
+  }
+  const url = new URL(state.searchUrl || current);
+  url.searchParams.set("mapProvider", providerFromInput());
+  const departTime = cleanTimeString(els.departTime.value);
+  if (departTime) {
+    url.searchParams.set("departTime", departTime);
+  } else {
+    url.searchParams.delete("departTime");
   }
   if (state.balance !== DEFAULT_BALANCE) {
     url.searchParams.set("balance", String(state.balance));
@@ -2907,6 +2972,7 @@ function cleanSpeciesName(value) {
 }
 
 function clearSearchArtifacts() {
+  state.searchUrl = null;
   state.results = [];
   state.candidatePool = [];
   state.restoredSelectedStop = null;
@@ -5338,7 +5404,8 @@ function renderResults() {
   const isArea = state.params?.mode === "area";
   els.candidateCount.textContent = String(state.results.length);
   els.hotspotCount.textContent = String(state.results.filter(isHotspot).length);
-  els.notableCount.textContent = String(state.results.reduce((sum, candidate) => sum + uniqueNotableCount(candidate), 0));
+  // Nearby stops share the same notable reports, so count distinct species.
+  els.notableCount.textContent = String(tradeoffStats(state.results).notableCount);
   els.liferCount.textContent = state.lifeList.species.size
     ? String(uniqueLiferCount(state.results))
     : "-";
@@ -6198,6 +6265,8 @@ function observationAgeDays(obsDt) {
 }
 
 function isSeenObservation(obs, lifeList) {
+  // Non-species reports can never be ticked, so they must not count as unseen.
+  if (obs.comName && !ranking.isCountableSpeciesName(obs.comName)) return true;
   return observationAliases(obs).some((alias) => lifeList.has(alias));
 }
 
@@ -6263,8 +6332,7 @@ function renderInsights() {
   }
 
   if (state.results.length) {
-    const speciesCount = state.results.reduce((sum, candidate) => sum + candidate.species.size, 0);
-    const notableCount = state.results.reduce((sum, candidate) => sum + uniqueNotableCount(candidate), 0);
+    const { speciesCount, notableCount } = tradeoffStats(state.results);
     const liferCount = uniqueLiferCount(state.results);
     const unseenNearbyCount = uniqueUnseenNotableCount(state.results);
     const unseenNearbyText = state.lifeList.species.size && unseenNearbyCount
@@ -6333,6 +6401,13 @@ function directionsUrlForPoints(points, provider = state.params?.mapProvider || 
     return url.toString();
   }
 
+  // openstreetmap.org/directions only reads the first two route= points, so
+  // multi-stop routes go to the OSRM demo map, which takes any number of locs.
+  if (coords.length > 2) {
+    const url = new URL("https://map.project-osrm.org/");
+    for (const point of coords) url.searchParams.append("loc", `${point.lat},${point.lng}`);
+    return url.toString();
+  }
   const url = new URL("https://www.openstreetmap.org/directions");
   if (coords.length > 1) {
     url.searchParams.set("route", coords.map((point) => `${point.lat},${point.lng}`).join(";"));

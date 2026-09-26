@@ -360,6 +360,19 @@
     };
   }
 
+  // Spuhs ("gull sp."), slashes, hybrids, and domestic forms are eBird
+  // reporting categories, not species — no life list ever contains them.
+  // Mirrors isCountableSpeciesName in server.js.
+  function isCountableSpeciesName(comName) {
+    const name = String(comName || "");
+    if (!name) return false;
+    if (name.includes("/")) return false;
+    if (/\bsp\.\)?$/.test(name)) return false;
+    if (/\bx\b/i.test(name)) return false;
+    if (/\((?:domestic|hybrid)/i.test(name)) return false;
+    return true;
+  }
+
   root.BirdtripRanking = Object.freeze({
     backfillRouteMetrics,
     calculateCandidateScore,
@@ -370,6 +383,7 @@
     distanceToRouteKm,
     filterHotspotsByCorridor,
     haversineKm,
+    isCountableSpeciesName,
     normalizedScore,
     observationFreshnessWeight,
     parseObservationDay,
