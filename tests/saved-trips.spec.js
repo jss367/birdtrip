@@ -94,3 +94,40 @@ test("legacy-scored restored stops keep their legacy scale in the comparison tab
   await expect(comparison).toContainText("legacy scoring model");
   await expect(comparison).not.toContainText("of 100");
 });
+
+test("a new search renames an untouched trip name so Save can't overwrite the previous trip", async ({ page }) => {
+  await runRouteSearch(page);
+  await expect(page.locator("#tripName")).toHaveValue(/ to /);
+  await page.click("#saveTripButton");
+
+  await page.click('[data-mode="area"]');
+  await page.click('button[type="submit"]');
+  await expect(page.locator(".stop-card")).toHaveCount(5, { timeout: 15000 });
+  await expect(page.locator("#tripName")).not.toHaveValue(/ to /);
+  await page.click("#saveTripButton");
+  await expect(page.locator("#savedTripSelect option")).toHaveCount(2);
+
+  // A name the user typed for this search is theirs to keep.
+  await page.fill("#tripName", "Weekend Loop");
+  await page.click('button[type="submit"]');
+  await expect(page.locator(".stop-card")).toHaveCount(5, { timeout: 15000 });
+  await expect(page.locator("#tripName")).toHaveValue("Weekend Loop");
+});
+
+test("loading a saved trip points the address bar at that trip", async ({ page }) => {
+  await runAreaSearch(page);
+  await page.click("#saveTripButton");
+
+  await page.click('[data-mode="route"]');
+  await page.fill("#destination", "Test East, Barcelona");
+  await page.click('button[type="submit"]');
+  await expect(page.locator(".stop-card")).toHaveCount(5, { timeout: 15000 });
+  expect(new URL(page.url()).searchParams.get("mode")).toBe("route");
+
+  await page.click("#loadTripButton");
+  await expect(page.locator("#savedTripsStatus")).toContainText("Loaded");
+  const params = new URL(page.url()).searchParams;
+  expect(params.get("mode")).toBe("area");
+  expect(params.has("destination")).toBe(false);
+  expect(params.get("run")).toBe("1");
+});

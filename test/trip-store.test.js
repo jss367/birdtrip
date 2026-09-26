@@ -49,6 +49,14 @@ test("trip data must be an object with an origin and a bounded size", () => {
   assert.throws(() => validateTripData({ origin: "x".repeat(201) }), { status: 400 });
   assert.throws(() => validateTripData({ origin: "San Diego", notes: "a\u0000b" }), { status: 400 });
   assert.throws(() => validateTripData({ origin: "San Diego", ["a\u0000"]: 1 }), { status: 400 });
+  // Postgres JSONB rejects unpaired surrogates (e.g. an emoji cut in half).
+  assert.throws(() => validateTripData({ origin: "Park \ud83d" }), { status: 400 });
+  assert.throws(() => validateTripData({ origin: "Park \udc26 East" }), { status: 400 });
+  assert.throws(() => validateTripData({ origin: "San Diego", ["a\ud83d"]: 1 }), { status: 400 });
+  assert.equal(
+    validateTripData({ origin: "\u{1F426} Park" }),
+    JSON.stringify({ origin: "\u{1F426} Park" })
+  );
   assert.throws(
     () => validateTripData({ origin: "San Diego", notes: "x".repeat(MAX_TRIP_BYTES) }),
     { status: 413 }

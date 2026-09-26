@@ -826,6 +826,7 @@ function resolveSpecies(taxonomy, name) {
   return starts.length === 1 ? starts[0] : null;
 }
 
+// Mirrored in public/ranking.js for the life-list checks.
 function isCountableSpeciesName(comName) {
   const name = String(comName || "");
   if (!name) return false;

@@ -1,5 +1,6 @@
 const { test, expect } = require("@playwright/test");
 const { runAreaSearch, visibleOrder } = require("./helpers");
+const { CENTER, recentFor } = require("./fixtures");
 
 test("area search renders ranked stops from fixtures", async ({ page }) => {
   await runAreaSearch(page);
@@ -55,4 +56,43 @@ test("duplicate target entries do not dilute target credit", async ({ page }) =>
   await expect(page.locator("#targetCount")).toHaveText("1");
   const tooltips = await page.locator(".score-pill").evaluateAll((els) => els.map((e) => e.title));
   expect(tooltips.some((t) => /Personal value 15(\.0)?\/15/.test(t))).toBe(true);
+});
+
+test("notable counts are distinct species, not a per-stop sum", async ({ page }) => {
+  await runAreaSearch(page, {
+    beforeSubmit: async () => {
+      // One notable at the center falls within 10 km of every visible stop.
+      await page.route("**/api/ebird/notable**", (route) => route.fulfill({
+        json: [{ comName: "Vagrant Warbler", sciName: "Rarus vagrans", locId: "L0", locName: "Center", obsDt: "2026-01-01 09:00", howMany: 1, ...CENTER }]
+      }));
+    }
+  });
+  await expect(page.locator(".stop-card .metric-notable").first()).toHaveText("1");
+  await expect(page.locator("#notableCount")).toHaveText("1");
+  await expect(page.locator("#sightingSummary")).toContainText("including 1 nearby notable species");
+});
+
+test("spuhs, hybrids, and domestic forms never count as unseen species", async ({ page }) => {
+  const extras = ["gull sp.", "Western x Glaucous-winged Gull (hybrid)", "Mallard (Domestic type)", "Western/Glaucous-winged Gull"];
+  const withExtras = (observations) => [
+    ...observations,
+    ...extras.map((comName) => ({ ...observations[0], comName, sciName: comName }))
+  ];
+  await runAreaSearch(page, {
+    beforeSubmit: async () => {
+      await page.route("**/api/ebird/recent**", (route) => route.fulfill({ json: withExtras(recentFor("L1")) }));
+      await page.route("**/api/ebird/hotspot-recent**", (route) => {
+        const locId = new URL(route.request().url()).searchParams.get("locId");
+        route.fulfill({ json: locId === "L1" ? withExtras(recentFor("L1")) : recentFor(locId) });
+      });
+      const rows = Array.from({ length: 78 }, (_, i) => `City Park Alpha Species ${i + 1}`).join("\n");
+      await page.setInputFiles("#lifeListInput", {
+        name: "life-list.csv",
+        mimeType: "text/csv",
+        buffer: Buffer.from(`Common Name\n${rows}`)
+      });
+    }
+  });
+  await expect(page.locator('.stop-card:has-text("City Park Alpha")')).toHaveCount(1);
+  await expect(page.locator('.stop-card:has-text("City Park Alpha") .chip-lifer')).toHaveCount(0);
 });
