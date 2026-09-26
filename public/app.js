@@ -805,6 +805,11 @@ function handleSavedTripSelection() {
   const trip = currentSavedTrip();
   if (trip) {
     els.tripName.value = trip.name;
+    // The selected name belongs to that trip's route, not the one on screen;
+    // unbind it so the next search renames the field instead of keeping a
+    // name that Save would match to (and overwrite) the selected trip.
+    state.tripNameRoute = "";
+    state.tripNameEdited = false;
     updateSavedTripControls(`${trip.name} is selected.`);
   } else {
     updateSavedTripControls("Trips stay in this browser.");
@@ -889,9 +894,14 @@ async function loadSelectedTrip() {
     // Loading a saved trip replaces every shareable input programmatically,
     // so any share URL in the address bar no longer matches — rebuild it
     // only after restoreTripState has set the trip's pins, or the rebuilt URL
-    // would serialize the previous trip's pinnedIds.
+    // would serialize the previous trip's pinnedIds. Like runSearch, write the
+    // URL even from a bare "/", and clear a stale one for a settings-only trip.
     state.searchUrl = state.params ? buildShareUrl({ autoRun: true }) : null;
-    refreshSharedUrlIfPresent();
+    if (state.searchUrl) {
+      replaceHistoryUrl(state.searchUrl);
+    } else {
+      clearSharedUrl();
+    }
     savePreferences();
     els.tripName.value = trip.name;
     bindTripNameToRoute();
@@ -1849,6 +1859,11 @@ async function runSpeciesSearch(params) {
   state.areaCenter = center;
   const speciesLabel = params.species?.comName || params.speciesQuery;
   state.routeName = `${speciesLabel} near ${shortName(center.name) || params.origin}`;
+  const tripNameBeforeSearch = {
+    value: els.tripName.value,
+    edited: state.tripNameEdited,
+    route: state.tripNameRoute
+  };
   syncTripNameToRoute();
   renderArea(center, params.radiusKm);
   updateAreaSummary(params.radiusKm);
@@ -1897,6 +1912,15 @@ async function runSpeciesSearch(params) {
     state.species = resolvedSpecies;
     els.speciesQuery.value = resolvedSpecies.comName;
     state.routeName = `${resolvedSpecies.comName} near ${shortName(center.name) || params.origin}`;
+    // Re-decide the name from the pre-search state, as if the resolved
+    // species had been known up front: the provisional sync above bound the
+    // field to the unresolved query, which would otherwise discard a name
+    // the user typed. Skip the reset if the user typed during the request.
+    if (!state.tripNameEdited) {
+      els.tripName.value = tripNameBeforeSearch.value;
+      state.tripNameEdited = tripNameBeforeSearch.edited;
+      state.tripNameRoute = tripNameBeforeSearch.route;
+    }
     syncTripNameToRoute();
   }
 
