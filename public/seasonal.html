@@ -50,13 +50,23 @@
               <ul class="autocomplete-list" id="seasonalSuggestions" role="listbox" hidden></ul>
             </div>
           </label>
+          <label class="seasonal-search-field">
+            <span>Species <small>optional</small></span>
+            <div class="autocomplete">
+              <input id="seasonalSpecies" name="seasonalSpecies" autocomplete="off" autocapitalize="words"
+                spellcheck="false" placeholder="e.g. Burrowing Owl"
+                role="combobox" aria-autocomplete="list" aria-expanded="false"
+                aria-controls="seasonalSpeciesSuggestions" aria-haspopup="listbox">
+              <ul class="autocomplete-list" id="seasonalSpeciesSuggestions" role="listbox" hidden></ul>
+            </div>
+          </label>
           <button type="submit" id="seasonalSubmit" class="seasonal-submit">
             <i data-lucide="calendar-range"></i>
             Find seasonal birds
           </button>
         </form>
         <p class="field-hint seasonal-search-hint">
-          Birds are ranked by how strongly their sampled-date occurrence peaks in each season compared with the rest of the year. This is not checklist frequency.
+          Birds are ranked by how strongly their sampled-date occurrence peaks in each season compared with the rest of the year. This is not checklist frequency. Add a species to see which months it's reported in the area, plus its recent nearby sightings.
         </p>
       </section>
 
