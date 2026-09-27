@@ -115,3 +115,61 @@ test("a species the region build dropped says so instead of charting nothing", a
   await expect(card.locator(".seasonal-months")).toHaveCount(0);
   await expect(card.locator(".seasonal-recent")).toContainText("Reported at 2 locations");
 });
+
+test("a recent-reports outage doesn't turn a typed species into an absence", async ({ page }) => {
+  await stubSeasonalApis(page);
+  await page.route("**/api/ebird/species?**", (route) => route.fulfill({ status: 502, json: { error: "eBird is down" } }));
+  await page.goto("/seasonal.html");
+  await page.fill("#seasonalLocation", "Ramona");
+  // A scientific name, which only the taxonomy lookup can map to the owl.
+  await page.fill("#seasonalSpecies", "Athene cunicularia");
+  await page.route("**/api/ebird/taxonomy/search**", (route) => route.fulfill({ json: [BURROWING_OWL] }));
+  await page.click("#seasonalSubmit");
+  const card = page.locator(".seasonal-species-answer");
+  await expect(card.locator(".seasonal-species-lead")).toHaveText(
+    "Burrowing Owl is reported year-round in San Diego County, most often Nov–Feb."
+  );
+  await expect(card.locator(".seasonal-recent")).toHaveText("Recent nearby reports couldn't be loaded.");
+});
+
+test("an unresolvable species during an outage fails instead of reporting an absence", async ({ page }) => {
+  await stubSeasonalApis(page);
+  await page.route("**/api/ebird/species?**", (route) => route.fulfill({ status: 502, json: { error: "eBird is down" } }));
+  await page.route("**/api/ebird/taxonomy/search**", (route) => route.fulfill({ status: 502, json: { error: "down" } }));
+  await page.goto("/seasonal.html");
+  await page.fill("#seasonalLocation", "Ramona");
+  await page.fill("#seasonalSpecies", "Burrowing");
+  await page.click("#seasonalSubmit");
+  await expect(page.locator(".empty-state")).toContainText(`Couldn't look up "Burrowing" right now.`);
+  await expect(page.locator(".seasonal-species-answer")).toHaveCount(0);
+});
+
+test("typing closes stale suggestions immediately", async ({ page }) => {
+  await stubSeasonalApis(page);
+  await page.goto("/seasonal.html");
+  await page.fill("#seasonalSpecies", "burrow");
+  await expect(page.locator("#seasonalSpeciesSuggestions li")).toHaveCount(1);
+  await page.locator("#seasonalSpecies").press("x");
+  await expect(page.locator("#seasonalSpeciesSuggestions")).toBeHidden({ timeout: 100 });
+});
+
+test("a species edited mid-search keeps the user's edit", async ({ page }) => {
+  await stubSeasonalApis(page);
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  await page.route("**/api/ebird/seasonality**", async (route) => {
+    await gate;
+    route.fulfill({ json: SEASONALITY });
+  });
+  await page.goto("/seasonal.html");
+  await page.fill("#seasonalLocation", "Ramona");
+  await page.fill("#seasonalSpecies", "burrowing owl");
+  await page.click("#seasonalSubmit");
+  await expect(page.locator(".seasonal-loading")).toBeVisible();
+  await page.fill("#seasonalSpecies", "Snowy Owl");
+  release();
+  await expect(page.locator(".seasonal-species-lead")).toContainText("Burrowing Owl is reported year-round");
+  await expect(page.locator("#seasonalSpecies")).toHaveValue("Snowy Owl");
+  // The share URL describes what's on screen, not the unsubmitted edit.
+  expect(new URL(page.url()).searchParams.get("species")).toBe("Burrowing Owl");
+});

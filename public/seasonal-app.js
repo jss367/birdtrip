@@ -132,11 +132,14 @@
       }
     }
 
+    // Close right away so suggestions for the previous text can't be picked
+    // during the debounce.
     input.addEventListener("input", () => {
       ac.resolved = null;
       clearTimeout(ac.timer);
+      close();
       const query = input.value.trim();
-      if (query.length < 2) return close();
+      if (query.length < 2) return;
       ac.timer = setTimeout(() => load(query), 250);
     });
 
@@ -271,11 +274,9 @@
 
   function speciesCardHtml(place, data, lookup) {
     const species = lookup.species;
-    const entry = species
-      ? data.species.find((item) => item.speciesCode === species.speciesCode)
-      : data.species.find((item) => item.comName.toLowerCase() === lookup.query.toLowerCase());
-    const comName = species?.comName || entry?.comName || lookup.query;
-    const sciName = species?.sciName || entry?.sciName || "";
+    const entry = data.species.find((item) => item.speciesCode === species.speciesCode);
+    const comName = species.comName || entry?.comName || lookup.query;
+    const sciName = species.sciName || entry?.sciName || "";
     const timing = BS.speciesTiming(entry, data.sampledDays);
     const sentence = BS.speciesTimingSentence(timing, comName, data.regionName);
     // The sparse sentence already carries the date counts.
@@ -411,9 +412,23 @@
     }
   }
 
+  // Mirrors the server's resolveSpecies: an exact common or scientific name,
+  // else a prefix that matches exactly one species.
+  async function resolveSpeciesName(query) {
+    const matches = await apiJson(`/api/ebird/taxonomy/search?q=${encodeURIComponent(query)}`).catch(() => null);
+    if (!Array.isArray(matches)) return null;
+    const norm = query.toLowerCase();
+    const exact = matches.find((item) => item.comName.toLowerCase() === norm || String(item.sciName || "").toLowerCase() === norm);
+    if (exact) return exact;
+    const starts = matches.filter((item) => item.comName.toLowerCase().startsWith(norm)
+      || String(item.sciName || "").toLowerCase().startsWith(norm));
+    return starts.length === 1 ? starts[0] : null;
+  }
+
   // Resolves the species field and fetches its recent nearby reports in one
-  // call. Only an unknown name fails the search; any other failure still lets
-  // the seasonal answer render, just without the recent-reports line.
+  // call. An unknown name fails the search. If only the recent reports fail,
+  // the seasonal answer still renders without them - but only once the
+  // species itself is known, so a lookup outage never reads as an absence.
   async function lookupSpecies(place, query, picked) {
     const params = new URLSearchParams({
       lat: String(place.lat),
@@ -427,7 +442,7 @@
       const body = await apiJson(`/api/ebird/species?${params}`);
       return {
         query,
-        species: body?.species || picked || null,
+        species: body?.species || picked || { speciesCode: body?.speciesCode, comName: query, sciName: "" },
         observations: Array.isArray(body?.observations) ? body.observations : []
       };
     } catch (error) {
@@ -439,7 +454,11 @@
         noMatch.status = 404;
         throw noMatch;
       }
-      return { query, species: picked || null, observations: null };
+      const species = picked || await resolveSpeciesName(query);
+      if (!species) {
+        throw new Error(`Couldn't look up "${query}" right now. Pick it from the suggestions or try again.`);
+      }
+      return { query, species, observations: null };
     }
   }
 
@@ -478,9 +497,11 @@
         apiJson(`/api/ebird/seasonality?lat=${encodeURIComponent(place.lat)}&lng=${encodeURIComponent(place.lng)}`),
         speciesQuery ? lookupSpecies(place, speciesQuery, picked) : null
       ]);
-      // Show the canonical eBird name, and remember it rather than a partial entry.
-      const speciesName = lookup ? lookup.species?.comName || speciesQuery : "";
-      if (speciesName) els.speciesInput.value = speciesName;
+      // Show the canonical eBird name, and remember it rather than a partial
+      // entry. The share URL follows the rendered result, but a field the user
+      // edited mid-search keeps their edit for the next submit.
+      const speciesName = lookup ? lookup.species.comName || speciesQuery : "";
+      if (speciesName && els.speciesInput.value.trim() === speciesQuery) els.speciesInput.value = speciesName;
       renderResults(place, data, lookup);
       persist(query, speciesName);
       setStatus("");
