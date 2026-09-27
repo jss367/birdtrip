@@ -196,6 +196,17 @@ test("species timing: thinly reported birds are sparse, not seasonal", () => {
   );
 });
 
+test("species timing: two scattered dates at three samples a month are sparse", () => {
+  const entry = { months: [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0] };
+  const timing = seasonal.speciesTiming(entry, FULL_SAMPLING);
+  assert.equal(timing.peakRate, 1 / 3);
+  assert.equal(timing.status, "sparse");
+  assert.equal(
+    seasonal.speciesTimingSentence(timing, "Stray", "X"),
+    "Stray is reported only occasionally in X: on 2 of 36 sampled dates, in Jan and Jul."
+  );
+});
+
 test("species timing: a species missing from the region build is absent", () => {
   const timing = seasonal.speciesTiming(undefined, FULL_SAMPLING);
   assert.equal(timing.status, "absent");

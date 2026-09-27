@@ -91,9 +91,11 @@
     return result;
   }
 
-  // Below this peak monthly rate a species is too thinly reported for its
-  // months to read as a pattern rather than scattered sightings.
+  // A species is too thinly reported for its months to read as a pattern when
+  // no month has it on more than one sampled date (with three samples a month,
+  // a single date is already a 33% rate) or its busiest month is below this.
   const SPARSE_PEAK_RATE = 0.2;
+  const MIN_PEAK_MONTH_DATES = 2;
   // Months at or above this fraction of the peak rate count as "in season".
   const WINDOW_FRACTION = 0.5;
   // Months at or above this fraction of the peak rate count as the peak.
@@ -147,7 +149,8 @@
       .filter((month) => month >= 0);
 
     let status = "seasonal";
-    if (peakRate < SPARSE_PEAK_RATE) status = "sparse";
+    const peakMonthDates = Math.max(...(entry.months || [0]).map((value) => Number(value) || 0));
+    if (peakRate < SPARSE_PEAK_RATE || peakMonthDates < MIN_PEAK_MONTH_DATES) status = "sparse";
     else if (windowMonths.length === 12) status = "yearRound";
 
     return { status, presence, peakRate, reportedDays, totalSampled, reportedMonths, windowMonths, peakMonths };

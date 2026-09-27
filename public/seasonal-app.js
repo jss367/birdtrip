@@ -6,6 +6,8 @@
   const SEASON_ICONS = { winter: "snowflake", spring: "flower-2", summer: "sun", fall: "leaf" };
   const RECENT_RADIUS_KM = 25;
   const RECENT_DAYS = 30;
+  // The most /api/ebird/species will return; a full page means the feed was cut off.
+  const RECENT_MAX_RESULTS = 10000;
 
   const els = {
     form: document.querySelector("#seasonalForm"),
@@ -260,7 +262,8 @@
     if (!summary.locationCount) {
       return `<p class="seasonal-recent"><i data-lucide="radar"></i><span>No reports ${near} in the last ${RECENT_DAYS} days.</span></p>`;
     }
-    const places = summary.locationCount === 1 ? "1 location" : `${summary.locationCount} locations`;
+    const atLeast = observations.length >= RECENT_MAX_RESULTS ? "at least " : "";
+    const places = summary.locationCount === 1 && !atLeast ? "1 location" : `${atLeast}${summary.locationCount} locations`;
     const latest = summary.latest
       ? ` Most recently at <b>${escapeHtml(summary.latest.locName)}</b> on ${escapeHtml(formatObsDate(summary.latest.date))}.`
       : "";
@@ -434,7 +437,8 @@
       lat: String(place.lat),
       lng: String(place.lng),
       dist: String(RECENT_RADIUS_KM),
-      back: String(RECENT_DAYS)
+      back: String(RECENT_DAYS),
+      maxResults: String(RECENT_MAX_RESULTS)
     });
     if (picked) params.set("speciesCode", picked.speciesCode);
     else params.set("name", query);

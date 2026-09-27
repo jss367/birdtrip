@@ -67,7 +67,7 @@ test("picking a species answers when it's reported and shows recent nearby repor
   await expect(page.locator(".seasonal-season")).toHaveCount(4);
 
   // A picked suggestion is looked up by code, not by name.
-  expect(speciesRequests[0]).toMatchObject({ speciesCode: "burowl", dist: "25", back: "30" });
+  expect(speciesRequests[0]).toMatchObject({ speciesCode: "burowl", dist: "25", back: "30", maxResults: "10000" });
 
   const url = new URL(page.url());
   expect(url.searchParams.get("q")).toBe("Ramona");
