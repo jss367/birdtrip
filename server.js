@@ -26,6 +26,7 @@ const SEASONALITY_CHUNK_SIZE = 6;
 const SEASONALITY_MAX_CONCURRENT_BUILDS = 2;
 const SEASONALITY_MAX_QUEUED_BUILDS = 20;
 const UPSTREAM_TIMEOUT_MS = 15000;
+const TAXONOMY_TIMEOUT_MS = 60000;
 const MAP_PROVIDERS = new Set(["osm", "google"]);
 const DEFAULT_MAP_PROVIDER = MAP_PROVIDERS.has(process.env.MAP_PROVIDER)
   ? process.env.MAP_PROVIDER
@@ -77,9 +78,12 @@ function logApiRequest(req, res, url) {
   res.on("finish", () => {
     const elapsed = Date.now() - started;
     const logUrl = new URL(url);
-    if (logUrl.pathname === "/api/reverse-geocode" || logUrl.pathname === "/api/ebird/seasonality") {
-      logUrl.searchParams.delete("lat");
-      logUrl.searchParams.delete("lng");
+    // Coordinates and free-text places can be the user's home, so keep them
+    // out of logs on every endpoint that accepts them.
+    const redacted = ["lat", "lng", "origin", "destination", "via"];
+    if (logUrl.pathname === "/api/geocode") redacted.push("q");
+    for (const param of redacted) {
+      if (logUrl.searchParams.has(param)) logUrl.searchParams.set(param, "redacted");
     }
     // The slug is the bearer credential for a shared trip, so it must not
     // land in logs — mirror the lat/lng redaction above.
@@ -399,8 +403,9 @@ function requireTripStore() {
 
 function parseCoordPair(value, name) {
   if (!value) throwClientInputError(`${name} is required`);
-  const [lng, lat] = value.split(",").map(Number);
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+  const parts = value.split(",");
+  const [lng, lat] = parts.map((part) => (part.trim() === "" ? NaN : Number(part)));
+  if (parts.length !== 2 || !Number.isFinite(lat) || !Number.isFinite(lng)) {
     throwClientInputError(`${name} must be "lng,lat"`);
   }
   if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
@@ -424,7 +429,7 @@ function boundedNumber(value, fallback, min, max) {
 
 async function fetchJson(url, headers = {}, options = {}) {
   const cacheKey = upstreamCacheKey("GET", url, headers);
-  const timeoutMs = Number(options.timeoutMs) || 0;
+  const timeoutMs = options.timeoutMs === undefined ? UPSTREAM_TIMEOUT_MS : Number(options.timeoutMs) || 0;
   const pendingKey = `${cacheKey} timeout=${timeoutMs}`;
   const shouldCache = options.cache !== false;
   const hit = shouldCache ? cached(cacheKey) : null;
@@ -496,6 +501,7 @@ async function postJson(url, payload, headers = {}) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
     let response;
+    let text;
     try {
       response = await fetch(url, {
         method: "POST",
@@ -508,6 +514,7 @@ async function postJson(url, payload, headers = {}) {
         },
         body: JSON.stringify(payload)
       });
+      text = await response.text();
     } catch (error) {
       if (error.name === "AbortError") {
         const timeoutError = new Error("Upstream request timed out");
@@ -520,7 +527,6 @@ async function postJson(url, payload, headers = {}) {
       clearTimeout(timeout);
     }
 
-    const text = await response.text();
     let body;
     try {
       body = text ? JSON.parse(text) : null;
@@ -757,7 +763,8 @@ async function loadTaxonomy(token) {
     endpoint.searchParams.set("cat", "species");
     endpoint.searchParams.set("locale", "en");
     const headers = token ? { "x-ebirdapitoken": String(token) } : {};
-    const data = await fetchJson(endpoint.toString(), headers);
+    // The full taxonomy is several MB, so give it more room than a normal call.
+    const data = await fetchJson(endpoint.toString(), headers, { timeoutMs: TAXONOMY_TIMEOUT_MS });
     if (!Array.isArray(data)) {
       const error = new Error("eBird taxonomy response was not a list");
       error.status = 502;
@@ -821,6 +828,7 @@ function resolveSpecies(taxonomy, name) {
   return starts.length === 1 ? starts[0] : null;
 }
 
+// Mirrored in public/ranking.js for the life-list checks.
 function isCountableSpeciesName(comName) {
   const name = String(comName || "");
   if (!name) return false;
@@ -1280,14 +1288,34 @@ async function handleApi(req, res, url) {
 
     return sendError(res, 404, "Unknown API endpoint");
   } catch (error) {
-    return sendError(res, error.status || 500, error.message || "Request failed", error.details);
+    if (!error.status) {
+      // No status means an unexpected failure (e.g. a Postgres or network
+      // error) whose message can name internal hosts or users.
+      console.error(`[api] ${req.method} ${url.pathname.replace(/^\/api\/trips\/[^/]+/, "/api/trips/:slug")} failed:`, error);
+      return sendError(res, 500, "Request failed");
+    }
+    return sendError(res, error.status, error.message || "Request failed", error.details);
   }
 }
 
 function serveStatic(req, res, url) {
-  const requested = decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname);
+  let requested;
+  try {
+    requested = decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname);
+  } catch {
+    // Malformed percent-encoding (e.g. /%E0%A4%A) throws a URIError; without
+    // this guard a single request would take the whole process down.
+    res.writeHead(400);
+    return res.end("Bad request");
+  }
+  // fs.readFile throws synchronously (not via its callback) on a NUL byte,
+  // which would escape this handler and take the process down.
+  if (requested.includes("\0")) {
+    res.writeHead(400);
+    return res.end("Bad request");
+  }
   const filePath = path.normalize(path.join(PUBLIC_DIR, requested));
-  if (!filePath.startsWith(PUBLIC_DIR)) {
+  if (filePath !== PUBLIC_DIR && !filePath.startsWith(PUBLIC_DIR + path.sep)) {
     res.writeHead(403);
     return res.end("Forbidden");
   }
@@ -1306,8 +1334,23 @@ function serveStatic(req, res, url) {
   });
 }
 
+// Only the path and query are ever read from the parsed URL, so a fixed base
+// is used rather than the Host header: an unparsable Host value (e.g. "[")
+// would otherwise throw out of the request handler and crash the server.
+function parseRequestUrl(req) {
+  try {
+    return new URL(req.url, "http://localhost");
+  } catch {
+    return null;
+  }
+}
+
 const server = http.createServer((req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+  const url = parseRequestUrl(req);
+  if (!url) {
+    res.writeHead(400);
+    return res.end("Bad request");
+  }
   if (url.pathname === "/healthz") {
     res.writeHead(200, {
       "content-type": "text/plain; charset=utf-8",
@@ -1331,6 +1374,18 @@ const server = http.createServer((req, res) => {
 });
 
 if (require.main === module) {
+  // Make process-level failures visible in the logs before the host restarts
+  // the service. The exit preserves Node's default fail-fast behaviour; the
+  // logging is what was missing. stderr is written synchronously because
+  // console.error can be asynchronous when piped, and process.exit would
+  // otherwise drop the message.
+  const fatal = (label, error) => {
+    const detail = error instanceof Error ? error.stack || error.message : String(error);
+    fs.writeSync(2, `[fatal] ${label}\n${detail}\n`);
+    process.exit(1);
+  };
+  process.on("uncaughtException", (error) => fatal("uncaught exception", error));
+  process.on("unhandledRejection", (reason) => fatal("unhandled promise rejection", reason));
   server.listen(PORT, () => {
     console.log(`Birdtrip running at http://localhost:${PORT}`);
   });

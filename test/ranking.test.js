@@ -483,3 +483,20 @@ test("notable pool does not duplicate rescued candidates already in the top slic
   assert.equal(pool.length, 1);
   assert.equal(pool.filter((candidate) => candidate.id === "a-top-rescue").length, 1);
 });
+
+test("non-species report categories are not countable species", () => {
+  const { isCountableSpeciesName } = ranking;
+  for (const name of [
+    "gull sp.",
+    "Aythya sp.",
+    "Western/Glaucous-winged Gull",
+    "Western x Glaucous-winged Gull (hybrid)",
+    "Mallard (Domestic type)",
+    ""
+  ]) {
+    assert.equal(isCountableSpeciesName(name), false, name);
+  }
+  for (const name of ["Mallard", "Western Gull", "Black-crowned Night Heron", "Lesser Sand-Plover"]) {
+    assert.equal(isCountableSpeciesName(name), true, name);
+  }
+});

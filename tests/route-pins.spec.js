@@ -61,6 +61,10 @@ test("selected unpinned stop that drops out of rank keeps its map marker", async
   await expect(selectedMarker).toHaveText("•");
   // The open details panel overlays the map, so bypass hit-testing.
   await selectedMarker.dispatchEvent("click");
+  // The click re-renders the markers; wait out Leaflet's 200ms popup fade so
+  // a popup that was closed by the rebuild has left the DOM.
+  await page.waitForTimeout(400);
+  await expect(page.locator(".leaflet-popup")).toHaveCount(1);
   await expect(page.locator(".leaflet-popup")).toContainText("Harbor Park");
 });
 
@@ -77,4 +81,15 @@ test("shared URL keeps a pin that is out-of-rank at the shared balance", async (
   await expect(outOfRank).toHaveCount(1, { timeout: 15000 });
   await expect(outOfRank.locator(".stop-name")).toHaveText("Harbor Park");
   await expect(page.locator("#balanceSliderResults")).toHaveValue("0");
+});
+
+test("OpenStreetMap full-route links keep every pinned stop and the destination", async ({ page }) => {
+  await runRouteSearch(page, { maxStops: 5 });
+  await page.locator('.stop-card:has-text("Harbor Park") .stop-pin').click();
+  await page.locator('.stop-card:has-text("Near Pond") .stop-pin').click();
+  await expect(page.locator('.stop-pin[aria-pressed="true"]')).toHaveCount(2);
+  // openstreetmap.org/directions only reads two route points, so a start,
+  // two stops, and a destination must go to a multi-waypoint router.
+  const link = page.locator('#report a:has-text("Full route directions")');
+  await expect(link).toHaveAttribute("href", /^https:\/\/map\.project-osrm\.org\/\?(loc=[^&]+&){3}loc=[^&]+$/);
 });

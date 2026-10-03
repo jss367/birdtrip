@@ -128,3 +128,110 @@ test("season lists rank by score and respect the limit", () => {
   const limited = seasonal.seasonalSpecialties([weaker, strong], FULL_SAMPLING, { limit: 1 });
   assert.deepEqual(limited.spring.map((item) => item.speciesCode), ["strong"]);
 });
+
+test("month ranges join runs across the year boundary", () => {
+  assert.equal(seasonal.formatMonthRanges([]), "");
+  assert.equal(seasonal.formatMonthRanges([4]), "May");
+  assert.equal(seasonal.formatMonthRanges([10, 11, 0, 1]), "Nov–Feb");
+  assert.equal(seasonal.formatMonthRanges([3, 4, 8]), "Apr–May and Sep");
+  assert.equal(seasonal.formatMonthRanges([0, 3, 4, 8]), "Jan, Apr–May and Sep");
+  assert.equal(seasonal.formatMonthRanges([5, 10, 11, 0]), "Jun and Nov–Jan");
+  assert.equal(seasonal.formatMonthRanges([...Array(12).keys()]), "Jan–Dec");
+});
+
+test("species timing: a year-round resident with a winter peak", () => {
+  const entry = {
+    speciesCode: "burowl",
+    comName: "Burrowing Owl",
+    months: monthsFromRates([1, 1, 0.67, 0.67, 0.67, 0.67, 0.67, 0.67, 0.67, 0.67, 1, 1])
+  };
+  const timing = seasonal.speciesTiming(entry, FULL_SAMPLING);
+  assert.equal(timing.status, "yearRound");
+  assert.deepEqual(timing.peakMonths, [0, 1, 10, 11]);
+  assert.equal(timing.reportedDays, 28);
+  assert.equal(timing.totalSampled, 36);
+  assert.equal(
+    seasonal.speciesTimingSentence(timing, "Burrowing Owl", "San Diego County"),
+    "Burrowing Owl is reported year-round in San Diego County, most often Nov–Feb."
+  );
+});
+
+test("species timing: a flat year-round bird gets no peak callout", () => {
+  const timing = seasonal.speciesTiming({ months: Array(12).fill(3) }, FULL_SAMPLING);
+  assert.equal(timing.status, "yearRound");
+  assert.equal(
+    seasonal.speciesTimingSentence(timing, "Common Raven", "Here"),
+    "Common Raven is reported year-round in Here."
+  );
+});
+
+test("species timing: a winter visitor reports its window and peak", () => {
+  const entry = { months: monthsFromRates([1, 0.67, 0.33, 0, 0, 0, 0, 0, 0, 0.33, 0.67, 1]) };
+  const timing = seasonal.speciesTiming(entry, FULL_SAMPLING);
+  assert.equal(timing.status, "seasonal");
+  assert.deepEqual(timing.windowMonths, [0, 1, 10, 11]);
+  assert.deepEqual(timing.peakMonths, [0, 11]);
+  assert.equal(
+    seasonal.speciesTimingSentence(timing, "Ferruginous Hawk", "San Diego County"),
+    "Ferruginous Hawk is reported in San Diego County mainly Nov–Feb, peaking Dec–Jan."
+  );
+});
+
+test("species timing: a sharp window without a narrower peak says so once", () => {
+  const entry = { months: monthsFromRates([0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0]) };
+  const timing = seasonal.speciesTiming(entry, FULL_SAMPLING);
+  assert.equal(
+    seasonal.speciesTimingSentence(timing, "Migrant", "X"),
+    "Migrant is reported in X mainly Apr–May."
+  );
+});
+
+test("species timing: thinly reported birds are sparse, not seasonal", () => {
+  const entry = { months: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1] };
+  const timing = seasonal.speciesTiming(entry, [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 6, 6]);
+  assert.equal(timing.status, "sparse");
+  assert.equal(
+    seasonal.speciesTimingSentence(timing, "Vagrant", "X"),
+    "Vagrant is reported only occasionally in X: on 2 of 42 sampled dates, in Nov–Dec."
+  );
+});
+
+test("species timing: two scattered dates at three samples a month are sparse", () => {
+  const entry = { months: [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0] };
+  const timing = seasonal.speciesTiming(entry, FULL_SAMPLING);
+  assert.equal(timing.peakRate, 1 / 3);
+  assert.equal(timing.status, "sparse");
+  assert.equal(
+    seasonal.speciesTimingSentence(timing, "Stray", "X"),
+    "Stray is reported only occasionally in X: on 2 of 36 sampled dates, in Jan and Jul."
+  );
+});
+
+test("species timing: a species missing from the region build is absent", () => {
+  const timing = seasonal.speciesTiming(undefined, FULL_SAMPLING);
+  assert.equal(timing.status, "absent");
+  assert.equal(timing.presence.length, 12);
+  assert.equal(
+    seasonal.speciesTimingSentence(timing, "Snowy Owl", "San Diego County"),
+    "Snowy Owl wasn't reported on enough sampled dates in San Diego County to show a pattern."
+  );
+});
+
+test("recent sightings summary counts places and finds the latest report", () => {
+  const summary = seasonal.recentSightingsSummary([
+    { locId: "L1", locName: "Ramona Grasslands", obsDt: "2026-09-20 07:15" },
+    { locId: "L2", locName: "Ramona Airport", obsDt: "2026-09-02" },
+    { locId: "L1", locName: "Ramona Grasslands", obsDt: "2026-09-10 08:00" },
+    { locId: "L3", locName: "Dos Picos", obsDt: "2026-09-25 17:30" },
+    { locName: "No id, no date" },
+    null
+  ]);
+  assert.equal(summary.locationCount, 3);
+  assert.deepEqual(summary.latest, { locName: "Dos Picos", date: "2026-09-25 17:30" });
+  assert.deepEqual(summary.topLocations.map((loc) => loc.locName), ["Ramona Grasslands", "Dos Picos", "Ramona Airport"]);
+  assert.equal(summary.topLocations[0].reports, 2);
+
+  const empty = seasonal.recentSightingsSummary(null);
+  assert.equal(empty.locationCount, 0);
+  assert.equal(empty.latest, null);
+});

@@ -1,8 +1,16 @@
 const state = {
   mode: "route",
+  searchInFlight: false,
   mapAdapter: null,
   route: null,
   routeName: "",
+  // The route the trip-name field currently describes, and whether the user
+  // typed in it since; a new route replaces an untouched name so Save can't
+  // overwrite the previous route's saved trip.
+  tripNameRoute: "",
+  tripNameEdited: false,
+  // Share URL of the search currently displayed, captured when it ran.
+  searchUrl: null,
   results: [],
   resultOrder: "score",
   candidatePool: [],
@@ -71,6 +79,9 @@ const MAX_TOTAL_DETOURS = 40;
 const MAX_ROUTE_TARGETS = 10;
 const MAX_ROUTE_TARGET_LOOKUPS = 20;
 const MAX_ROUTE_UNSEEN_PROBES = 10;
+// Rescued target hotspots are shortlisted ahead of everything else, so cap
+// them at half the evidence budget to leave room for the best general stops.
+const MAX_TARGET_RESCUE_HOTSPOTS = MAX_EVIDENCE_HOTSPOTS / 2;
 const SESSION_TOKEN_KEY = "birdtripEbirdApiToken";
 
 const els = {
@@ -361,6 +372,9 @@ async function init() {
   els.loadTripButton.addEventListener("click", () => loadSelectedTrip());
   els.deleteTripButton.addEventListener("click", deleteSelectedTrip);
   els.savedTripSelect.addEventListener("change", handleSavedTripSelection);
+  els.tripName.addEventListener("input", () => {
+    state.tripNameEdited = true;
+  });
   els.tripName.addEventListener("keydown", (event) => {
     if (event.key !== "Enter") return;
     event.preventDefault();
@@ -571,16 +585,12 @@ function applySharedSearch(shared) {
   // time should clear any restored preference so the recipient sees the trip
   // the sender shared, not arrival warnings from their own previous state.
   els.departTime.value = shared.departTime || "";
-  if (shared.targets) els.targets.value = shared.targets;
-  // Record which inputs the link set (origin, destination, mapProvider, and
-  // departTime are always explicitly managed above) so hydration leaves them
-  // alone. departTime is locked even when the link omitted it: a signed-in
-  // recipient's account hydration would otherwise refill their own stored
-  // time before an autoRun search, and later profile writes would carry the
-  // sender's time into their account.
-  sharedFieldLocks.add("origin").add("destination").add("mapProvider").add("departTime");
+  // Shared links explicitly clear absent targets and must retain that clear
+  // through account hydration as well as excluding it from profile writes.
+  els.targets.value = shared.targets || "";
+  sharedFieldLocks.add("origin").add("destination").add("mapProvider").add("departTime").add("targets");
   if (shared.mode === "species" && shared.species) sharedFieldLocks.add("speciesQuery");
-  for (const field of ["maxDetour", "recentDays", "radiusKm", "maxStops", "targets"]) {
+  for (const field of ["maxDetour", "recentDays", "radiusKm", "maxStops"]) {
     if (shared[field]) sharedFieldLocks.add(field);
   }
   // "0" is a valid position; only an absent/invalid param falls back to default.
@@ -594,7 +604,9 @@ function applySharedSearch(shared) {
 }
 
 function cleanSharedText(value, maxLength) {
-  return String(value || "").replace(/\s+/g, " ").trim().slice(0, maxLength);
+  // Drop a high surrogate orphaned by the cut: an emoji straddling the limit
+  // would otherwise leave half a character, which Postgres JSONB rejects.
+  return String(value || "").replace(/\s+/g, " ").trim().slice(0, maxLength).replace(/[\uD800-\uDBFF]$/, "");
 }
 
 function cleanSharedTargets(value, maxLength) {
@@ -640,7 +652,7 @@ function restorePreferences() {
     const parsed = JSON.parse(localStorage.getItem("routeBirdingPrefs") || "{}");
     if (parsed && typeof parsed === "object") saved = parsed;
   } catch {
-    localStorage.removeItem("routeBirdingPrefs");
+    removeLocalStorageItem("routeBirdingPrefs");
   }
   for (const field of PREF_FIELDS) {
     if (typeof saved[field] === "string") els[field].value = saved[field];
@@ -713,8 +725,14 @@ function savePreferences() {
   try {
     localStorage.setItem("routeBirdingPrefs", JSON.stringify(payload));
   } catch {
+    if (!payload.lifeList) return;
     delete payload.lifeList;
-    localStorage.setItem("routeBirdingPrefs", JSON.stringify(payload));
+    try {
+      localStorage.setItem("routeBirdingPrefs", JSON.stringify(payload));
+    } catch {
+      // Storage is blocked or full; preferences last until the page is refreshed.
+      return;
+    }
     addWarning("The imported life list was too large to save in this browser, but it will work until the page is refreshed.");
     renderWarnings();
   }
@@ -1304,9 +1322,7 @@ async function runMergeAndHydrate() {
     // no column been dirty. They take no part in the local-wins or
     // conflict-dialog branches below: a stale local value must neither be
     // offered as a choice nor written back over the other device's change.
-    // Without the ownership tie (e.g. a failed first-ever merge write-back
-    // left columns recorded), an empty local field really may mean
-    // never-set, so the first-sign-in merge rules apply unchanged.
+    // Without an ownership tie, use the anonymous first-sign-in rules.
     const ownershipTie = markerMatches || retainedOwner === userIdAtStart;
     const dirtyLocalWins = (column) => ownershipTie && dirtyColumns.has(column);
     const accountCanonical = (column) => ownershipTie && !dirtyColumns.has(column);
@@ -1421,6 +1437,11 @@ async function runMergeAndHydrate() {
     // Don't persist the reconciliation marker yet: it becomes durable only
     // after the write-back below confirms the account holds the merged state.
     pendingSyncedUserId = userIdAtStart;
+    // Persist ownership before attempting the first write-back. A failed
+    // write must not erase the meaning of subsequent dirty local clears on
+    // reload; a different account must also never inherit this cached data.
+    retainedDataOwnerId = userIdAtStart;
+    try { localStorage.setItem(RETAINED_OWNER_KEY, userIdAtStart); } catch { /* in-memory ownership remains */ }
     suppressProfileUpsert = true;
     try { savePreferences(); } finally { suppressProfileUpsert = false; }
     // Write the merged state back to the account (covers keep-local and union cases).
@@ -1688,6 +1709,16 @@ function applyPreferenceField(field, value) {
   return null;
 }
 
+// localStorage access itself throws when the browser blocks site storage, so
+// the recovery path for a corrupt entry must not assume it can remove it.
+function removeLocalStorageItem(key) {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // Storage unavailable; nothing to clean up.
+  }
+}
+
 function setSearchMode(mode, options = {}) {
   const { persist = true } = options;
   const previousMode = state.mode;
@@ -1756,7 +1787,7 @@ function readSavedTrips() {
       .filter((trip) => trip && typeof trip.id === "string" && typeof trip.name === "string")
       .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
   } catch {
-    localStorage.removeItem(SAVED_TRIPS_KEY);
+    removeLocalStorageItem(SAVED_TRIPS_KEY);
     return [];
   }
 }
@@ -1809,6 +1840,11 @@ function handleSavedTripSelection() {
   const trip = currentSavedTrip();
   if (trip) {
     els.tripName.value = trip.name;
+    // The selected name belongs to that trip's route, not the one on screen;
+    // unbind it so the next search renames the field instead of keeping a
+    // name that Save would match to (and overwrite) the selected trip.
+    state.tripNameRoute = "";
+    state.tripNameEdited = false;
     updateSavedTripControls(`${trip.name} is selected.`);
   } else {
     updateSavedTripControls("Trips stay in this browser.");
@@ -1817,6 +1853,22 @@ function handleSavedTripSelection() {
 
 function currentSavedTrip() {
   return state.savedTrips.find((trip) => trip.id === els.savedTripSelect.value) || null;
+}
+
+function syncTripNameToRoute() {
+  // Keep a name the user typed for this search, and a saved trip's name while
+  // it still describes the same route; otherwise name the trip after the new
+  // route. Saving matches trips by name, so a stale name would overwrite the
+  // previous route's saved trip.
+  const keepName = els.tripName.value.trim()
+    && (state.tripNameEdited || state.tripNameRoute === state.routeName);
+  if (!keepName) els.tripName.value = state.routeName;
+  bindTripNameToRoute();
+}
+
+function bindTripNameToRoute() {
+  state.tripNameRoute = state.routeName;
+  state.tripNameEdited = false;
 }
 
 function saveCurrentTrip() {
@@ -1853,6 +1905,7 @@ function saveCurrentTrip() {
 
   state.savedTrips = nextSavedTrips;
   els.tripName.value = name;
+  bindTripNameToRoute();
   renderSavedTrips(id);
   updateSavedTripControls(`Saved ${name} locally.`);
 }
@@ -1877,12 +1930,19 @@ async function loadSelectedTrip() {
     await setMapProvider(settings.mapProvider || state.provider, { persist: false, preserveData: false });
     restoreTripState(trip);
     // Loading a saved trip replaces every shareable input programmatically,
-    // so any loaded /t/<slug> snapshot URL no longer matches — invalidate it
+    // so any share URL in the address bar no longer matches — rebuild it
     // only after restoreTripState has set the trip's pins, or the rebuilt URL
-    // would serialize the previous trip's pinnedIds.
-    refreshSharedUrlIfPresent();
+    // would serialize the previous trip's pinnedIds. Like runSearch, write the
+    // URL even from a bare "/", and clear a stale one for a settings-only trip.
+    state.searchUrl = state.params ? buildShareUrl({ autoRun: true }) : null;
+    if (state.searchUrl) {
+      replaceHistoryUrl(state.searchUrl);
+    } else {
+      clearSharedUrl();
+    }
     savePreferences();
     els.tripName.value = trip.name;
+    bindTripNameToRoute();
     renderSavedTrips(trip.id);
     updateSavedTripControls(`Loaded ${trip.name}.`);
     setStatus("Trip loaded", `${trip.name} restored from this browser.`);
@@ -2374,6 +2434,8 @@ async function setMapProvider(provider, options = {}) {
     await initializeMap(nextProvider, { preserveData });
     if (persist) savePreferences();
   } catch (error) {
+    // The user already switched to another provider while this one loaded.
+    if (state.provider !== nextProvider) return;
     if (nextProvider === "google") {
       addWarning(`Google Maps could not be loaded: ${error.message}. Falling back to OpenStreetMap.`);
       state.provider = "osm";
@@ -2399,6 +2461,8 @@ async function initializeMap(provider, options = {}) {
   const results = preserveData ? state.results : [];
   const selectedId = preserveData ? state.selectedId : null;
   const sightingLocations = preserveData && Array.isArray(state.sightingLocations) ? state.sightingLocations : [];
+  const initId = (state.mapInitId || 0) + 1;
+  state.mapInitId = initId;
 
   if (state.mapAdapter) {
     state.mapAdapter.destroy();
@@ -2408,6 +2472,9 @@ async function initializeMap(provider, options = {}) {
 
   if (provider === "google") {
     await loadGoogleMapsScript(state.config.providers.google.browserKey);
+    // A later initializeMap call (the user switched back to OSM while the
+    // Google script loaded) owns the container now; don't stack a second map.
+    if (initId !== state.mapInitId) return;
     state.mapAdapter = new GoogleMapAdapter(container);
   } else {
     state.mapAdapter = new LeafletMapAdapter(container);
@@ -2502,6 +2569,7 @@ function resetAutocomplete(field) {
 }
 
 function clearResults() {
+  state.searchUrl = null;
   state.results = [];
   state.candidatePool = [];
   state.restoredSelectedStop = null;
@@ -2551,6 +2619,11 @@ function clearResults() {
 }
 
 async function runSearch(options = {}) {
+  // Two overlapping searches share state.route and state.candidatePool, so a
+  // second one (e.g. a shared link's auto-run after the user already clicked
+  // Find Stops) is dropped rather than interleaved.
+  if (state.searchInFlight) return;
+  state.searchInFlight = true;
   const { persistPreferences = true, preserveSharedUrl = false } = options;
   if (persistPreferences) savePreferences();
   state.ebirdModalPrompted = false;
@@ -2573,11 +2646,20 @@ async function runSearch(options = {}) {
       await runRouteSearch(params);
     }
     applyPendingSharedPins();
-    if (!preserveSharedUrl) updateSharedUrlFromCurrentInputs({ autoRun: true });
+    state.searchUrl = buildShareUrl({ autoRun: true });
+    if (!preserveSharedUrl) replaceHistoryUrl(state.searchUrl);
   } catch (error) {
     setStatus("Search failed", error.message || "Something went wrong.");
     console.error(error);
   } finally {
+    // Early exits ("No candidates", "No stops within budget") and failures
+    // only update the status line; replace the loading placeholder so the
+    // results list doesn't claim a search is still running.
+    if (els.resultsList.querySelector(".search-loading")) {
+      els.resultsList.innerHTML = '<div class="empty-state"><i data-lucide="binoculars"></i><p>No results for this search.</p></div>';
+      if (window.lucide) window.lucide.createIcons();
+    }
+    state.searchInFlight = false;
     setBusy(false);
   }
 }
@@ -2638,7 +2720,7 @@ async function runRouteSearch(params) {
   state.origin = origin;
   state.destination = destination;
   state.routeName = `${shortName(origin.name)} to ${shortName(destination.name)}`;
-  if (!els.tripName.value.trim()) els.tripName.value = state.routeName;
+  syncTripNameToRoute();
 
   setStatus("Routing", "Drawing the direct route.");
   const route = await apiJson(routeUrl("/api/route", origin, destination, null, params.mapProvider));
@@ -2771,7 +2853,7 @@ async function runAreaSearch(params) {
   state.origin = center;
   state.areaCenter = center;
   state.routeName = shortName(center.name) || params.origin;
-  if (!els.tripName.value.trim()) els.tripName.value = state.routeName;
+  syncTripNameToRoute();
   renderArea(center, params.radiusKm);
   updateAreaSummary(params.radiusKm);
 
@@ -2860,7 +2942,12 @@ async function runSpeciesSearch(params) {
   state.areaCenter = center;
   const speciesLabel = params.species?.comName || params.speciesQuery;
   state.routeName = `${speciesLabel} near ${shortName(center.name) || params.origin}`;
-  if (!els.tripName.value.trim()) els.tripName.value = state.routeName;
+  const tripNameBeforeSearch = {
+    value: els.tripName.value,
+    edited: state.tripNameEdited,
+    route: state.tripNameRoute
+  };
+  syncTripNameToRoute();
   renderArea(center, params.radiusKm);
   updateAreaSummary(params.radiusKm);
 
@@ -2908,7 +2995,16 @@ async function runSpeciesSearch(params) {
     state.species = resolvedSpecies;
     els.speciesQuery.value = resolvedSpecies.comName;
     state.routeName = `${resolvedSpecies.comName} near ${shortName(center.name) || params.origin}`;
-    if (!els.tripName.value.trim()) els.tripName.value = state.routeName;
+    // Re-decide the name from the pre-search state, as if the resolved
+    // species had been known up front: the provisional sync above bound the
+    // field to the unresolved query, which would otherwise discard a name
+    // the user typed. Skip the reset if the user typed during the request.
+    if (!state.tripNameEdited) {
+      els.tripName.value = tripNameBeforeSearch.value;
+      state.tripNameEdited = tripNameBeforeSearch.edited;
+      state.tripNameRoute = tripNameBeforeSearch.route;
+    }
+    syncTripNameToRoute();
   }
 
   const observations = Array.isArray(payload.observations) ? payload.observations : [];
@@ -3254,17 +3350,25 @@ function clearSharedUrl() {
 }
 
 function refreshSharedUrlIfPresent() {
-  // For an existing query-parameter share, patch just ranking state. Rebuilding
-  // from live form fields could capture edits the user has not re-submitted,
-  // yielding a run=1 URL for a search the displayed results don't reflect.
-  const url = new URL(window.location.href);
-  if (url.searchParams.get("bt") !== SHARE_URL_VERSION) {
+  // Rebuild from the displayed search's URL, patched with the settings that
+  // apply live. Rebuilding from live form fields could capture edits the user
+  // has not re-submitted, yielding a run=1 URL the results don't reflect.
+  const current = new URL(window.location.href);
+  const isQueryShare = current.searchParams.get("bt") === SHARE_URL_VERSION;
+  if (!isQueryShare && !sharedTripSlugFromLocation()) return;
+  if (!isQueryShare && !state.searchUrl) {
     // A /t/<slug> link is an immutable snapshot; once the trip changes, swap
     // the address bar to a live query-parameter URL so copying stays accurate.
-    if (sharedTripSlugFromLocation()) {
-      updateSharedUrlFromCurrentInputs({ autoRun: Boolean(state.params) });
-    }
+    updateSharedUrlFromCurrentInputs({ autoRun: Boolean(state.params) });
     return;
+  }
+  const url = new URL(state.searchUrl || current);
+  url.searchParams.set("mapProvider", providerFromInput());
+  const departTime = cleanTimeString(els.departTime.value);
+  if (departTime) {
+    url.searchParams.set("departTime", departTime);
+  } else {
+    url.searchParams.delete("departTime");
   }
   if (state.balance !== DEFAULT_BALANCE) {
     url.searchParams.set("balance", String(state.balance));
@@ -3602,17 +3706,25 @@ function setResultOrder(order) {
 // clocks with the post-transition offset.
 function routeTimeContext(atMs = Date.now()) {
   const browserOffsetMinutes = -new Date(atMs).getTimezoneOffset();
-  const approxOffsetMinutes = timing?.approximateUtcOffsetMinutes?.(state.route?.origin?.lng);
-  if (!Number.isFinite(approxOffsetMinutes) || Math.abs(browserOffsetMinutes - approxOffsetMinutes) <= 90) {
+  const originLng = state.route?.origin?.lng;
+  const approxOffsetMinutes = timing?.approximateUtcOffsetMinutes?.(originLng);
+  // DST only ever moves clocks forward, so the smaller of the January and
+  // July offsets is the browser zone's standard time in either hemisphere.
+  const year = new Date(atMs).getFullYear();
+  const standardOffsetMinutes = Math.min(
+    -new Date(year, 0, 1).getTimezoneOffset(),
+    -new Date(year, 6, 1).getTimezoneOffset()
+  );
+  if (!Number.isFinite(approxOffsetMinutes) || timing.matchesSolarZone({ standardOffsetMinutes, lng: originLng })) {
     return { offsetMinutes: browserOffsetMinutes, approximate: false };
   }
   return { offsetMinutes: approxOffsetMinutes, approximate: true };
 }
 
 // Clock display context for a single stop. Routes can cross time zones, so a
-// stop whose rounded solar zone differs from the origin's is displayed with
-// the origin's display offset shifted by the solar difference (approximate),
-// while stops in the origin's zone keep the route context unchanged.
+// stop 15 or more degrees of longitude from the origin is displayed with the
+// origin's display offset shifted by the solar difference (approximate),
+// while nearer stops keep the route context unchanged.
 function stopTimeContext(lng, atMs = Date.now()) {
   const routeContext = routeTimeContext(atMs);
   const stopOffset = timing?.stopClockOffsetMinutes?.({
@@ -3957,6 +4069,7 @@ function cleanSpeciesName(value) {
 }
 
 function clearSearchArtifacts() {
+  state.searchUrl = null;
   state.results = [];
   state.candidatePool = [];
   state.restoredSelectedStop = null;
@@ -3982,7 +4095,7 @@ function clearSearchArtifacts() {
   els.detailsPanel.hidden = true;
   if (state.mapAdapter) state.mapAdapter.clear();
   els.resultsList.className = "results-list empty";
-  els.resultsList.innerHTML = `<div class="empty-state"><i data-lucide="loader"></i><p>${state.mode === "species" ? "Mapping sightings..." : state.mode === "area" ? "Searching area..." : "Searching route corridor..."}</p></div>`;
+  els.resultsList.innerHTML = `<div class="empty-state search-loading"><i data-lucide="loader"></i><p>${state.mode === "species" ? "Mapping sightings..." : state.mode === "area" ? "Searching area..." : "Searching route corridor..."}</p></div>`;
   els.notableCount.textContent = "-";
   els.hotspotCount.textContent = "-";
   els.candidateCount.textContent = "-";
@@ -5302,7 +5415,7 @@ async function rescueTargetHotspots(hotspots, ranked, center, params) {
   if (failed) {
     addWarning(`${failed} target-species lookups failed; some target locations may be missing from the ranking.`);
   }
-  const limit = 40;
+  const limit = MAX_TARGET_RESCUE_HOTSPOTS;
   if (rescued.size > limit) {
     addWarning(`Target species were reported at ${rescued.size} additional hotspots; only the ${limit} closest were checked.`);
   }
@@ -5364,12 +5477,15 @@ async function rescueRouteTargetHotspots(hotspots, ranked, samples, params) {
   if (failed) {
     addWarning(`${failed} route target lookups failed; some target locations may be missing from the shortlist.`);
   }
-  if (rescued.size > MAX_EVIDENCE_HOTSPOTS) {
-    addWarning(`Targets were reported at ${rescued.size} additional route hotspots; only ${MAX_EVIDENCE_HOTSPOTS} can receive detailed evidence.`);
+  if (rescued.size > MAX_TARGET_RESCUE_HOTSPOTS) {
+    addWarning(`Targets were reported at ${rescued.size} additional route hotspots; only ${MAX_TARGET_RESCUE_HOTSPOTS} spread along the route can receive detailed evidence.`);
   }
-  return Array.from(rescued.values())
-    .sort((a, b) => a.routeProgress - b.routeProgress)
-    .slice(0, MAX_EVIDENCE_HOTSPOTS);
+  // Spread the rescues along the whole route rather than taking the first N,
+  // which would cluster every rescued stop near the origin.
+  return evenlySpacedItems(
+    Array.from(rescued.values()).sort((a, b) => a.routeProgress - b.routeProgress),
+    MAX_TARGET_RESCUE_HOTSPOTS
+  );
 }
 
 function evenlySpacedItems(items, limit) {
@@ -6367,9 +6483,16 @@ function downloadGpxRoute() {
   setStatus("GPX downloaded", `${stops.length ? `${stops.length} pinned ${pluralize("stop", stops.length)} and ` : ""}the route endpoints are ready to import into a navigation app.`);
 }
 
+// YYYY-MM-DD on the user's own calendar; toISOString() is UTC and names an
+// evening export in the Americas after tomorrow.
+function localDateStamp(date = new Date()) {
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
 function navigationFileName(name) {
   const base = slugify(name) || "route";
-  const date = new Date().toISOString().slice(0, 10);
+  const date = localDateStamp();
   return `birdtrip-${base}-navigation-${date}.gpx`;
 }
 
@@ -6390,7 +6513,8 @@ function renderResults() {
   const isArea = state.params?.mode === "area";
   els.candidateCount.textContent = String(state.results.length);
   els.hotspotCount.textContent = String(state.results.filter(isHotspot).length);
-  els.notableCount.textContent = String(state.results.reduce((sum, candidate) => sum + uniqueNotableCount(candidate), 0));
+  // Nearby stops share the same notable reports, so count distinct species.
+  els.notableCount.textContent = String(tradeoffStats(state.results).notableCount);
   els.liferCount.textContent = state.lifeList.species.size
     ? String(uniqueLiferCount(state.results))
     : "-";
@@ -7244,10 +7368,14 @@ function observationAgeDays(obsDt) {
     observedAt.getMonth(),
     observedAt.getDate()
   ).getTime();
-  return Math.max(0, Math.floor((todayMidnight - observedMidnight) / 86400000));
+  // Round, not floor: a span that includes a 23-hour spring-forward day is
+  // an hour short of a whole number of days.
+  return Math.max(0, Math.round((todayMidnight - observedMidnight) / 86400000));
 }
 
 function isSeenObservation(obs, lifeList) {
+  // Non-species reports can never be ticked, so they must not count as unseen.
+  if (obs.comName && !ranking.isCountableSpeciesName(obs.comName)) return true;
   return observationAliases(obs).some((alias) => lifeList.has(alias));
 }
 
@@ -7313,8 +7441,7 @@ function renderInsights() {
   }
 
   if (state.results.length) {
-    const speciesCount = state.results.reduce((sum, candidate) => sum + candidate.species.size, 0);
-    const notableCount = state.results.reduce((sum, candidate) => sum + uniqueNotableCount(candidate), 0);
+    const { speciesCount, notableCount } = tradeoffStats(state.results);
     const liferCount = uniqueLiferCount(state.results);
     const unseenNearbyCount = uniqueUnseenNotableCount(state.results);
     const unseenNearbyText = state.lifeList.species.size && unseenNearbyCount
@@ -7383,6 +7510,13 @@ function directionsUrlForPoints(points, provider = state.params?.mapProvider || 
     return url.toString();
   }
 
+  // openstreetmap.org/directions only reads the first two route= points, so
+  // multi-stop routes go to the OSRM demo map, which takes any number of locs.
+  if (coords.length > 2) {
+    const url = new URL("https://map.project-osrm.org/");
+    for (const point of coords) url.searchParams.append("loc", `${point.lat},${point.lng}`);
+    return url.toString();
+  }
   const url = new URL("https://www.openstreetmap.org/directions");
   if (coords.length > 1) {
     url.searchParams.set("route", coords.map((point) => `${point.lat},${point.lng}`).join(";"));
@@ -7470,10 +7604,26 @@ function buildReportMapMarkup(isArea, orderedStops) {
     state.origin ? { ...state.origin, label: isArea ? "C" : "S", name: isArea ? "Search center" : "Start" } : null,
     !isArea && state.destination ? { ...state.destination, label: "E", name: "End" } : null
   ].filter(Boolean);
+  // The search radius in degrees at the area center, so the drawn radius
+  // matches the stops' projection instead of being a fixed pixel size.
+  const radiusKm = Number(state.params?.radiusKm);
+  const radiusDegrees = isArea && state.areaCenter && radiusKm > 0
+    ? {
+      lat: radiusKm / 111.32,
+      lng: radiusKm / (111.32 * Math.max(Math.cos(state.areaCenter.lat * Math.PI / 180), 0.01))
+    }
+    : null;
+  const radiusExtents = radiusDegrees
+    ? [
+      { lat: state.areaCenter.lat + radiusDegrees.lat, lng: state.areaCenter.lng + radiusDegrees.lng },
+      { lat: state.areaCenter.lat - radiusDegrees.lat, lng: state.areaCenter.lng - radiusDegrees.lng }
+    ]
+    : [];
   const allPoints = [
     ...routeCoordinates.map(([lng, lat]) => ({ lat, lng })),
     ...stopPins,
-    ...endpointPins
+    ...endpointPins,
+    ...radiusExtents
   ].filter((point) => Number.isFinite(point.lat) && Number.isFinite(point.lng));
 
   if (!allPoints.length) {
@@ -7508,6 +7658,12 @@ function buildReportMapMarkup(isArea, orderedStops) {
     .map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`)
     .join(" ");
   const centerPoint = isArea && state.areaCenter ? project(state.areaCenter) : null;
+  const radiusEllipse = centerPoint && radiusDegrees
+    ? {
+      rx: (radiusDegrees.lng / (maxLng - minLng)) * (width - pad * 2),
+      ry: (radiusDegrees.lat / (maxLat - minLat)) * (height - pad * 2)
+    }
+    : null;
   const stopMarkers = stopPins.map((pin) => {
     const point = project(pin);
     return `
@@ -7535,7 +7691,7 @@ function buildReportMapMarkup(isArea, orderedStops) {
       </div>
       <svg class="report-map" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(isArea ? "Schematic area map" : "Schematic route map")}">
         <rect class="report-map-bg" x="0" y="0" width="${width}" height="${height}"></rect>
-        ${isArea && centerPoint ? `<circle class="report-map-radius" cx="${centerPoint.x.toFixed(1)}" cy="${centerPoint.y.toFixed(1)}" r="${Math.min(width, height) * 0.34}"></circle>` : ""}
+        ${radiusEllipse ? `<ellipse class="report-map-radius" cx="${centerPoint.x.toFixed(1)}" cy="${centerPoint.y.toFixed(1)}" rx="${radiusEllipse.rx.toFixed(1)}" ry="${radiusEllipse.ry.toFixed(1)}"></ellipse>` : ""}
         ${routePath ? `<polyline class="report-map-route" points="${routePath}"></polyline>` : ""}
         ${endpointMarkers}
         ${stopMarkers}
@@ -8121,7 +8277,7 @@ function reportFileName() {
       : `${state.params.origin} to ${state.params.destination}`;
   const base = slugify(state.routeName || fallback)
     || `${mode === "area" ? "area" : mode === "species" ? "species" : "trip"}-report`;
-  const date = new Date().toISOString().slice(0, 10);
+  const date = localDateStamp();
   return `birdtrip-${base}-${date}.html`;
 }
 
@@ -8157,6 +8313,7 @@ class LeafletMapAdapter {
     this.itineraryLayer = null;
     this.areaLayer = null;
     this.markerLayer = null;
+    this.pendingPopupId = null;
   }
 
   init() {
@@ -8242,8 +8399,18 @@ class LeafletMapAdapter {
         })
       });
       marker.bindPopup(markerPopup(candidate));
-      marker.on("click", () => onSelect(candidate.id));
+      marker.on("click", () => {
+        // onSelect re-renders the markers, and removing the clicked marker
+        // closes the popup Leaflet just opened; reopen it on the replacement.
+        this.pendingPopupId = candidate.id;
+        try {
+          onSelect(candidate.id);
+        } finally {
+          this.pendingPopupId = null;
+        }
+      });
       marker.addTo(this.markerLayer);
+      if (this.pendingPopupId !== null && candidate.id === this.pendingPopupId) marker.openPopup();
     });
   }
 

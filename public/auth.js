@@ -93,7 +93,9 @@
       if (event === "SIGNED_OUT" && !newSession && signOutMarkerPresent()) {
         auth.explicitSignOut = true;
       }
-      setSession(newSession);
+      const confirmedSignIn = event === "SIGNED_IN" && newSession?.user
+        && (!auth.user || auth.user.id !== newSession.user.id);
+      setSession(newSession, { confirmedSignIn });
     });
 
     revealAuthBar();
@@ -205,10 +207,10 @@
     const fireListeners = !options || options.fireListeners !== false;
     auth.session = session || null;
     auth.user = session && session.user ? session.user : null;
-    if (auth.user && !signOutInFlight) {
-      // A live session (sign-in, restore) retires the cross-tab marker and
-      // the in-memory flag so a later involuntary session loss is not
-      // mistaken for a user-requested sign-out.
+    if (auth.user && !signOutInFlight && options?.confirmedSignIn) {
+      // Only a confirmed transition into a signed-in user retires intent.
+      // Refresh/restore callbacks in another tab can precede SIGNED_OUT
+      // and must leave the shared marker available for that broadcast.
       auth.explicitSignOut = false;
       writeSignOutMarker(false);
     }

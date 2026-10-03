@@ -116,6 +116,25 @@ test("invalid trip payloads are rejected", async () => {
   assert.equal(wrongMethod.status, 405);
 });
 
+test("unexpected store errors return a generic 500 without internal details", async () => {
+  setTripStore({
+    ...fakeTripStore(),
+    async getTrip() {
+      throw new Error('password authentication failed for user "neondb_owner"');
+    }
+  });
+  const originalError = console.error;
+  console.error = () => {};
+  try {
+    const response = await fetch(`${baseUrl}/api/trips/${generateSlug()}`);
+    assert.equal(response.status, 500);
+    const body = await response.text();
+    assert.doesNotMatch(body, /neondb_owner/);
+  } finally {
+    console.error = originalError;
+  }
+});
+
 test("unknown and malformed slugs both read as expired", async () => {
   setTripStore(fakeTripStore());
   const unknown = await fetch(`${baseUrl}/api/trips/${generateSlug()}`);

@@ -7,6 +7,7 @@ COPY package*.json ./
 RUN npm ci --omit=dev
 
 COPY public ./public
+COPY lib ./lib
 COPY server.js ./
 
 RUN addgroup -S birdtrip && adduser -S birdtrip -G birdtrip \

@@ -2,6 +2,12 @@ const { test, expect } = require("@playwright/test");
 const { stubApis } = require("./fixtures");
 const { runAreaSearch, runRouteSearch, visibleOrder, setSlider } = require("./helpers");
 
+// Option labels carry a date suffix ("Name - Sep 26"), so select by name.
+async function selectSavedTrip(page, name) {
+  const value = await page.locator("#savedTripSelect option", { hasText: name }).getAttribute("value");
+  await page.locator("#savedTripSelect").selectOption(value);
+}
+
 test("restored trips keep stored scores and an inert slider", async ({ page }) => {
   await runAreaSearch(page);
   await setSlider(page, "#balanceSliderResults", 0);
@@ -93,4 +99,119 @@ test("legacy-scored restored stops keep their legacy scale in the comparison tab
   await expect(comparison).toContainText("of 115");
   await expect(comparison).toContainText("legacy scoring model");
   await expect(comparison).not.toContainText("of 100");
+});
+
+test("a new search renames an untouched trip name so Save can't overwrite the previous trip", async ({ page }) => {
+  await runRouteSearch(page);
+  await expect(page.locator("#tripName")).toHaveValue(/ to /);
+  await page.click("#saveTripButton");
+
+  await page.click('[data-mode="area"]');
+  await page.click('button[type="submit"]');
+  await expect(page.locator(".stop-card")).toHaveCount(5, { timeout: 15000 });
+  await expect(page.locator("#tripName")).not.toHaveValue(/ to /);
+  await page.click("#saveTripButton");
+  await expect(page.locator("#savedTripSelect option")).toHaveCount(2);
+
+  // A name the user typed for this search is theirs to keep.
+  await page.fill("#tripName", "Weekend Loop");
+  await page.click('button[type="submit"]');
+  await expect(page.locator(".stop-card")).toHaveCount(5, { timeout: 15000 });
+  await expect(page.locator("#tripName")).toHaveValue("Weekend Loop");
+});
+
+test("loading a saved trip points the address bar at that trip", async ({ page }) => {
+  await runAreaSearch(page);
+  await page.click("#saveTripButton");
+
+  await page.click('[data-mode="route"]');
+  await page.fill("#destination", "Test East, Barcelona");
+  await page.click('button[type="submit"]');
+  await expect(page.locator(".stop-card")).toHaveCount(5, { timeout: 15000 });
+  expect(new URL(page.url()).searchParams.get("mode")).toBe("route");
+
+  await page.click("#loadTripButton");
+  await expect(page.locator("#savedTripsStatus")).toContainText("Loaded");
+  const params = new URL(page.url()).searchParams;
+  expect(params.get("mode")).toBe("area");
+  expect(params.has("destination")).toBe(false);
+  expect(params.get("run")).toBe("1");
+});
+
+test("a typed trip name survives species-name resolution", async ({ page }) => {
+  await stubApis(page);
+  await page.route((url) => url.pathname === "/api/ebird/species", (route) => route.fulfill({
+    json: { species: { comName: "American Robin", sciName: "Turdus migratorius", speciesCode: "amerob" }, observations: [] }
+  }));
+  await page.goto("/");
+  await page.click("#settingsButton");
+  await page.fill("#apiToken", "TEST_TOKEN");
+  await page.keyboard.press("Escape");
+  await page.click('[data-mode="species"]');
+  await page.fill("#origin", "Test Center, Barcelona");
+  await page.fill("#speciesQuery", "Turdus migratorius");
+  await page.fill("#tripName", "Weekend Loop");
+  await page.click('button[type="submit"]');
+  await expect(page.locator("#speciesQuery")).toHaveValue("American Robin");
+  await expect(page.locator("#tripName")).toHaveValue("Weekend Loop");
+
+  // An auto-filled name still follows the resolved species.
+  await page.fill("#tripName", "");
+  await page.fill("#speciesQuery", "Turdus migratorius");
+  await page.click('button[type="submit"]');
+  await expect(page.locator("#speciesQuery")).toHaveValue("American Robin");
+  await expect(page.locator("#tripName")).toHaveValue(/^American Robin near /);
+});
+
+test("selecting another saved trip doesn't let a re-search overwrite it", async ({ page }) => {
+  await runAreaSearch(page);
+  await page.fill("#tripName", "Area Trip");
+  await page.click("#saveTripButton");
+
+  await page.click('[data-mode="route"]');
+  await page.fill("#destination", "Test East, Barcelona");
+  await page.click('button[type="submit"]');
+  await expect(page.locator(".stop-card")).toHaveCount(5, { timeout: 15000 });
+  await page.fill("#tripName", "Route Trip");
+  await page.click("#saveTripButton");
+
+  // Load the route trip, then merely select the area trip: its name fills the
+  // field, but re-running the route must not keep it.
+  await selectSavedTrip(page, "Route Trip");
+  await page.click("#loadTripButton");
+  await expect(page.locator("#savedTripsStatus")).toContainText("Loaded Route Trip");
+  await selectSavedTrip(page, "Area Trip");
+  await expect(page.locator("#tripName")).toHaveValue("Area Trip");
+  await page.click('button[type="submit"]');
+  await expect(page.locator(".stop-card")).toHaveCount(5, { timeout: 15000 });
+  await expect(page.locator("#tripName")).toHaveValue(/ to /);
+  await page.click("#saveTripButton");
+  await expect(page.locator("#savedTripSelect option")).toHaveCount(3);
+  const areaTrip = await page.evaluate(() => JSON.parse(localStorage.getItem("birdtripSavedTrips"))
+    .trips.find((trip) => trip.name === "Area Trip"));
+  expect(areaTrip.state.params.mode).toBe("area");
+});
+
+test("loading a saved trip from a bare / writes its share URL; a settings-only trip clears it", async ({ page }) => {
+  await stubApis(page);
+  await page.goto("/");
+  await page.fill("#tripName", "Settings Only");
+  await page.click("#saveTripButton");
+
+  await runAreaSearch(page);
+  await page.fill("#tripName", "Area Trip");
+  await page.click("#saveTripButton");
+
+  await page.goto("/");
+  await selectSavedTrip(page, "Area Trip");
+  await page.click("#loadTripButton");
+  await expect(page.locator("#savedTripsStatus")).toContainText("Loaded Area Trip");
+  const params = new URL(page.url()).searchParams;
+  expect(params.get("mode")).toBe("area");
+  expect(params.get("run")).toBe("1");
+
+  await selectSavedTrip(page, "Settings Only");
+  await page.click("#loadTripButton");
+  await expect(page.locator("#savedTripsStatus")).toContainText("Loaded Settings Only");
+  expect(new URL(page.url()).search).toBe("");
 });
