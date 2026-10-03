@@ -774,35 +774,80 @@ let retainedDataOwnerId = null;
 let profileUpsertTimer = 0;
 let profileUpsertFailed = false;
 
-function readDirtyProfileColumns() {
-  let raw = null;
-  try {
-    raw = localStorage.getItem(PROFILE_DIRTY_KEY);
-  } catch {
-    return new Set();
+// Each document writes its own record. Reloads inherit only their pending
+// records through sessionStorage; another tab's records are never cleared by
+// this tab's flush. A fresh key also separates duplicated-tab descendants.
+const PROFILE_DIRTY_OWNERS_KEY = `${PROFILE_DIRTY_KEY}Owners`;
+const PROFILE_DIRTY_PREFIX = `${PROFILE_DIRTY_KEY}:`;
+function profileDirtyRevision() {
+  // randomUUID is unavailable on non-HTTPS LAN development origins.
+  return crypto.randomUUID?.() || `${Date.now()}-${Math.random()}-${Math.random()}`;
+}
+const profileDirtyRecordKey = `${PROFILE_DIRTY_PREFIX}${profileDirtyRevision()}`;
+const ownedDirtyRecords = new Set();
+try {
+  const previous = JSON.parse(sessionStorage.getItem(PROFILE_DIRTY_OWNERS_KEY) || "[]");
+  for (const key of previous) {
+    if (typeof key === "string" && key.startsWith(PROFILE_DIRTY_PREFIX) && localStorage.getItem(key)) ownedDirtyRecords.add(key);
   }
-  if (!raw) return new Set();
-  // "1" is the pre-column format: treat it as every column unconfirmed.
-  if (raw === "1") return new Set(PROFILE_COLUMNS);
+} catch { /* storage unavailable */ }
+ownedDirtyRecords.add(profileDirtyRecordKey);
+try { sessionStorage.setItem(PROFILE_DIRTY_OWNERS_KEY, JSON.stringify([...ownedDirtyRecords])); } catch { /* storage unavailable */ }
+
+function parseDirtyColumns(raw) {
+  if (!raw) return [];
+  if (raw === "1") return PROFILE_COLUMNS;
   try {
     const parsed = JSON.parse(raw);
-    return new Set(Array.isArray(parsed)
-      ? parsed.filter((column) => PROFILE_COLUMNS.includes(column))
-      : PROFILE_COLUMNS);
-  } catch {
-    return new Set(PROFILE_COLUMNS);
-  }
+    const columns = Array.isArray(parsed) ? parsed : parsed?.columns;
+    return Array.isArray(columns) ? columns.filter((column) => PROFILE_COLUMNS.includes(column)) : PROFILE_COLUMNS;
+  } catch { return PROFILE_COLUMNS; }
+}
+
+function readDirtyProfileColumns() {
+  const columns = new Set();
+  try {
+    for (const column of parseDirtyColumns(localStorage.getItem(PROFILE_DIRTY_KEY))) columns.add(column);
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (!key?.startsWith(PROFILE_DIRTY_PREFIX)) continue;
+      for (const column of parseDirtyColumns(localStorage.getItem(key))) columns.add(column);
+    }
+  } catch { /* storage unavailable */ }
+  return columns;
 }
 
 function markProfileDirty(columns) {
   if (!columns.length) return;
-  const dirty = readDirtyProfileColumns();
-  for (const column of columns) dirty.add(column);
   try {
-    localStorage.setItem(PROFILE_DIRTY_KEY, JSON.stringify(Array.from(dirty)));
-  } catch {
-    // Storage unavailable; hydration protection degrades to in-session only.
-  }
+    const dirty = new Set(parseDirtyColumns(localStorage.getItem(profileDirtyRecordKey)));
+    for (const column of columns) dirty.add(column);
+    // The revision changes even for a second edit to the same column.
+    localStorage.setItem(profileDirtyRecordKey, JSON.stringify({ revision: profileDirtyRevision(), columns: [...dirty] }));
+  } catch { /* storage unavailable */ }
+}
+
+function captureOwnedDirtyRecords() {
+  const captured = new Map();
+  try {
+    for (const key of ownedDirtyRecords) {
+      const raw = localStorage.getItem(key);
+      if (raw) captured.set(key, raw);
+    }
+  } catch { /* storage unavailable */ }
+  return captured;
+}
+
+function wipeDirtyProfileRecords() {
+  try {
+    const keys = [];
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (key?.startsWith(PROFILE_DIRTY_PREFIX)) keys.push(key);
+    }
+    for (const key of keys) localStorage.removeItem(key);
+    localStorage.removeItem(PROFILE_DIRTY_KEY);
+  } catch { /* storage unavailable */ }
 }
 
 // True when this browser has reconciled with some account and neither an
@@ -828,16 +873,15 @@ function retainedOwnerPresent() {
   }
 }
 
-function clearProfileDirtyIfIdle() {
-  // Later mutations may already be queued behind the flush that just
-  // confirmed; they rebuild their patch from live state when they run, so
-  // the flag must survive until a flush leaves nothing else outstanding.
+function clearProfileDirtyIfIdle(captured) {
   if (profileUpsertTimer || profileUpsertPending) return;
   try {
-    localStorage.removeItem(PROFILE_DIRTY_KEY);
-  } catch {
-    // Storage unavailable; worst case the next sign-in runs the merge flow.
-  }
+    for (const [key, raw] of captured) {
+      // Only this document writes its current key. Newer edits must survive
+      // the completion of an older write; other tabs have different keys.
+      if (localStorage.getItem(key) === raw) localStorage.removeItem(key);
+    }
+  } catch { /* storage unavailable */ }
 }
 
 // Set by the first-reconciliation merge; committed to SYNCED_USER_KEY only
@@ -1065,11 +1109,12 @@ async function flushProfileUpsert() {
   // Send only columns that changed since the last known server state so a
   // stale browser can't overwrite columns another device updated.
   const { full, changed } = changedProfileColumns();
+  const dirtyRecordsAtStart = captureOwnedDirtyRecords();
   if (!Object.keys(changed).length) {
     // Local state already matches the account, so a first reconciliation
     // (if one is pending) is complete without a write.
     commitPendingSyncedUser();
-    clearProfileDirtyIfIdle();
+    clearProfileDirtyIfIdle(dirtyRecordsAtStart);
     return;
   }
   // The first write for an account with no profiles row is an insert: send
@@ -1097,7 +1142,7 @@ async function flushProfileUpsert() {
     lastSyncedProfile = { ...lastSyncedProfile, ...patch };
     profileUpsertFailed = false;
     commitPendingSyncedUser();
-    clearProfileDirtyIfIdle();
+    clearProfileDirtyIfIdle(dirtyRecordsAtStart);
   }
 }
 
@@ -1170,7 +1215,7 @@ function wipeLocalUserData() {
   saveSessionApiToken();
   // The dirty flag protected exactly the local data wiped here.
   try {
-    localStorage.removeItem(PROFILE_DIRTY_KEY);
+    wipeDirtyProfileRecords();
   } catch {
     // Storage unavailable; worst case the next sign-in runs the merge flow.
   }
@@ -1245,6 +1290,18 @@ async function performMergeAndHydrate() {
   if (!window.birdtripAuth?.user) return;
   const userIdAtStart = window.birdtripAuth.user.id;
   {
+    // Adopt the old shared format once, before reconciliation considers it.
+    // New documents write independent keys; a successful reconciliation can
+    // retire the adopted legacy state without touching another tab's key.
+    try {
+      const legacy = localStorage.getItem(PROFILE_DIRTY_KEY);
+      if (legacy) {
+        markProfileDirty(parseDirtyColumns(legacy));
+        if (localStorage.getItem(profileDirtyRecordKey) && localStorage.getItem(PROFILE_DIRTY_KEY) === legacy) {
+          localStorage.removeItem(PROFILE_DIRTY_KEY);
+        }
+      }
+    } catch { /* storage unavailable */ }
     // Local data that still belongs to another account must not reach this
     // one. Two records can name that owner: the retained-owner record from
     // an involuntary session loss this page observed, and the sync marker
@@ -3357,7 +3414,7 @@ function scheduleSharedUrlRefresh() {
 
 function replaceHistoryUrl(url) {
   try {
-    window.history.replaceState(null, "", url);
+    window.history.replaceState(null, "", preserveAuthFlag(url));
   } catch (error) {
     console.warn(`Address bar update skipped: ${error.message}`);
   }
@@ -3365,7 +3422,7 @@ function replaceHistoryUrl(url) {
 
 function updateSharedUrlFromCurrentInputs(options = {}) {
   const url = buildShareUrl(options);
-  replaceHistoryUrl(preserveAuthFlag(url.toString()));
+  replaceHistoryUrl(url.toString());
   return url;
 }
 
@@ -3386,7 +3443,7 @@ function clearSharedUrl() {
   url.pathname = "/";
   url.search = "";
   url.hash = "";
-  replaceHistoryUrl(preserveAuthFlag(url.toString()));
+  replaceHistoryUrl(url.toString());
 }
 
 function refreshSharedUrlIfPresent() {

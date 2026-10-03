@@ -54,7 +54,7 @@ test("failed first reconciliation preserves a subsequent local clear on reload",
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
   });
-  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("routeBirdingProfileDirty") || "[]"))).toContain("targets");
+  await expect.poll(() => page.evaluate(() => [...window.readDirtyProfileColumns()])).toContain("targets");
   await page.reload();
   await expect.poll(() => page.evaluate(() => window.birdtripAuth?.user?.id)).toBe("account-a");
   await expect.poll(() => page.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
@@ -113,4 +113,39 @@ test("account switch cancels the old merge dialog and hydrates the current user"
   await expect(page.locator("#authMergeModal")).toBeHidden();
   await expect(page.locator("#targets")).toHaveValue("B target");
   await expect(page.locator("#apiToken")).toHaveValue("B_TOKEN");
+});
+
+
+test("successful search and saved-trip rewrites retain the auth opt-in", async ({ page }) => {
+  await accountPage(page);
+  await page.evaluate(() => {
+    window.replaceHistoryUrl(window.buildShareUrl({ autoRun: true }).toString());
+  });
+  expect(new URL(page.url()).searchParams.get("auth")).toBe("1");
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => window.birdtripAuth?.enabled)).toBe(true);
+  await page.evaluate(() => window.replaceHistoryUrl("/?bt=1&origin=Saved"));
+  expect(new URL(page.url()).searchParams.get("auth")).toBe("1");
+});
+
+test("another tab's successful flush preserves a debouncing edit through reload", async ({ page, context }) => {
+  await accountPage(page);
+  const second = await context.newPage();
+  await accountPage(second);
+  await page.evaluate(() => {
+    window.birdtripAuth.upsertProfile = () => new Promise((resolve) => { window.completeWrite = resolve; });
+    document.querySelector("#targetRows .target-row input").value = "A edit";
+    window.syncTargetsFromRows();
+  });
+  await expect.poll(() => page.evaluate(() => typeof window.completeWrite)).toBe("function");
+  await second.locator("#targetRows .target-row input").first().evaluate((el) => {
+    el.value = "";
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.evaluate(() => window.completeWrite({ ok: true }));
+  expect(await second.evaluate(() => [...window.readDirtyProfileColumns()])).toContain("targets");
+  await second.reload();
+  await expect.poll(() => second.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+  await expect(second.locator("#targets")).toHaveValue("");
+  expect(await second.evaluate(() => window.profileWrites.at(-1).targets)).toBe("");
 });
