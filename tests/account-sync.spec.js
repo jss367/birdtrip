@@ -249,3 +249,40 @@ test("an explicit mode choice on a shared page persists without adopting its fie
   expect(prefs.origin).not.toBe("SenderOrigin");
   expect(prefs.targets).not.toBe("SenderTarget");
 });
+
+
+test("a partly represented orphan revision retires after reconciliation", async ({ page, context }) => {
+  await accountPage(page);
+  await page.evaluate(() => {
+    document.querySelector("#targets").value = "Pending target";
+    document.querySelector("#recentDays").value = "9";
+    window.savePreferences();
+    // A later stale cache save preserves the target but restores preferences.
+    const prefs = JSON.parse(localStorage.getItem("routeBirdingPrefs"));
+    prefs.recentDays = "7";
+    localStorage.setItem("routeBirdingPrefs", JSON.stringify(prefs));
+  });
+  await page.close();
+  const reopened = await context.newPage();
+  await accountPage(reopened, "Pending target");
+  await reopened.evaluate(async () => {
+    window.birdtripAuth.upsertProfile = async () => ({ ok: true });
+    await window.runMergeAndHydrate();
+    await window.flushProfileUpsert();
+  });
+  await expect.poll(() => reopened.evaluate(() => [...window.readDirtyProfileColumns()])).toEqual([]);
+  await reopened.reload();
+  await expect(reopened.locator("#targets")).toHaveValue("Pending target");
+});
+
+test("OAuth restoration retires old sign-out intent without wiping a later refresh loss", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("routeBirdingExplicitSignOut", "1");
+    sessionStorage.setItem("routeBirdingOAuthPending", "1");
+  });
+  await accountPage(page);
+  expect(await page.evaluate(() => localStorage.getItem("routeBirdingExplicitSignOut"))).toBeNull();
+  await page.evaluate(() => window.authEvent("SIGNED_OUT", null));
+  await expect(page.locator("#targets")).toHaveValue("Gilded Flicker");
+  await expect(page.locator("#apiToken")).toHaveValue("PRIVATE_TOKEN");
+});

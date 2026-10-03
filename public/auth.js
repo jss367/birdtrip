@@ -29,6 +29,17 @@
   // sign-in (any tab), so it can't outlive the sign-out and mislabel a later
   // refresh failure.
   const SIGN_OUT_MARKER_KEY = "routeBirdingExplicitSignOut";
+  const SIGN_IN_PENDING_KEY = "routeBirdingOAuthPending";
+  function oauthSignInPending() {
+    try { return sessionStorage.getItem(SIGN_IN_PENDING_KEY) === "1"; } catch { return false; }
+  }
+  function setOAuthSignInPending(pending) {
+    try {
+      if (pending) sessionStorage.setItem(SIGN_IN_PENDING_KEY, "1");
+      else sessionStorage.removeItem(SIGN_IN_PENDING_KEY);
+    } catch { /* storage unavailable */ }
+  }
+  const oauthCallback = url.searchParams.has("code") || /(?:^#|&)access_token=/.test(url.hash);
   // True while this tab's signOut() awaits Supabase, so a session event that
   // slips in meanwhile (a refresh completing) can't retire the intent early.
   let signOutInFlight = false;
@@ -80,7 +91,7 @@
 
     try {
       const { data } = await auth.client.auth.getSession();
-      setSession(data ? data.session : null, { fireListeners: false });
+      setSession(data ? data.session : null, { fireListeners: false, confirmedSignIn: oauthSignInPending() || oauthCallback });
     } catch (err) {
       console.warn("Initial session fetch failed:", err && err.message);
     }
@@ -108,11 +119,15 @@
     const here = new URL(window.location.href);
     here.searchParams.set("auth", "1");
     here.hash = "";
+    setOAuthSignInPending(true);
     const { error } = await auth.client.auth.signInWithOAuth({
       provider: "google",
       options: { redirectTo: here.toString() }
     });
-    if (error) showAuthStatus(`Sign-in failed: ${error.message}`);
+    if (error) {
+      setOAuthSignInPending(false);
+      showAuthStatus(`Sign-in failed: ${error.message}`);
+    }
   };
 
   auth.signOut = async function signOut() {
@@ -208,6 +223,7 @@
     auth.session = session || null;
     auth.user = session && session.user ? session.user : null;
     if (auth.user && !signOutInFlight && options?.confirmedSignIn) {
+      setOAuthSignInPending(false);
       // Only a confirmed transition into a signed-in user retires intent.
       // Refresh/restore callbacks in another tab can precede SIGNED_OUT
       // and must leave the shared marker available for that broadcast.
