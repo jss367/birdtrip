@@ -66,6 +66,19 @@ test("browser zones match origins by standard time so daylight saving does not b
   assert.equal(timing.matchesSolarZone({ standardOffsetMinutes: -300, lng: undefined }), true);
 });
 
+test("date-line browser clocks are not inferred from longitude alone", () => {
+  // These origins need civil timezone metadata before we can safely use
+  // the viewer's calendar date; longitude-only matches remain approximate.
+  for (const [standardOffsetMinutes, lng] of [[780, -175.2], [765, -176.56], [780, -171.76], [840, -157.4]]) {
+    assert.equal(timing.matchesSolarZone({ standardOffsetMinutes, lng }), false);
+  }
+  // Samoa and Kiritimati viewers must not lend their calendar date to Hawaii.
+  assert.equal(timing.matchesSolarZone({ standardOffsetMinutes: 780, lng: -157.86 }), false);
+  assert.equal(timing.matchesSolarZone({ standardOffsetMinutes: 840, lng: -157.86 }), false);
+  assert.equal(timing.matchesSolarZone({ standardOffsetMinutes: 720, lng: 174.76 }), true);
+  assert.equal(timing.matchesSolarZone({ standardOffsetMinutes: 720, lng: -157.86 }), false);
+});
+
 test("stops near the origin keep its clock even across a solar-zone rounding boundary", () => {
   // New York -> Atlanta and Berlin -> Amsterdam stay in one civil zone.
   assert.deepEqual(
@@ -358,4 +371,37 @@ test("polar daylight is poor for dusk specialists but good otherwise", () => {
     window: "dawn"
   });
   assert.equal(marshMidnightSun.quality, "good");
+});
+
+test("raptor-watch notes follow the time of day instead of always citing mid-morning", () => {
+  const sunriseMs = Date.UTC(2026, 5, 1, 12);
+  const sunsetMs = sunriseMs + 14 * HOUR_MS;
+  const at = (arrivalMs) => timing.assessArrival({ arrivalMs, sunriseMs, sunsetMs, window: "midday" });
+
+  const early = at(sunriseMs + HOUR_MS);
+  assert.equal(early.quality, "fair");
+  assert.match(early.note, /mid-morning/i);
+
+  const lateAfternoon = at(sunsetMs - HOUR_MS);
+  assert.equal(lateAfternoon.quality, "fair");
+  assert.doesNotMatch(lateAfternoon.note, /mid-morning/i);
+  assert.match(lateAfternoon.note, /late in the day/i);
+
+  const afterSunset = at(sunsetMs + 0.5 * HOUR_MS);
+  assert.equal(afterSunset.quality, "fair");
+  assert.doesNotMatch(afterSunset.note, /mid-morning/i);
+  assert.match(afterSunset.note, /after sunset/i);
+});
+
+test("open-water arrivals after sunset do not claim birds stay active through the day", () => {
+  const sunriseMs = Date.UTC(2026, 5, 1, 12);
+  const sunsetMs = sunriseMs + 14 * HOUR_MS;
+  const afterSunset = timing.assessArrival({
+    arrivalMs: sunsetMs + 0.5 * HOUR_MS,
+    sunriseMs,
+    sunsetMs,
+    window: "daylight"
+  });
+  assert.doesNotMatch(afterSunset.note, /through the day/i);
+  assert.match(afterSunset.note, /after sunset/i);
 });

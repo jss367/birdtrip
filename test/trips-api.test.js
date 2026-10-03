@@ -182,6 +182,28 @@ test("with TRUST_PROXY, rate limiting keys on the proxy-appended address", async
   }
 });
 
+test("share-link limiting treats one IPv6 /64 as one client", async () => {
+  setTripStore(fakeTripStore());
+  process.env.TRUST_PROXY = "1";
+  try {
+    // Rotating the interface identifier within a /64 must not mint fresh
+    // buckets...
+    const sameNetwork = await createTripsUntilLimited((i) => ({
+      "x-forwarded-for": `2001:db8:aa:1::${(i + 1).toString(16)}`
+    }));
+    assert.equal(sameNetwork, 429);
+    // ...while a different /64 is a different client.
+    const response = await fetch(`${baseUrl}/api/trips`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-for": "2001:db8:aa:2::1" },
+      body: JSON.stringify({ origin: "San Diego" })
+    });
+    assert.equal(response.status, 201);
+  } finally {
+    delete process.env.TRUST_PROXY;
+  }
+});
+
 test("shared trip pages serve the app shell", async () => {
   const response = await fetch(`${baseUrl}/t/${generateSlug()}`);
   assert.equal(response.status, 200);
