@@ -86,8 +86,11 @@ test("account switch waits for an old fetch then hydrates the current user", asy
     auth.getProfile = () => new Promise((resolve) => { window.finishOldProfile = resolve; });
     // Start an A reconciliation and hold its fetch.
     window.runMergeAndHydrate();
+  });
+  await expect.poll(() => page.evaluate(() => typeof window.finishOldProfile)).toBe("function");
+  await page.evaluate(() => {
     window.authEvent("SIGNED_IN", { user: { id: "account-b" } });
-    auth.getProfile = async () => ({ targets: "B target", ebird_token: "B_TOKEN", life_list: {}, preferences: {}, row_exists: true });
+    window.birdtripAuth.getProfile = async () => ({ targets: "B target", ebird_token: "B_TOKEN", life_list: {}, preferences: {}, row_exists: true });
   });
   // Prior account fields are removed without waiting for its slow fetch.
   await expect(page.locator("#apiToken")).toHaveValue("");
@@ -285,4 +288,43 @@ test("OAuth restoration retires old sign-out intent without wiping a later refre
   await page.evaluate(() => window.authEvent("SIGNED_OUT", null));
   await expect(page.locator("#targets")).toHaveValue("Gilded Flicker");
   await expect(page.locator("#apiToken")).toHaveValue("PRIVATE_TOKEN");
+});
+
+
+test("reconciliation preserves a live peer's unmatched pending preference", async ({ page, context }) => {
+  await accountPage(page);
+  await page.evaluate(() => {
+    window.birdtripAuth.upsertProfile = () => new Promise((resolve) => { window.finishPeerWrite = resolve; });
+    document.querySelector("#targets").value = "Pending target";
+    document.querySelector("#recentDays").value = "9";
+    window.savePreferences();
+    window.peerDirtyKey = Object.keys(localStorage).find((key) => key.startsWith("routeBirdingProfileDirty:"));
+    window.peerDirtyRaw = localStorage.getItem(window.peerDirtyKey);
+  });
+  await expect.poll(() => page.evaluate(() => typeof window.finishPeerWrite)).toBe("function");
+  // Deterministically simulate a stale whole-cache save while the owner is
+  // still live and its network write remains held.
+  await page.evaluate(() => {
+    const prefs = JSON.parse(localStorage.getItem("routeBirdingPrefs"));
+    prefs.recentDays = "7";
+    localStorage.setItem("routeBirdingPrefs", JSON.stringify(prefs));
+  });
+  const reconciler = await context.newPage();
+  await accountPage(reconciler, "Pending target");
+  await reconciler.evaluate(async () => {
+    window.birdtripAuth.upsertProfile = async () => ({ ok: true });
+    await window.runMergeAndHydrate();
+    await window.flushProfileUpsert();
+  });
+  expect(await page.evaluate(() => localStorage.getItem(window.peerDirtyKey))).toBe(await page.evaluate(() => window.peerDirtyRaw));
+  expect(await page.evaluate(() => localStorage.getItem(`routeBirdingProfileDirtyAck:${JSON.parse(window.peerDirtyRaw).revision}`))).toBeNull();
+  // Failed owner writes leave the exact record pending; a later successful
+  // owner retry confirms its preference rather than a peer clearing it.
+  await page.evaluate(() => window.finishPeerWrite({ ok: false }));
+  await page.evaluate(async () => {
+    window.birdtripAuth.upsertProfile = async (patch) => { window.retryPatch = patch; return { ok: true }; };
+    await window.flushProfileUpsert();
+  });
+  expect(await page.evaluate(() => window.retryPatch.preferences.recentDays)).toBe("9");
+  expect(await page.evaluate(() => localStorage.getItem(window.peerDirtyKey))).toBeNull();
 });

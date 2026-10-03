@@ -799,6 +799,29 @@ try {
 ownedDirtyRecords.add(profileDirtyRecordKey);
 try { sessionStorage.setItem(PROFILE_DIRTY_OWNERS_KEY, JSON.stringify([...ownedDirtyRecords])); } catch { /* storage unavailable */ }
 
+// Browser-managed locks identify live owners without timer-based leases:
+// suspended tabs retain their lock, and closing a document releases it.
+const PROFILE_OWNER_LOCK_PREFIX = "birdtrip-profile-owner:";
+let profileOwnerLockReady = Promise.resolve(false);
+if (navigator.locks) {
+  profileOwnerLockReady = new Promise((resolve) => {
+    navigator.locks.request(`${PROFILE_OWNER_LOCK_PREFIX}${profileDirtyRecordKey}`, () => {
+      resolve(true);
+      return new Promise(() => {}); // held for this document's lifetime
+    }).catch(() => resolve(false));
+  });
+}
+
+async function liveDirtyRecordOwners() {
+  if (!await profileOwnerLockReady) return null;
+  try {
+    const locks = await navigator.locks.query();
+    return new Set([...locks.held, ...locks.pending]
+      .filter((lock) => lock.name.startsWith(PROFILE_OWNER_LOCK_PREFIX))
+      .map((lock) => lock.name.slice(PROFILE_OWNER_LOCK_PREFIX.length)));
+  } catch { return null; }
+}
+
 function parseDirtyColumns(raw) {
   if (!raw) return [];
   if (raw === "1") return PROFILE_COLUMNS;
@@ -845,10 +868,13 @@ function markProfileDirty(columns) {
   } catch { /* storage unavailable */ }
 }
 
-function captureOwnedDirtyRecords() {
+async function captureOwnedDirtyRecords() {
+  const liveOwners = await liveDirtyRecordOwners();
   const captured = new Map();
   try {
     for (const key of ownedDirtyRecords) {
+      // Duplicated tabs can inherit ownership of an ancestor record.
+      if (key !== profileDirtyRecordKey && (!liveOwners || liveOwners.has(key))) continue;
       const raw = localStorage.getItem(key);
       if (raw) captured.set(key, raw);
     }
@@ -860,7 +886,8 @@ function captureOwnedDirtyRecords() {
 // value or from the canonical account. Both outcomes retire old revisions,
 // including mixed records whose unmatched columns must not claim local-wins.
 // Edits made after this capture retain their newer immutable revision.
-function captureReconciledDirtyRecords() {
+async function captureReconciledDirtyRecords() {
+  const liveOwners = await liveDirtyRecordOwners();
   const captured = new Map();
   try {
     for (let index = 0; index < localStorage.length; index += 1) {
@@ -869,6 +896,8 @@ function captureReconciledDirtyRecords() {
       const raw = localStorage.getItem(key);
       const record = JSON.parse(raw || "null");
       if (!record?.revision || localStorage.getItem(`${PROFILE_DIRTY_ACK_PREFIX}${record.revision}`)) continue;
+      // Without lock support, preserve all foreign records conservatively.
+      if (key !== profileDirtyRecordKey && (!liveOwners || liveOwners.has(key))) continue;
       captured.set(key, raw);
     }
   } catch { /* storage unavailable */ }
@@ -1155,8 +1184,10 @@ async function flushProfileUpsert() {
   }
   // Send only columns that changed since the last known server state so a
   // stale browser can't overwrite columns another device updated.
+  const userIdBeforeCapture = window.birdtripAuth.user.id;
+  const dirtyRecordsAtStart = await captureOwnedDirtyRecords();
+  if (window.birdtripAuth?.user?.id !== userIdBeforeCapture) return;
   const { full, changed } = changedProfileColumns();
-  const dirtyRecordsAtStart = captureOwnedDirtyRecords();
   const reconciledRecordsAtStart = new Map(reconciledDirtyRecords);
   if (!Object.keys(changed).length) {
     // Local state already matches the account, so a first reconciliation
@@ -1387,7 +1418,8 @@ async function performMergeAndHydrate() {
       }
     }
 
-    const dirtyRecordsToReconcile = captureReconciledDirtyRecords();
+    const dirtyRecordsToReconcile = await captureReconciledDirtyRecords();
+    if (window.birdtripAuth?.user?.id !== userIdAtStart) return;
     let account = await window.birdtripAuth.getProfile();
     // The user may have signed out (or switched accounts) while we were awaiting.
     if (!window.birdtripAuth.user || window.birdtripAuth.user.id !== userIdAtStart) return;
