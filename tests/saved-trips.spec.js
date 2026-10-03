@@ -215,3 +215,36 @@ test("loading a saved trip from a bare / writes its share URL; a settings-only t
   await expect(page.locator("#savedTripsStatus")).toContainText("Loaded Settings Only");
   expect(new URL(page.url()).search).toBe("");
 });
+
+test("a restored trip's out-of-rank selected stop can be pinned", async ({ page }) => {
+  await runRouteSearch(page, { maxStops: 5 });
+  await page.locator('.stop-card:has-text("Harbor Park") .stop-main').click();
+  await setSlider(page, "#balanceSliderResults", 0);
+  await expect(page.locator('.stop-card:has-text("Harbor Park")')).toHaveCount(0);
+  await page.fill("#tripName", "Pin Restored Trip");
+  await page.click("#saveTripButton");
+  await page.reload();
+  await stubApis(page);
+  await page.click("#loadTripButton");
+  await expect(page.locator("#detailsPanel")).toContainText("Harbor Park");
+  // The restored trip has no candidate pool; the pin must still stick.
+  await page.locator("#detailsPanel .detail-pin").click();
+  const outOfRank = page.locator(".stop-card.is-out-of-rank");
+  await expect(outOfRank).toHaveCount(1);
+  await expect(outOfRank.locator(".stop-name")).toHaveText("Harbor Park");
+  await expect(page.locator("#detailsPanel .detail-pin")).toHaveText("Remove from itinerary");
+});
+
+test("a saved trip restores target species as typed", async ({ page }) => {
+  await runAreaSearch(page, {
+    beforeSubmit: async () => {
+      await page.locator("#targetRows input").first().fill("Far Rich Reserve Species 1");
+      await page.keyboard.press("Enter");
+    }
+  });
+  await page.click("#saveTripButton");
+  await page.reload();
+  await stubApis(page);
+  await page.click("#loadTripButton");
+  await expect(page.locator("#targets")).toHaveValue("Far Rich Reserve Species 1");
+});

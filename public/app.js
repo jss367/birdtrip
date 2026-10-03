@@ -943,7 +943,9 @@ function readTripSettings() {
       radiusKm: Number.isFinite(state.params.radiusKm) ? String(state.params.radiusKm) : els.radiusKm.value,
       maxStops: Number.isFinite(state.params.maxStops) ? String(state.params.maxStops) : els.maxStops.value,
       departTime: typeof state.params.departTime === "string" ? state.params.departTime : els.departTime.value,
-      targets: Array.isArray(state.params.targets) ? state.params.targets.join("\n") : els.targets.value,
+      targets: typeof state.params.targetsText === "string"
+        ? state.params.targetsText
+        : Array.isArray(state.params.targets) ? state.params.targets.join("\n") : els.targets.value,
       speciesQuery: typeof state.params.speciesQuery === "string" ? state.params.speciesQuery : els.speciesQuery.value,
       searchMode: typeof state.params.mode === "string" ? state.params.mode : state.mode,
       balance: String(state.balance)
@@ -1373,13 +1375,11 @@ async function setMapProvider(provider, options = {}) {
 async function initializeMap(provider, options = {}) {
   const { preserveData = true } = options;
   const container = document.querySelector("#map");
-  const routeCoordinates = preserveData ? state.route?.geometry?.coordinates : null;
-  const itineraryCoordinates = preserveData ? state.itinerary?.route?.geometry?.coordinates : null;
-  const areaCenter = preserveData ? state.areaCenter : null;
-  const areaRadiusKm = preserveData ? state.params?.radiusKm : null;
-  const results = preserveData ? state.results : [];
-  const selectedId = preserveData ? state.selectedId : null;
-  const sightingLocations = preserveData && Array.isArray(state.sightingLocations) ? state.sightingLocations : [];
+  // Map data is read after the provider loads, not before: a search can finish
+  // while the Google script loads (its draws are skipped while mapAdapter is
+  // null), and redrawing a pre-load snapshot would show the previous search.
+  // preserveData: false skips redrawing only data that predates this call.
+  const dataBefore = mapDataSnapshot();
   const initId = (state.mapInitId || 0) + 1;
   state.mapInitId = initId;
 
@@ -1399,16 +1399,21 @@ async function initializeMap(provider, options = {}) {
     state.mapAdapter = new LeafletMapAdapter(container);
   }
   state.mapAdapter.init();
+  const dataNow = mapDataSnapshot();
+  if (!preserveData && dataNow.every((value, index) => value === dataBefore[index])) return;
+  const routeCoordinates = state.route?.geometry?.coordinates;
+  const itineraryCoordinates = state.itinerary?.route?.geometry?.coordinates;
   if (routeCoordinates) renderRoute(routeCoordinates);
   if (itineraryCoordinates) renderItineraryRoute(itineraryCoordinates);
-  if (areaCenter && areaRadiusKm) renderArea(areaCenter, areaRadiusKm);
-  if (results.length) {
-    state.selectedId = selectedId;
-    renderMarkers();
-  }
-  if (sightingLocations.length) {
+  if (state.areaCenter && state.params?.radiusKm) renderArea(state.areaCenter, state.params.radiusKm);
+  if (state.results.length) renderMarkers();
+  if (Array.isArray(state.sightingLocations) && state.sightingLocations.length) {
     renderSightingMarkers();
   }
+}
+
+function mapDataSnapshot() {
+  return [state.route, state.itinerary, state.areaCenter, state.params, state.results, state.sightingLocations];
 }
 
 function loadGoogleMapsScript(key) {
@@ -1541,6 +1546,9 @@ async function runSearch(options = {}) {
   // Find Stops) is dropped rather than interleaved.
   if (state.searchInFlight) return;
   state.searchInFlight = true;
+  // The search reads the origin now; a location arriving later would leave
+  // the field disagreeing with the results.
+  abandonCurrentLocationLookup();
   const { persistPreferences = true, preserveSharedUrl = false } = options;
   if (persistPreferences) savePreferences();
   state.ebirdModalPrompted = false;
@@ -1567,6 +1575,7 @@ async function runSearch(options = {}) {
     if (!preserveSharedUrl) replaceHistoryUrl(state.searchUrl);
   } catch (error) {
     setStatus("Search failed", error.message || "Something went wrong.");
+    els.resultContext.textContent = "No results for this search.";
     console.error(error);
   } finally {
     // Early exits ("No candidates", "No stops within budget") and failures
@@ -2104,6 +2113,9 @@ function readParams() {
       ? state.species
       : null,
     targets: parseTargetsInput(),
+    // targets is normalized (lowercased) for matching; saved trips restore
+    // the list as the user typed it.
+    targetsText: els.targets.value,
     lifeList: new Set(state.lifeList.species)
   };
 }
@@ -2999,6 +3011,11 @@ function clearSearchArtifacts() {
   if (state.mapAdapter) state.mapAdapter.clear();
   els.resultsList.className = "results-list empty";
   els.resultsList.innerHTML = `<div class="empty-state search-loading"><i data-lucide="loader"></i><p>${state.mode === "species" ? "Mapping sightings..." : state.mode === "area" ? "Searching area..." : "Searching route corridor..."}</p></div>`;
+  // A failed search must not leave the previous search's summary, mileage,
+  // or arrival-order toggle next to an empty results list.
+  els.orderToggle.hidden = true;
+  els.resultContext.textContent = "Searching...";
+  els.routeDistance.textContent = "-";
   els.notableCount.textContent = "-";
   els.hotspotCount.textContent = "-";
   els.candidateCount.textContent = "-";
@@ -3137,6 +3154,17 @@ function parseCurrentLocationFallback(query, provider) {
   };
 }
 
+// Geolocation plus reverse geocoding can take ~30s, and a search's setBusy(false)
+// re-enables the button meanwhile. Each lookup takes a ticket; one superseded
+// by another click or abandoned by a search must not touch the origin.
+let currentLocationRequestId = 0;
+
+function abandonCurrentLocationLookup() {
+  currentLocationRequestId += 1;
+  const label = els.useCurrentLocationLabel;
+  if (label.dataset.idleLabel) label.textContent = label.dataset.idleLabel;
+}
+
 async function useCurrentLocationForOrigin() {
   if (!("geolocation" in navigator)) {
     setFieldError("origin", "This browser does not support location access.");
@@ -3144,7 +3172,12 @@ async function useCurrentLocationForOrigin() {
   }
   const button = els.useCurrentLocationButton;
   const label = els.useCurrentLocationLabel;
-  const originalLabel = label.textContent;
+  // Read once: a second click mid-lookup would otherwise save "Locating…".
+  label.dataset.idleLabel ||= label.textContent;
+  const requestId = ++currentLocationRequestId;
+  const originBefore = els.origin.value;
+  // Typing a different origin meanwhile also wins over a late location.
+  const isCurrent = () => requestId === currentLocationRequestId && els.origin.value === originBefore;
   button.disabled = true;
   label.textContent = "Locating…";
   clearFieldErrors();
@@ -3161,6 +3194,7 @@ async function useCurrentLocationForOrigin() {
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
       throw new Error("Location coordinates were unavailable.");
     }
+    if (!isCurrent()) return;
     const provider = providerFromInput();
     label.textContent = "Resolving…";
     let displayName = "";
@@ -3172,6 +3206,7 @@ async function useCurrentLocationForOrigin() {
     } catch {
       displayName = "";
     }
+    if (!isCurrent()) return;
     if (!displayName) {
       displayName = formatCurrentLocationFallback(lat, lng);
     }
@@ -3191,11 +3226,14 @@ async function useCurrentLocationForOrigin() {
     savePreferences();
     refreshSharedUrlIfPresent();
   } catch (error) {
+    if (!isCurrent()) return;
     const message = describeGeolocationError(error);
     setFieldError("origin", message);
   } finally {
-    button.disabled = false;
-    label.textContent = originalLabel;
+    if (requestId === currentLocationRequestId) {
+      button.disabled = false;
+      label.textContent = label.dataset.idleLabel;
+    }
   }
 }
 
@@ -3218,6 +3256,8 @@ function setupLocationAutocomplete(field) {
 
   inputEl.addEventListener("input", () => {
     ctx.resolved = null;
+    // A highlight belongs to the text it was made against.
+    setAutocompleteActive(field, -1);
     const value = inputEl.value.trim();
     if (ctx.timer) clearTimeout(ctx.timer);
     if (ctx.controller) {
@@ -3229,14 +3269,17 @@ function setupLocationAutocomplete(field) {
       return;
     }
     if (value === ctx.lastQuery && ctx.items.length) {
-      openAutocomplete(field);
+      // Re-render: the list may still show an aborted fetch's "Searching…".
+      renderAutocompleteItems(field);
       return;
     }
     ctx.timer = setTimeout(() => fetchAutocomplete(field, value), 250);
   });
 
   inputEl.addEventListener("keydown", (event) => {
-    if (listEl.hidden || !ctx.items.length) {
+    // Items fetched for other text (still on screen, or hidden behind
+    // "Searching…") must not be navigable or selectable with Enter.
+    if (listEl.hidden || !ctx.items.length || inputEl.value.trim() !== ctx.lastQuery) {
       if (event.key === "ArrowDown" && inputEl.value.trim().length >= 3) {
         event.preventDefault();
         fetchAutocomplete(field, inputEl.value.trim());
@@ -3361,9 +3404,7 @@ function hideAutocomplete(field) {
 function moveAutocompleteSelection(field, delta) {
   const ctx = autocomplete[field];
   if (!ctx.items.length) return;
-  const next = ctx.activeIndex + delta;
-  const wrapped = (next + ctx.items.length) % ctx.items.length;
-  setAutocompleteActive(field, wrapped);
+  setAutocompleteActive(field, steppedIndex(ctx.activeIndex, delta, ctx.items.length));
 }
 
 function setAutocompleteActive(field, index) {
@@ -3371,6 +3412,7 @@ function setAutocompleteActive(field, index) {
   const inputEl = els[field];
   if (!ctx.listEl) return;
   ctx.activeIndex = index;
+  if (index < 0 && inputEl) inputEl.removeAttribute("aria-activedescendant");
   Array.from(ctx.listEl.children).forEach((li, i) => {
     const isActive = i === index;
     li.classList.toggle("is-active", isActive);
@@ -3425,6 +3467,7 @@ function setupSpeciesAutocomplete() {
   inputEl.addEventListener("input", () => {
     state.species = null;
     clearSpeciesError();
+    setSpeciesActive(-1);
     const value = inputEl.value.trim();
     if (ctx.timer) clearTimeout(ctx.timer);
     if (ctx.controller) {
@@ -3436,15 +3479,14 @@ function setupSpeciesAutocomplete() {
       return;
     }
     if (value === ctx.lastQuery && ctx.items.length) {
-      listEl.hidden = false;
-      inputEl.setAttribute("aria-expanded", "true");
+      renderSpeciesItems();
       return;
     }
     ctx.timer = setTimeout(() => fetchSpeciesAutocomplete(value), 220);
   });
 
   inputEl.addEventListener("keydown", (event) => {
-    if (listEl.hidden || !ctx.items.length) {
+    if (listEl.hidden || !ctx.items.length || inputEl.value.trim() !== ctx.lastQuery) {
       if (event.key === "ArrowDown" && inputEl.value.trim().length >= 2) {
         event.preventDefault();
         fetchSpeciesAutocomplete(inputEl.value.trim());
@@ -3543,14 +3585,22 @@ function renderSpeciesItems() {
 function moveSpeciesSelection(delta) {
   const ctx = speciesAutocomplete;
   if (!ctx.items.length) return;
-  const next = ctx.activeIndex + delta;
-  setSpeciesActive((next + ctx.items.length) % ctx.items.length);
+  setSpeciesActive(steppedIndex(ctx.activeIndex, delta, ctx.items.length));
+}
+
+// Arrow-key step through a suggestion list, wrapping at both ends. With
+// nothing highlighted (-1), ArrowUp lands on the last item, not the one
+// before it.
+function steppedIndex(activeIndex, delta, length) {
+  const start = activeIndex < 0 && delta < 0 ? 0 : activeIndex;
+  return (((start + delta) % length) + length) % length;
 }
 
 function setSpeciesActive(index) {
   const ctx = speciesAutocomplete;
   const listEl = els.speciesSuggestions;
   ctx.activeIndex = index;
+  if (index < 0) els.speciesQuery.removeAttribute("aria-activedescendant");
   Array.from(listEl.children).forEach((li, i) => {
     const isActive = i === index;
     li.classList.toggle("is-active", isActive);
@@ -3861,7 +3911,7 @@ async function fetchTargetRowAutocomplete(row, query) {
 function moveTargetRowSelection(row, delta) {
   const ctx = targetRowContext(row);
   if (!ctx.items.length) return;
-  setTargetRowActive(row, (ctx.activeIndex + delta + ctx.items.length) % ctx.items.length);
+  setTargetRowActive(row, steppedIndex(ctx.activeIndex, delta, ctx.items.length));
 }
 
 function setTargetRowActive(row, index) {
@@ -4905,6 +4955,10 @@ function parseObservationDate(value) {
 function pinnedStops() {
   const source = state.candidatePool.length ? state.candidatePool : state.results;
   const byId = new Map(source.map((candidate) => [candidate.id, candidate]));
+  // A restored trip has no candidate pool, so its out-of-rank selected stop
+  // lives only in restoredSelectedStop; without it a pin would be pruned.
+  const restored = state.restoredSelectedStop;
+  if (restored && !byId.has(restored.id)) byId.set(restored.id, restored);
   const stops = state.pinnedIds.map((id) => byId.get(id)).filter(Boolean);
   if (stops.length !== state.pinnedIds.length) {
     state.pinnedIds = stops.map((stop) => stop.id);
