@@ -195,6 +195,7 @@ test(`a new tab retires ${superseded ? "superseded closed-tab revisions" : "a cl
   await reopened.goto("/?auth=1");
   await expect(reopened.locator("#targets")).toHaveValue("");
   await expect.poll(() => reopened.evaluate(() => [...window.readDirtyProfileColumns()])).toEqual([]);
+  expect(await reopened.evaluate(() => Object.keys(localStorage).filter((key) => key.startsWith("routeBirdingProfileDirty:")))).toEqual([]);
   await reopened.reload();
   // Once the pending clear is confirmed, a later remote update wins normally.
   await expect(reopened.locator("#targets")).toHaveValue("Gilded Flicker");
@@ -236,4 +237,15 @@ test("sign-out from a shared trip does not persist the sender's locked fields", 
   expect(prefs.targets).toBe("");
   expect(prefs.origin).not.toBe("SenderOrigin");
   expect(prefs.destination).not.toBe("SenderDestination");
+});
+
+
+test("an explicit mode choice on a shared page persists without adopting its fields", async ({ page }) => {
+  await accountPage(page);
+  await page.evaluate(() => window.applySharedSearch({ mode: "route", origin: "SenderOrigin", targets: "SenderTarget" }));
+  await page.locator("#areaModeButton").click();
+  const prefs = await page.evaluate(() => JSON.parse(localStorage.getItem("routeBirdingPrefs")));
+  expect(prefs.searchMode).toBe("area");
+  expect(prefs.origin).not.toBe("SenderOrigin");
+  expect(prefs.targets).not.toBe("SenderTarget");
 });

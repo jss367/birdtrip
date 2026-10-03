@@ -588,7 +588,7 @@ function applySharedSearch(shared) {
   // Shared links explicitly clear absent targets and must retain that clear
   // through account hydration as well as excluding it from profile writes.
   els.targets.value = shared.targets || "";
-  sharedFieldLocks.add("origin").add("destination").add("mapProvider").add("departTime").add("targets");
+  sharedFieldLocks.add("origin").add("destination").add("mapProvider").add("departTime").add("targets").add("searchMode");
   if (shared.mode === "species" && shared.species) sharedFieldLocks.add("speciesQuery");
   for (const field of ["maxDetour", "recentDays", "radiusKm", "maxStops"]) {
     if (shared[field]) sharedFieldLocks.add(field);
@@ -708,7 +708,7 @@ function savePreferences({ clearUserData = false } = {}) {
     payload[field] = sharedFieldLocks.has(field) ? (previous?.[field] || "") : els[field].value;
   }
   if (clearUserData) payload.targets = "";
-  payload.searchMode = sharedFieldLocks.size ? (previous?.searchMode || "route") : state.mode;
+  payload.searchMode = sharedFieldLocks.has("searchMode") ? (previous?.searchMode || "route") : state.mode;
   const remember = els.rememberToken.checked;
   payload.rememberToken = remember;
   if (remember) payload.apiToken = els.apiToken.value;
@@ -926,11 +926,12 @@ function clearProfileDirtyIfIdle(captured, reconciled) {
       // the completion of an older write; other tabs have different keys.
       if (localStorage.getItem(key) === raw) localStorage.removeItem(key);
     }
-    for (const [, raw] of reconciled) {
+    for (const [key, raw] of reconciled) {
       const record = JSON.parse(raw);
-      // Acknowledge the exact immutable revision, never delete a peer's key:
-      // it may already contain a newer edit by the time this write completes.
+      // Acknowledge the immutable revision, then remove its value snapshot
+      // only if a peer has not replaced it with a newer edit.
       localStorage.setItem(`${PROFILE_DIRTY_ACK_PREFIX}${record.revision}`, "1");
+      if (localStorage.getItem(key) === raw) localStorage.removeItem(key);
     }
     for (const [key, raw] of reconciled) {
       if (reconciledDirtyRecords.get(key) === raw) reconciledDirtyRecords.delete(key);
@@ -1860,6 +1861,7 @@ function removeLocalStorageItem(key) {
 
 function setSearchMode(mode, options = {}) {
   const { persist = true } = options;
+  if (persist) unlockSharedField("searchMode");
   const previousMode = state.mode;
   // Capture the share marker now: clearResults() below may call
   // clearSharedUrl(), after which the end-of-function refresh would see
