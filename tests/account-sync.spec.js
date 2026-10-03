@@ -636,3 +636,83 @@ test("failed cloud writes accurately warn when edits exist only in memory", asyn
   await expect(page.locator("#warningMessage")).not.toContainText("still saved in this browser");
   expect(await page.evaluate(() => [...window.readDirtyPreferenceKeys()])).toContain("recentDays");
 });
+
+// A stale restoring tab must not relabel another tab's deletions as its edits.
+test("startup setting edits preserve peer clears of every user-data column", async ({ page, context }) => {
+  await accountPage(page);
+  await expect.poll(() => page.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+  await page.evaluate(async () => {
+    window.birdtripAuth.upsertProfile = async () => ({ ok: true });
+    await window.flushProfileUpsert();
+    const cached = JSON.parse(localStorage.getItem("routeBirdingPrefs"));
+    cached.lifeList = { species: ["Gilded Flicker"], displayNames: ["Gilded Flicker"] };
+    localStorage.setItem("routeBirdingPrefs", JSON.stringify(cached));
+  });
+  const restoring = await context.newPage();
+  await accountPage(restoring, "Gilded Flicker", true);
+  await expect.poll(() => restoring.evaluate(() => typeof window.finishInitialSession)).toBe("function");
+  const remote = await page.evaluate(() => {
+    const cached = JSON.parse(localStorage.getItem("routeBirdingPrefs"));
+    cached.targets = "";
+    cached.rememberToken = false;
+    delete cached.apiToken;
+    delete cached.lifeList;
+    localStorage.setItem("routeBirdingPrefs", JSON.stringify(cached));
+    return { life_list: {}, targets: "", ebird_token: null, preferences: window.buildProfilePatch().preferences, row_exists: true };
+  });
+  await restoring.evaluate((remote) => {
+    window.birdtripAuth.getProfile = async () => remote;
+    document.querySelector("#recentDays").value = "9";
+    window.savePreferences();
+    window.startupDirty = [...window.readDirtyProfileColumns()];
+    window.finishInitialSession();
+  }, remote);
+  expect(await restoring.evaluate(() => window.startupDirty)).toEqual(["preferences"]);
+  await expect(restoring.locator("#targets")).toHaveValue("");
+  await expect(restoring.locator("#apiToken")).toHaveValue("");
+  await expect.poll(() => restoring.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+  expect(await restoring.evaluate(() => window.profileWrites.every((patch) =>
+    !Object.hasOwn(patch, "targets") && !Object.hasOwn(patch, "ebird_token") && !Object.hasOwn(patch, "life_list")))).toBe(true);
+  await expect(restoring.locator("#recentDays")).toHaveValue("9");
+});
+
+for (const lockedField of ["targets", "recentDays"]) {
+  test(`mixed pending revisions retain ${lockedField} hidden by a shared trip`, async ({ page }) => {
+    await accountPage(page);
+    await expect.poll(() => page.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+    await page.evaluate(async (field) => {
+      window.birdtripAuth.upsertProfile = async () => ({ ok: true });
+      await window.flushProfileUpsert();
+      const prefs = JSON.parse(localStorage.getItem("routeBirdingPrefs"));
+      prefs.targets = "Pending target";
+      prefs.recentDays = "9";
+      prefs.lifeList = { species: ["New bird"], displayNames: ["New bird"] };
+      localStorage.setItem("routeBirdingPrefs", JSON.stringify(prefs));
+      const values = { life_list: JSON.stringify(window.normalizeProfileColumns({ life_list: prefs.lifeList }).life_list) };
+      const columns = ["life_list", field === "targets" ? "targets" : "preferences"];
+      values[columns[1]] = JSON.stringify(field === "targets" ? prefs.targets : { ...window.buildProfilePatch().preferences, recentDays: "9" });
+      // Use the application's stable serialization, including sorted object keys.
+      for (const column of columns) values[column] = window.stableStringify(JSON.parse(values[column]));
+      const record = { revision: "hidden-edit", columns, values, preferenceKeys: field === "recentDays" ? ["recentDays"] : [] };
+      window.hiddenRecordKey = "routeBirdingProfileDirty:hidden-edit";
+      localStorage.setItem(window.hiddenRecordKey, JSON.stringify(record));
+      localStorage.setItem(`routeBirdingProfileDirtyOwnerState:${window.hiddenRecordKey}`, "closed");
+      window.restorePreferences();
+      window.applySharedSearch({ mode: "route", origin: "Sender", targets: "Sender target", ...(field === "recentDays" ? { recentDays: "4" } : {}) });
+      window.birdtripAuth.getProfile = async () => ({ life_list: {}, targets: "", ebird_token: "PRIVATE_TOKEN", preferences: { ...window.buildProfilePatch().preferences, recentDays: "3" }, row_exists: true });
+      await window.runMergeAndHydrate();
+      await window.flushProfileUpsert();
+    }, lockedField);
+    expect(await page.evaluate(() => localStorage.getItem(window.hiddenRecordKey))).not.toBeNull();
+    expect(await page.evaluate(() => localStorage.getItem("routeBirdingProfileDirtyAck:hidden-edit"))).toBeNull();
+    await page.evaluate(async () => {
+      window.unlockAllSharedFields();
+      window.restorePreferences();
+      await window.runMergeAndHydrate();
+      await window.flushProfileUpsert();
+    });
+    if (lockedField === "targets") await expect(page.locator("#targets")).toHaveValue("Pending target");
+    else await expect(page.locator("#recentDays")).toHaveValue("9");
+    await expect.poll(() => page.evaluate(() => localStorage.getItem(window.hiddenRecordKey))).toBeNull();
+  });
+}

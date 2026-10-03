@@ -681,7 +681,7 @@ function restorePreferences() {
       displayNames: displayNames.map(String).filter(Boolean)
     };
   }
-  lastDocumentPreferences = Object.fromEntries(ACCOUNT_PREF_FIELDS.map((field) => [field, els[field].value]));
+  lastDocumentProfile = buildProfilePatch();
   return saved;
 }
 
@@ -705,8 +705,8 @@ function readStoredPrefs() {
 }
 
 // A peer can replace the shared cache between this document's saves. Compare
-// settings with this document's own previous values to identify real edits.
-let lastDocumentPreferences = null;
+// all profile columns with this document's previous values to identify edits.
+let lastDocumentProfile = null;
 let latestCacheWriteSucceeded = true;
 
 function savePreferences({ clearUserData = false } = {}) {
@@ -729,10 +729,16 @@ function savePreferences({ clearUserData = false } = {}) {
       displayNames: state.lifeList.displayNames
     };
   }
-  // Diff against the cache this save overwrites: with no account baseline
-  // yet, it is the only record of which profile columns this save touched.
-  // No prior cache means nothing to compare, so every column counts.
-  const changedColumns = previous ? profileColumnsChangedBetween(previous, payload) : PROFILE_COLUMNS;
+  // Shared storage can change underneath an idle/restoring tab. Only this
+  // document's previous form snapshot identifies which columns it edited.
+  const currentDocumentProfile = buildProfilePatch();
+  const before = lastDocumentProfile || currentDocumentProfile;
+  const preferenceKeys = Object.keys(currentDocumentProfile.preferences).filter((key) =>
+    !sharedFieldLocks.has(key) && currentDocumentProfile.preferences[key] !== before.preferences[key]);
+  const changedColumns = PROFILE_COLUMNS.filter((column) => !profileColumnLocked(column)
+    && (column === "preferences" ? preferenceKeys.length > 0
+      : stableStringify(before[column]) !== stableStringify(currentDocumentProfile[column])));
+  lastDocumentProfile = currentDocumentProfile;
   try {
     localStorage.setItem("routeBirdingPrefs", JSON.stringify(payload));
     latestCacheWriteSucceeded = true;
@@ -746,10 +752,6 @@ function savePreferences({ clearUserData = false } = {}) {
     }
     // A blocked/full local cache must not prevent signed-in cloud persistence.
   }
-  const beforePreferences = lastDocumentPreferences ?? (previous ? profileColumnsFromPrefs(previous).preferences : {});
-  const afterPreferences = profileColumnsFromPrefs(payload).preferences;
-  const preferenceKeys = Object.keys(afterPreferences).filter((key) => afterPreferences[key] !== beforePreferences[key]);
-  lastDocumentPreferences = afterPreferences;
   queueProfileUpsert(changedColumns, preferenceKeys);
 }
 
@@ -882,7 +884,7 @@ function matchingDirtyPreferenceKeys(record, full) {
 }
 
 function readDirtyPreferenceKeys() {
-  const full = buildProfilePatch();
+  const full = buildPendingProfileSnapshot();
   const keys = new Set(memoryDirtyPreferenceKeys.keys());
   try {
     if (parseDirtyColumns(localStorage.getItem(PROFILE_DIRTY_KEY)).includes("preferences")) {
@@ -903,7 +905,7 @@ function readDirtyPreferenceKeys() {
 
 function readDirtyProfileColumns() {
   const columns = new Set(memoryDirtyColumns.keys());
-  const full = buildProfilePatch();
+  const full = buildPendingProfileSnapshot();
   try {
     for (const column of parseDirtyColumns(localStorage.getItem(PROFILE_DIRTY_KEY))) columns.add(column);
     for (let index = 0; index < localStorage.length; index += 1) {
@@ -925,7 +927,7 @@ function readDirtyProfileColumns() {
 
 function markProfileDirty(columns, changedPreferenceKeys) {
   if (!columns.length) return;
-  const full = buildProfilePatch();
+  const full = buildPendingProfileSnapshot();
   const revision = ++memoryDirtyRevision;
   for (const column of columns) memoryDirtyColumns.set(column, revision);
   const memoryKeys = changedPreferenceKeys ?? (memoryDirtyPreferenceKeys.size ? [] : lastSyncedProfile
@@ -1023,16 +1025,32 @@ function retainedOwnerPresent() {
   }
 }
 
+// A locked form field carries the account value in outbound patches, but
+// its browser pending value has not been reconciled. Keep the whole immutable
+// record until every field can be considered; never acknowledge only its
+// visible portion and accidentally discard the hidden edit.
+function profileColumnLocked(column) {
+  return column === "targets" && sharedFieldLocks.has("targets");
+}
+
+function dirtyRecordHasLockedValues(raw) {
+  const record = JSON.parse(raw);
+  return parseDirtyColumns(raw).some((column) => profileColumnLocked(column)
+    || (column === "preferences" && (record.preferenceKeys || ACCOUNT_PREF_FIELDS).some((key) => sharedFieldLocks.has(key))));
+}
+
 function clearProfileDirtyIfIdle(captured, reconciled, memory) {
   if (profileUpsertTimer || profileUpsertPending) return;
   for (const [key, revision] of memory.columns) {
-    if (memoryDirtyColumns.get(key) === revision) memoryDirtyColumns.delete(key);
+    if (!profileColumnLocked(key) && (key !== "preferences" || ![...memory.preferences.keys()].some((field) => sharedFieldLocks.has(field)))
+      && memoryDirtyColumns.get(key) === revision) memoryDirtyColumns.delete(key);
   }
   for (const [key, revision] of memory.preferences) {
-    if (memoryDirtyPreferenceKeys.get(key) === revision) memoryDirtyPreferenceKeys.delete(key);
+    if (!sharedFieldLocks.has(key) && memoryDirtyPreferenceKeys.get(key) === revision) memoryDirtyPreferenceKeys.delete(key);
   }
   try {
     for (const [key, raw] of captured) {
+      if (dirtyRecordHasLockedValues(raw)) continue;
       // Only this document writes its current key. Newer edits must survive
       // the completion of an older write; other tabs have different keys.
       if (localStorage.getItem(key) === raw) {
@@ -1041,6 +1059,7 @@ function clearProfileDirtyIfIdle(captured, reconciled, memory) {
       }
     }
     for (const [key, raw] of reconciled) {
+      if (dirtyRecordHasLockedValues(raw)) continue;
       const record = JSON.parse(raw);
       // Acknowledge the immutable revision, then remove its value snapshot
       // only if a peer has not replaced it with a newer edit.
@@ -1051,6 +1070,7 @@ function clearProfileDirtyIfIdle(captured, reconciled, memory) {
       }
     }
     for (const [key, raw] of reconciled) {
+      if (dirtyRecordHasLockedValues(raw)) continue;
       if (reconciledDirtyRecords.get(key) === raw) reconciledDirtyRecords.delete(key);
     }
   } catch { /* storage unavailable */ }
@@ -1162,28 +1182,30 @@ function buildProfilePatch() {
 // The profile columns a browser-cache payload (savePreferences' shape) maps
 // to. Shared-link-locked fields are display-only (see buildProfilePatch), so
 // they are held constant here and never read as a local edit.
-function profileColumnsFromPrefs(payload) {
+function profileColumnsFromPrefs(payload, respectLocks = true) {
   const prefs = {};
   for (const field of ACCOUNT_PREF_FIELDS) {
-    if (ACCOUNT_OWNED_FIELDS.has(field) || sharedFieldLocks.has(field)) continue;
+    if (ACCOUNT_OWNED_FIELDS.has(field) || (respectLocks && sharedFieldLocks.has(field))) continue;
     prefs[field] = typeof payload[field] === "string" ? payload[field] : "";
   }
   return normalizeProfileColumns({
     life_list: payload.lifeList,
-    targets: sharedFieldLocks.has("targets") ? "" : payload.targets,
+    targets: respectLocks && sharedFieldLocks.has("targets") ? "" : payload.targets,
     ebird_token: payload.rememberToken === true ? payload.apiToken : null,
     preferences: prefs
   });
 }
 
-// Columns that differ between two cache snapshots. Used when no account
-// baseline exists: every earlier local edit is already recorded dirty (or was
-// confirmed by an upsert), so a column the previous snapshot agrees with was
-// not touched by the save that produced the next one.
-function profileColumnsChangedBetween(previous, next) {
-  const before = profileColumnsFromPrefs(previous);
-  const after = profileColumnsFromPrefs(next);
-  return PROFILE_COLUMNS.filter((column) => stableStringify(before[column]) !== stableStringify(after[column]));
+// Dirty matching uses the preserved browser values behind display-only
+// shared-trip locks. Outbound patches still use the account baseline there.
+function buildPendingProfileSnapshot() {
+  const full = buildProfilePatch();
+  const cached = profileColumnsFromPrefs(readStoredPrefs() || {}, false);
+  if (sharedFieldLocks.has("targets")) full.targets = cached.targets;
+  for (const key of ACCOUNT_PREF_FIELDS) {
+    if (sharedFieldLocks.has(key)) full.preferences[key] = cached.preferences[key];
+  }
+  return full;
 }
 
 // Columns whose live value differs from the last known account state. With
@@ -1301,7 +1323,8 @@ async function flushProfileUpsert() {
   const patch = { ...(profileRowExists ? changed : full) };
   const userIdAtStart = window.birdtripAuth.user.id;
   const writesPreferences = Object.hasOwn(patch, "preferences");
-  const dirtyKeysAtStart = writesPreferences ? readDirtyPreferenceKeys() : new Set();
+  const dirtyKeysAtStart = writesPreferences
+    ? new Set([...readDirtyPreferenceKeys()].filter((key) => !sharedFieldLocks.has(key))) : new Set();
   let result = null;
   // Retry bounded optimistic conflicts; exhaustion leaves the edit pending.
   for (let attempt = 0; attempt < 4; attempt += 1) {
