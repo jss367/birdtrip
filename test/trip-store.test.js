@@ -160,3 +160,62 @@ test("expiry sweeps delete stale trips and run at most once per hour", async () 
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(calls.filter((call) => call.text.startsWith("DELETE")).length, afterFirstCreate + 1);
 });
+
+test("close ends the pool once and is a no-op for a store that never connected", async () => {
+  let ended = 0;
+  const pool = {
+    query: async () => ({ rows: [], rowCount: 0 }),
+    end: async () => {
+      ended += 1;
+    }
+  };
+  const idle = createTripStore({ connectionString: "postgres://unused", createPool: () => pool });
+  await idle.close();
+  assert.equal(ended, 0);
+
+  const store = createTripStore({ connectionString: "postgres://unused", createPool: () => pool });
+  await store.ensureReady();
+  await store.close();
+  await store.close();
+  assert.equal(ended, 1);
+});
+
+
+test("close during schema setup never recreates a pool", async () => {
+  let finishQuery;
+  let created = 0;
+  let ended = 0;
+  const store = createTripStore({ createPool: () => {
+    created += 1;
+    return {
+      query: () => new Promise((resolve) => { finishQuery = resolve; }),
+      end: async () => { ended += 1; }
+    };
+  } });
+  const ready = store.ensureReady();
+  await store.close();
+  finishQuery({ rows: [] });
+  await assert.rejects(ready, /Trip store is closed/);
+  await assert.rejects(store.sweepExpired(), /Trip store is closed/);
+  assert.equal(created, 1);
+  assert.equal(ended, 1);
+});
+
+test("close bounds a checked-out database query with its drain deadline", async () => {
+  const { EventEmitter } = require("node:events");
+  const pool = new EventEmitter();
+  let finishEnd;
+  let canceled = 0;
+  pool.query = async () => ({ rows: [] });
+  pool.end = () => new Promise((resolve) => { finishEnd = resolve; });
+  const store = createTripStore({ createPool: () => pool });
+  await store.ensureReady();
+  pool.emit("connect", { end: async () => { canceled += 1; finishEnd(); } });
+  const keepAlive = setTimeout(() => {}, 1000);
+  try {
+    await store.close({ forceAfterMs: 20 });
+    assert.equal(canceled, 1);
+    await store.close();
+    assert.equal(canceled, 1);
+  } finally { clearTimeout(keepAlive); }
+});

@@ -1,6 +1,7 @@
 const http = require("http");
 const crypto = require("crypto");
 const fs = require("fs");
+const net = require("net");
 const path = require("path");
 const { createTripStore, SLUG_PATTERN } = require("./lib/trip-store");
 
@@ -36,6 +37,8 @@ const GOOGLE_MAPS_SERVER_KEY = process.env.GOOGLE_MAPS_SERVER_KEY || process.env
 const TRIP_BODY_LIMIT_BYTES = 150 * 1024;
 const TRIP_CREATE_LIMIT = 30;
 const TRIP_CREATE_WINDOW_MS = 60 * 60 * 1000;
+const SHUTDOWN_DRAIN_MS = 3000;
+const SHUTDOWN_TIMEOUT_MS = 4000;
 const SHARED_TRIP_PAGE_PATTERN = /^\/t\/[A-Za-z0-9]{8,64}\/?$/;
 let tripStore = process.env.DATABASE_URL
   ? createTripStore({ connectionString: process.env.DATABASE_URL })
@@ -210,6 +213,39 @@ function clientAddress(req, options = {}) {
   return req.socket.remoteAddress || "unknown";
 }
 
+// Expand a validated IPv6 address into its eight 16-bit groups, resolving
+// "::" compression and a trailing dotted quad (e.g. ::ffff:1.2.3.4).
+function ipv6Groups(address) {
+  let text = address;
+  const dotted = text.match(/(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (dotted) {
+    const [a, b, c, d] = dotted.slice(1).map(Number);
+    text = `${text.slice(0, dotted.index)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  }
+  const [head, tail] = text.split("::");
+  const headGroups = head ? head.split(":") : [];
+  const tailGroups = tail ? tail.split(":") : [];
+  const zeros = tail === undefined ? [] : new Array(8 - headGroups.length - tailGroups.length).fill("0");
+  return [...headGroups, ...zeros, ...tailGroups].map((group) => parseInt(group, 16));
+}
+
+// Rate limits key on the client's network rather than its exact address: an
+// IPv6 subscriber is typically handed a whole /64, so per-address buckets
+// would give one client ~2^64 fresh identities (and let it fill the bucket
+// maps until real users are refused). IPv4 and IPv4-mapped IPv6 addresses key
+// on the IPv4 address; anything unparsable is used as-is.
+function rateLimitKey(address) {
+  const raw = String(address || "");
+  const value = raw.split("%")[0];
+  if (net.isIPv4(value)) return value;
+  if (!net.isIPv6(value)) return raw;
+  const groups = ipv6Groups(value);
+  if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) {
+    return [groups[6] >> 8, groups[6] & 0xff, groups[7] >> 8, groups[7] & 0xff].join(".");
+  }
+  return `${groups.slice(0, 4).map((group) => group.toString(16)).join(":")}::/64`;
+}
+
 function rateLimitState(buckets) {
   let state = rateLimitMetadata.get(buckets);
   if (state) return state;
@@ -266,7 +302,7 @@ function consumeRateLimit(key, options = {}) {
 
 function applyApiRateLimit(req, res) {
   if (API_RATE_LIMIT_MAX === 0) return true;
-  const result = consumeRateLimit(clientAddress(req));
+  const result = consumeRateLimit(rateLimitKey(clientAddress(req)));
   res.setHeader("ratelimit-limit", String(result.limit));
   res.setHeader("ratelimit-remaining", String(result.remaining));
   res.setHeader("ratelimit-reset", String(result.retryAfterSeconds));
@@ -362,7 +398,7 @@ function requestClientIp(req) {
 
 function enforceTripCreateLimit(req) {
   const now = Date.now();
-  const ip = requestClientIp(req);
+  const ip = rateLimitKey(requestClientIp(req));
   const existing = tripCreatesByIp.get(ip);
   const recent = (existing || []).filter(
     (time) => now - time < TRIP_CREATE_WINDOW_MS
@@ -1379,6 +1415,37 @@ if (require.main === module) {
   };
   process.on("uncaughtException", (error) => fatal("uncaught exception", error));
   process.on("unhandledRejection", (reason) => fatal("unhandled promise rejection", reason));
+  // In the container node runs as PID 1, where the kernel ignores SIGTERM
+  // unless a handler is installed, so `docker stop` would wait out its grace
+  // period and SIGKILL in-flight requests. Stop accepting connections, let
+  // open requests finish, release the database pool, then exit. The unref'd
+  // timer is a backstop for a request that never finishes.
+  let shuttingDown = false;
+  const shutdown = (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[server] ${signal} received; shutting down`);
+    setTimeout(() => {
+      fs.writeSync(2, "[server] shutdown timed out; forcing exit\n");
+      process.exit(1);
+    }, SHUTDOWN_TIMEOUT_MS).unref();
+    // Bound draining below Docker's five-second stop grace period. Closing
+    // active HTTP connections lets server.close finish and releases the pool.
+    const drainTimer = setTimeout(() => server.closeAllConnections?.(), SHUTDOWN_DRAIN_MS).unref();
+    // Start pool shutdown immediately, so no request or background sweep
+    // can acquire new database work during the HTTP drain. Bound active
+    // query sockets to the same deadline instead of waiting ten seconds.
+    const storeClosed = Promise.resolve(tripStore?.close?.({ forceAfterMs: SHUTDOWN_DRAIN_MS }))
+      .catch((error) => console.error(`[trips] closing database pool failed: ${error.message}`));
+    server.close(() => {
+      clearTimeout(drainTimer);
+      storeClosed
+        .finally(() => process.exit(0));
+    });
+    server.closeIdleConnections?.();
+  };
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
   server.listen(PORT, () => {
     console.log(`Birdtrip running at http://localhost:${PORT}`);
   });
@@ -1414,6 +1481,7 @@ module.exports = {
   nearestHotspotRegion,
   pruneResponseCache,
   pruneSeasonalityCache,
+  rateLimitKey,
   readJsonBody,
   server,
   setTripStore

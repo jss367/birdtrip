@@ -12,7 +12,8 @@ const {
   logApiRequest,
   nearestHotspotRegion,
   pruneResponseCache,
-  pruneSeasonalityCache
+  pruneSeasonalityCache,
+  rateLimitKey
 } = require("../server.js");
 
 const appSource = fs.readFileSync(path.join(__dirname, "../public/app.js"), "utf8");
@@ -270,6 +271,34 @@ test("rate limiter rejects new clients instead of evicting active buckets at cap
 
   assert.equal(consumeRateLimit("overflow", { ...options, now: 6000 }).allowed, true);
   assert.equal(buckets.has("overflow"), true);
+});
+
+test("rate limit keys collapse IPv6 to its /64 and leave IPv4 alone", () => {
+  assert.equal(rateLimitKey("203.0.113.9"), "203.0.113.9");
+  assert.equal(rateLimitKey("::ffff:203.0.113.9"), "203.0.113.9");
+  assert.equal(rateLimitKey("::ffff:cb00:7109"), "203.0.113.9");
+  assert.equal(rateLimitKey("2001:db8:1:2:aaaa:bbbb:cccc:dddd"), "2001:db8:1:2::/64");
+  assert.equal(rateLimitKey("2001:DB8:1:2::1"), "2001:db8:1:2::/64");
+  assert.equal(rateLimitKey("2001:db8::1"), "2001:db8:0:0::/64");
+  assert.equal(rateLimitKey("2001:db8:1::"), "2001:db8:1:0::/64");
+  assert.equal(rateLimitKey("fe80::1%eth0"), rateLimitKey("fe80::2"));
+  assert.equal(rateLimitKey("unknown"), "unknown");
+});
+
+// One IPv6 subscriber usually controls a whole /64, so keying on the exact
+// address would hand them unlimited fresh buckets.
+test("IPv6 clients in one /64 share a rate-limit bucket; other networks do not", () => {
+  const buckets = new Map();
+  const options = { buckets, max: 2, windowMs: 1000, now: 5000 };
+  const consume = (address) => consumeRateLimit(rateLimitKey(address), options).allowed;
+
+  assert.equal(consume("2001:db8:1:2::1"), true);
+  assert.equal(consume("2001:db8:1:2::2"), true);
+  assert.equal(consume("2001:db8:1:2:ffff:ffff:ffff:ffff"), false);
+  assert.equal(consume("2001:db8:1:3::1"), true);
+  assert.equal(consume("198.51.100.1"), true);
+  assert.equal(consume("198.51.100.2"), true);
+  assert.equal(buckets.size, 4);
 });
 
 test("concurrent cold seasonality requests share one upstream build", async () => {
