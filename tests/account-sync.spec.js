@@ -509,3 +509,56 @@ test("account preferences exclude private trip inputs on write and hydration", a
   expect(keys).toEqual(["mapProvider", "maxDetour", "maxStops", "radiusKm", "recentDays"]);
   expect(await page.evaluate(() => window.profileWrites.every((patch) => !patch.preferences || Object.keys(patch.preferences).every((key) => ["mapProvider", "maxDetour", "maxStops", "radiusKm", "recentDays"].includes(key))))).toBe(true);
 });
+
+
+test("reload retires inherited records without Web Locks and protects live peers", async ({ page, context }) => {
+  await context.addInitScript(() => Object.defineProperty(navigator, "locks", { value: undefined }));
+  await accountPage(page);
+  const peer = await context.newPage();
+  await accountPage(peer);
+  await page.evaluate(() => {
+    window.birdtripAuth.upsertProfile = () => new Promise((resolve) => { window.finishFallbackWrite = resolve; });
+    document.querySelector("#recentDays").value = "9";
+    window.savePreferences();
+    window.liveFallbackKey = Object.keys(localStorage).find((key) => key.startsWith("routeBirdingProfileDirty:") && JSON.parse(localStorage.getItem(key)).values?.preferences?.includes('"recentDays":"9"'));
+  });
+  await expect.poll(() => page.evaluate(() => typeof window.finishFallbackWrite)).toBe("function");
+  await peer.evaluate(async () => {
+    window.birdtripAuth.upsertProfile = async () => ({ ok: true });
+    await window.runMergeAndHydrate();
+    await window.flushProfileUpsert();
+  });
+  expect(await page.evaluate(() => localStorage.getItem(window.liveFallbackKey))).not.toBeNull();
+  await peer.close();
+  await page.evaluate(() => window.savePreferences()); // persist the owner's current UI snapshot
+  await page.reload(); // non-persisted pagehide closes the prior document owner.
+  await expect(page.locator("#recentDays")).toHaveValue("9");
+  await expect.poll(() => page.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+  await page.evaluate(async () => {
+    window.birdtripAuth.upsertProfile = async () => ({ ok: true });
+    await window.flushProfileUpsert();
+  });
+  await expect.poll(() => page.evaluate(() => [...window.readDirtyProfileColumns()])).toEqual([]);
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => window.birdtripAuth?.user?.id)).toBe("account-a");
+  expect(await page.evaluate(() => [...window.readDirtyProfileColumns()])).toEqual([]);
+});
+
+for (const scenario of [{ auth: false, configured: true }, { auth: true, configured: false }, { auth: true, configured: true }]) {
+  test(`Supabase download requires auth=${scenario.auth} and configured=${scenario.configured}`, async ({ page }) => {
+    await stubApis(page);
+    await page.route("**/api/config", async (route) => {
+      const response = await route.fetch();
+      const config = await response.json();
+      config.supabase = { enabled: scenario.configured, url: "https://example.invalid", anonKey: "test" };
+      await route.fulfill({ json: config });
+    });
+    let downloads = 0;
+    await page.route("https://cdn.jsdelivr.net/npm/@supabase/**", (route) => { downloads += 1; return route.abort(); });
+    await page.goto(scenario.auth ? "/?auth=1" : "/");
+    await expect.poll(() => page.evaluate(() => window.birdtripAuth !== undefined)).toBe(true);
+    await page.evaluate(() => window.waitForAppConfig());
+    expect(downloads).toBe(scenario.auth && scenario.configured ? 1 : 0);
+    await expect(page.locator("#searchForm")).toBeVisible();
+  });
+}

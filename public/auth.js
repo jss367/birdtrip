@@ -64,12 +64,30 @@
 
   window.birdtripAuth = auth;
 
+  let sdkReady = null;
+  function loadSupabaseSdk() {
+    if (window.supabase?.createClient) return Promise.resolve();
+    if (!sdkReady) {
+      sdkReady = new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.4/dist/umd/supabase.js";
+        script.integrity = "sha384-ysv13JVP3fufiEXfjML9OdCa/rRbMJvUBOWyor82wfuK8INNZAvmbxHgKIHi+oqz";
+        script.crossOrigin = "anonymous";
+        script.onload = resolve;
+        script.onerror = () => reject(new Error("Supabase SDK unavailable"));
+        document.head.append(script);
+      });
+    }
+    return sdkReady;
+  }
+
   auth.init = async function init(config) {
     if (!FEATURE_FLAG) return;
     if (!config || !config.supabase || !config.supabase.enabled) {
       showAuthStatus("Sign-in unavailable");
       return;
     }
+    try { await loadSupabaseSdk(); } catch { /* handled by unavailable status below */ }
     if (!window.supabase || typeof window.supabase.createClient !== "function") {
       console.warn("Supabase JS did not load; auth disabled.");
       showAuthStatus("Sign-in unavailable");

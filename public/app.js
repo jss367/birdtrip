@@ -812,6 +812,19 @@ try { sessionStorage.setItem(PROFILE_DIRTY_OWNERS_KEY, JSON.stringify([...ownedD
 // Browser-managed locks identify live owners without timer-based leases:
 // suspended tabs retain their lock, and closing a document releases it.
 const PROFILE_OWNER_LOCK_PREFIX = "birdtrip-profile-owner:";
+const PROFILE_OWNER_STATE_PREFIX = `${PROFILE_DIRTY_KEY}OwnerState:`;
+function setProfileOwnerState(status) {
+  try {
+    if (localStorage.getItem(profileDirtyRecordKey)) {
+      localStorage.setItem(`${PROFILE_OWNER_STATE_PREFIX}${profileDirtyRecordKey}`, status);
+    }
+  } catch { /* storage unavailable */ }
+}
+window.addEventListener("pagehide", (event) => {
+  // A back/forward-cache document is suspended, not a confirmed orphan.
+  if (!event.persisted) setProfileOwnerState("closed");
+});
+window.addEventListener("pageshow", () => setProfileOwnerState("active"));
 let profileOwnerLockReady = Promise.resolve(false);
 if (navigator.locks) {
   profileOwnerLockReady = new Promise((resolve) => {
@@ -822,14 +835,28 @@ if (navigator.locks) {
   });
 }
 
+function fallbackLiveDirtyRecordOwners() {
+  const live = new Set();
+  try {
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (!key?.startsWith(PROFILE_DIRTY_PREFIX)) continue;
+      // Only a non-persisted pagehide proves the previous document ended.
+      // Missing markers and crashed/suspended peers stay protected.
+      if (localStorage.getItem(`${PROFILE_OWNER_STATE_PREFIX}${key}`) !== "closed") live.add(key);
+    }
+    return live;
+  } catch { return null; }
+}
+
 async function liveDirtyRecordOwners() {
-  if (!await profileOwnerLockReady) return null;
+  if (!await profileOwnerLockReady) return fallbackLiveDirtyRecordOwners();
   try {
     const locks = await navigator.locks.query();
     return new Set([...locks.held, ...locks.pending]
       .filter((lock) => lock.name.startsWith(PROFILE_OWNER_LOCK_PREFIX))
       .map((lock) => lock.name.slice(PROFILE_OWNER_LOCK_PREFIX.length)));
-  } catch { return null; }
+  } catch { return fallbackLiveDirtyRecordOwners(); }
 }
 
 function parseDirtyColumns(raw) {
@@ -910,6 +937,7 @@ function markProfileDirty(columns, changedPreferenceKeys) {
       : Object.keys(full.preferences));
     if (columns.includes("preferences")) for (const key of currentPreferenceKeys) preferenceKeys.add(key);
     localStorage.setItem(profileDirtyRecordKey, JSON.stringify({ revision: profileDirtyRevision(), columns: [...dirty], values, preferenceKeys: [...preferenceKeys] }));
+    setProfileOwnerState("active");
   } catch { /* storage unavailable */ }
 }
 
@@ -954,7 +982,7 @@ function wipeDirtyProfileRecords() {
     const keys = [];
     for (let index = 0; index < localStorage.length; index += 1) {
       const key = localStorage.key(index);
-      if (key?.startsWith(PROFILE_DIRTY_PREFIX) || key?.startsWith(PROFILE_DIRTY_ACK_PREFIX)) keys.push(key);
+      if (key?.startsWith(PROFILE_DIRTY_PREFIX) || key?.startsWith(PROFILE_DIRTY_ACK_PREFIX) || key?.startsWith(PROFILE_OWNER_STATE_PREFIX)) keys.push(key);
     }
     for (const key of keys) localStorage.removeItem(key);
     localStorage.removeItem(PROFILE_DIRTY_KEY);
@@ -990,14 +1018,20 @@ function clearProfileDirtyIfIdle(captured, reconciled) {
     for (const [key, raw] of captured) {
       // Only this document writes its current key. Newer edits must survive
       // the completion of an older write; other tabs have different keys.
-      if (localStorage.getItem(key) === raw) localStorage.removeItem(key);
+      if (localStorage.getItem(key) === raw) {
+        localStorage.removeItem(key);
+        localStorage.removeItem(`${PROFILE_OWNER_STATE_PREFIX}${key}`);
+      }
     }
     for (const [key, raw] of reconciled) {
       const record = JSON.parse(raw);
       // Acknowledge the immutable revision, then remove its value snapshot
       // only if a peer has not replaced it with a newer edit.
       localStorage.setItem(`${PROFILE_DIRTY_ACK_PREFIX}${record.revision}`, "1");
-      if (localStorage.getItem(key) === raw) localStorage.removeItem(key);
+      if (localStorage.getItem(key) === raw) {
+        localStorage.removeItem(key);
+        localStorage.removeItem(`${PROFILE_OWNER_STATE_PREFIX}${key}`);
+      }
     }
     for (const [key, raw] of reconciled) {
       if (reconciledDirtyRecords.get(key) === raw) reconciledDirtyRecords.delete(key);
