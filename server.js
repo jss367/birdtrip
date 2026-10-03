@@ -37,7 +37,8 @@ const GOOGLE_MAPS_SERVER_KEY = process.env.GOOGLE_MAPS_SERVER_KEY || process.env
 const TRIP_BODY_LIMIT_BYTES = 150 * 1024;
 const TRIP_CREATE_LIMIT = 30;
 const TRIP_CREATE_WINDOW_MS = 60 * 60 * 1000;
-const SHUTDOWN_TIMEOUT_MS = 10000;
+const SHUTDOWN_DRAIN_MS = 3000;
+const SHUTDOWN_TIMEOUT_MS = 4000;
 const SHARED_TRIP_PAGE_PATTERN = /^\/t\/[A-Za-z0-9]{8,64}\/?$/;
 let tripStore = process.env.DATABASE_URL
   ? createTripStore({ connectionString: process.env.DATABASE_URL })
@@ -1428,7 +1429,11 @@ if (require.main === module) {
       fs.writeSync(2, "[server] shutdown timed out; forcing exit\n");
       process.exit(1);
     }, SHUTDOWN_TIMEOUT_MS).unref();
+    // Bound draining below Docker's five-second stop grace period. Closing
+    // active HTTP connections lets server.close finish and releases the pool.
+    const drainTimer = setTimeout(() => server.closeAllConnections?.(), SHUTDOWN_DRAIN_MS).unref();
     server.close(() => {
+      clearTimeout(drainTimer);
       Promise.resolve()
         .then(() => tripStore?.close?.())
         .catch((error) => console.error(`[trips] closing database pool failed: ${error.message}`))

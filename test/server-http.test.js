@@ -100,7 +100,7 @@ function freePort() {
 
 // In Docker node is PID 1, where an unhandled SIGTERM is ignored and
 // `docker stop` ends in SIGKILL; the server must exit cleanly on its own.
-test("SIGTERM shuts the server down cleanly with exit code 0", async () => {
+test("SIGTERM drains active requests within Docker grace and exits cleanly", async () => {
   const childPort = await freePort();
   const child = spawn(process.execPath, [path.join(__dirname, "../server.js")], {
     env: { ...process.env, PORT: String(childPort), DATABASE_URL: "" },
@@ -109,6 +109,7 @@ test("SIGTERM shuts the server down cleanly with exit code 0", async () => {
   const exited = new Promise((resolve) => {
     child.on("exit", (code, signal) => resolve({ code, signal }));
   });
+  let activeSocket;
   try {
     await new Promise((resolve, reject) => {
       let output = "";
@@ -122,6 +123,15 @@ test("SIGTERM shuts the server down cleanly with exit code 0", async () => {
     const response = await fetch(`http://127.0.0.1:${childPort}/healthz`);
     assert.equal(await response.text(), "ok");
 
+    // Hold a request open by sending only part of its declared body.
+    // It cannot complete naturally before Docker's stop grace expires.
+    activeSocket = net.createConnection({ host: "127.0.0.1", port: childPort });
+    await new Promise((resolve, reject) => {
+      activeSocket.once("connect", resolve);
+      activeSocket.once("error", reject);
+    });
+    activeSocket.write("POST /api/trips HTTP/1.1\r\nHost: localhost\r\nContent-Length: 100\r\n\r\n{");
+    await new Promise((resolve) => setTimeout(resolve, 100));
     const started = Date.now();
     child.kill("SIGTERM");
     const result = await Promise.race([
@@ -131,6 +141,7 @@ test("SIGTERM shuts the server down cleanly with exit code 0", async () => {
     assert.deepEqual(result, { code: 0, signal: null });
     assert.ok(Date.now() - started < 5000);
   } finally {
+    activeSocket?.destroy();
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
   }
 });
