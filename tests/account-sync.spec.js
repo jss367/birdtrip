@@ -1,7 +1,7 @@
 const { test, expect } = require("@playwright/test");
 const { stubApis } = require("./fixtures");
 
-async function accountPage(page) {
+async function accountPage(page, targets = "Gilded Flicker") {
   await stubApis(page);
   await page.route("**/api/config", async (route) => {
     const response = await route.fetch();
@@ -10,7 +10,7 @@ async function accountPage(page) {
     await route.fulfill({ json: config });
   });
   await page.route("https://cdn.jsdelivr.net/**", (route) => route.abort());
-  await page.addInitScript(() => {
+  await page.addInitScript((targets) => {
     const session = { user: { id: "account-a", email: "test@example.invalid" } };
     window.profileWrites = [];
     window.supabase = { createClient: () => ({
@@ -24,7 +24,7 @@ async function accountPage(page) {
       },
       from: () => ({
         select: () => ({ eq: () => ({ maybeSingle: async () => ({
-          data: { life_list: {}, targets: "Gilded Flicker", ebird_token: "PRIVATE_TOKEN", preferences: {} }
+          data: { life_list: {}, targets, ebird_token: "PRIVATE_TOKEN", preferences: {} }
         }) }) }),
         upsert: async (patch) => {
           window.profileWrites.push(patch);
@@ -32,9 +32,9 @@ async function accountPage(page) {
         }
       })
     }) };
-  });
+  }, targets);
   await page.goto("/?auth=1");
-  await expect(page.locator("#targets")).toHaveValue("Gilded Flicker");
+  await expect(page.locator("#targets")).toHaveValue(targets);
 }
 
 test("failed first reconciliation preserves a subsequent local clear on reload", async ({ page }) => {
@@ -201,3 +201,39 @@ test(`a new tab retires ${superseded ? "superseded closed-tab revisions" : "a cl
 });
 
 }
+
+
+test("a stale cross-tab cache cannot claim an unmatched dirty target", async ({ page, context }) => {
+  await accountPage(page);
+  const second = await context.newPage();
+  await accountPage(second);
+  await page.locator("#targetRows .target-row input").first().evaluate((el) => {
+    el.value = "A pending target";
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await second.evaluate(() => {
+    document.querySelector("#recentDays").value = "9";
+    window.savePreferences();
+  });
+  await page.close();
+  await second.close();
+  const reopened = await context.newPage();
+  await accountPage(reopened, "Account latest target");
+  expect(await reopened.evaluate(() => [...window.readDirtyProfileColumns()])).not.toContain("targets");
+  await expect.poll(() => reopened.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+  expect(await reopened.evaluate(() => window.profileWrites.every((patch) => !Object.hasOwn(patch, "targets")))).toBe(true);
+});
+
+test("sign-out from a shared trip does not persist the sender's locked fields", async ({ page }) => {
+  await accountPage(page);
+  await page.evaluate(() => {
+    window.applySharedSearch({ mode: "route", origin: "SenderOrigin", destination: "SenderDestination", targets: "SenderTarget" });
+  });
+  await expect(page.locator("#targets")).toHaveValue("SenderTarget");
+  await page.evaluate(() => window.birdtripAuth.signOut());
+  await expect(page.locator("#targets")).toHaveValue("SenderTarget");
+  const prefs = await page.evaluate(() => JSON.parse(localStorage.getItem("routeBirdingPrefs")));
+  expect(prefs.targets).toBe("");
+  expect(prefs.origin).not.toBe("SenderOrigin");
+  expect(prefs.destination).not.toBe("SenderDestination");
+});

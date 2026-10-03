@@ -701,10 +701,14 @@ function readStoredPrefs() {
   }
 }
 
-function savePreferences() {
+function savePreferences({ clearUserData = false } = {}) {
+  const previous = readStoredPrefs();
   const payload = {};
-  for (const field of PREF_FIELDS) payload[field] = els[field].value;
-  payload.searchMode = state.mode;
+  for (const field of PREF_FIELDS) {
+    payload[field] = sharedFieldLocks.has(field) ? (previous?.[field] || "") : els[field].value;
+  }
+  if (clearUserData) payload.targets = "";
+  payload.searchMode = sharedFieldLocks.size ? (previous?.searchMode || "route") : state.mode;
   const remember = els.rememberToken.checked;
   payload.rememberToken = remember;
   if (remember) payload.apiToken = els.apiToken.value;
@@ -720,7 +724,6 @@ function savePreferences() {
   // Diff against the cache this save overwrites: with no account baseline
   // yet, it is the only record of which profile columns this save touched.
   // No prior cache means nothing to compare, so every column counts.
-  const previous = readStoredPrefs();
   const changedColumns = previous ? profileColumnsChangedBetween(previous, payload) : PROFILE_COLUMNS;
   try {
     localStorage.setItem("routeBirdingPrefs", JSON.stringify(payload));
@@ -808,6 +811,7 @@ function parseDirtyColumns(raw) {
 
 function readDirtyProfileColumns() {
   const columns = new Set();
+  const full = buildProfilePatch();
   try {
     for (const column of parseDirtyColumns(localStorage.getItem(PROFILE_DIRTY_KEY))) columns.add(column);
     for (let index = 0; index < localStorage.length; index += 1) {
@@ -816,7 +820,11 @@ function readDirtyProfileColumns() {
       const raw = localStorage.getItem(key);
       const record = JSON.parse(raw || "null");
       if (record?.revision && localStorage.getItem(`${PROFILE_DIRTY_ACK_PREFIX}${record.revision}`)) continue;
-      for (const column of parseDirtyColumns(raw)) columns.add(column);
+      for (const column of parseDirtyColumns(raw)) {
+        // Another tab may have replaced the whole browser cache with stale
+        // values. Its snapshot cannot claim an unmatched pending value.
+        if (!record?.values || record.values[column] === stableStringify(full[column])) columns.add(column);
+      }
     }
   } catch { /* storage unavailable */ }
   return columns;
@@ -1272,7 +1280,7 @@ function wipeLocalUserData() {
   updateSetupStatus();
   // Persist the cleared state to localStorage immediately.
   suppressProfileUpsert = true;
-  try { savePreferences(); } finally { suppressProfileUpsert = false; }
+  try { savePreferences({ clearUserData: true }); } finally { suppressProfileUpsert = false; }
 }
 
 // The session dropped without the user asking for it (failed token refresh or
