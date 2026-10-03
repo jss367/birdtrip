@@ -26,10 +26,15 @@ async function accountPage(page, targets = "Gilded Flicker") {
         select: () => ({ eq: () => ({ maybeSingle: async () => ({
           data: { life_list: {}, targets, ebird_token: "PRIVATE_TOKEN", preferences: {} }
         }) }) }),
-        upsert: async (patch) => {
+        upsert: (patch) => {
+          window.profileWrites.push(patch);
+          const result = { error: { message: "offline" } };
+          return { ...result, select: async () => result };
+        },
+        update: (patch) => ({ eq: () => ({ eq: () => ({ select: async () => {
           window.profileWrites.push(patch);
           return { error: { message: "offline" } };
-        }
+        } }) }) })
       })
     }) };
   }, targets);
@@ -75,7 +80,8 @@ test("refresh in a second tab cannot consume explicit sign-out intent", async ({
   });
   await expect(second.locator("#apiToken")).toHaveValue("");
   await expect(second.locator("#targets")).toHaveValue("");
-  expect(await second.evaluate(() => localStorage.getItem("routeBirdingApiToken"))).toBeNull();
+  expect(await second.evaluate(() => JSON.parse(localStorage.getItem("routeBirdingPrefs") || "{}").apiToken)).toBeUndefined();
+  expect(await second.evaluate(() => sessionStorage.getItem("birdtripEbirdApiToken"))).toBeNull();
 });
 
 
@@ -191,7 +197,8 @@ test(`a new tab retires ${superseded ? "superseded closed-tab revisions" : "a cl
         select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: {
           targets: "Gilded Flicker", ebird_token: "PRIVATE_TOKEN", life_list: {}, preferences: {}
         } }) }) }),
-        upsert: async () => ({})
+        upsert: () => ({ select: async () => ({ data: [{ user_id: "account-a" }] }) }),
+        update: () => ({ eq: () => ({ eq: () => ({ select: async () => ({ data: [{ user_id: "account-a" }] }) }) }) })
       })
     }) };
   });
@@ -383,4 +390,63 @@ test("a live preference write merges newer remote keys before upserting", async 
   });
   await expect.poll(() => page.evaluate(() => window.liveWrite?.preferences?.recentDays)).toBe("9");
   expect(await page.evaluate(() => window.liveWrite.preferences.maxStops)).toBe("18");
+});
+
+
+test("concurrent preference writes retry atomically without losing either edit", async ({ page, context }) => {
+  await accountPage(page);
+  const second = await context.newPage();
+  await accountPage(second);
+  for (const tab of [page, second]) {
+    await expect.poll(() => tab.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+    await tab.evaluate(async () => {
+      const original = window.birdtripAuth.upsertProfile;
+      window.birdtripAuth.upsertProfile = async () => ({ ok: true });
+      await window.flushProfileUpsert();
+      window.birdtripAuth.upsertProfile = original;
+    });
+  }
+  let account = await page.evaluate(() => window.buildProfilePatch());
+  let initialReads = 0;
+  let releaseReads;
+  const bothReadOldState = new Promise((resolve) => { releaseReads = resolve; });
+  let conflicts = 0;
+  await context.route("**/test-profile-cas", async (route) => {
+    const request = route.request();
+    if (request.method() === "GET") {
+      const snapshot = JSON.parse(JSON.stringify(account));
+      initialReads += 1;
+      if (initialReads <= 2) {
+        if (initialReads === 2) releaseReads();
+        await bothReadOldState;
+      }
+      await route.fulfill({ json: { data: snapshot } });
+    } else {
+      const { patch, expected } = request.postDataJSON();
+      // Simulate the database predicate+update as one synchronous operation.
+      if (JSON.stringify(expected) !== JSON.stringify(account.preferences)) {
+        conflicts += 1;
+        await route.fulfill({ json: { data: [] } });
+      } else {
+        account = { ...account, ...patch };
+        await route.fulfill({ json: { data: [{ user_id: "account-a" }] } });
+      }
+    }
+  });
+  for (const tab of [page, second]) {
+    await tab.evaluate(() => {
+      window.birdtripAuth.client.from = () => ({
+        select: () => ({ eq: () => ({ maybeSingle: async () => (await fetch("/test-profile-cas")).json() }) }),
+        update: (patch) => ({ eq: () => ({ eq: (_key, expected) => ({ select: async () =>
+          (await fetch("/test-profile-cas", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ patch, expected: JSON.parse(expected) }) })).json()
+        }) }) })
+      });
+    });
+  }
+  await page.evaluate(() => { document.querySelector("#recentDays").value = "9"; window.savePreferences(); });
+  await second.evaluate(() => { document.querySelector("#maxStops").value = "18"; window.savePreferences(); });
+  await expect.poll(() => ({ recentDays: account.preferences.recentDays, maxStops: account.preferences.maxStops, reads: initialReads, conflicts })).toMatchObject({ recentDays: "9", maxStops: "18" });
+  await expect.poll(() => account.preferences.maxStops).toBe("18");
+  expect(conflicts).toBe(1);
+  expect(initialReads).toBe(3);
 });

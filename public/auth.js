@@ -190,20 +190,34 @@
     }
   };
 
-  auth.upsertProfile = async function upsertProfile(patch) {
+  auth.upsertProfile = async function upsertProfile(patch, writeGuard = null) {
     if (!auth.client || !auth.user) return { ok: false, reason: "not-signed-in" };
     const payload = { user_id: auth.user.id, ...patch };
     try {
-      const { error } = await auth.client
-        .from("profiles")
-        // defaultToNull:false: if a partial payload ever has to insert (row
-        // missing), omitted columns fall back to the database defaults
-        // instead of null, so the NOT NULL constraints can't be violated.
-        .upsert(payload, { onConflict: "user_id", defaultToNull: false });
+      let response;
+      if (writeGuard) {
+        if (writeGuard.insertOnly) {
+          // Never replace a row created by a peer after our missing-row read.
+          response = await auth.client.from("profiles")
+            .upsert(payload, { onConflict: "user_id", ignoreDuplicates: true, defaultToNull: false })
+            .select("user_id");
+        } else {
+          // Postgres evaluates the JSONB predicate and update atomically.
+          response = await auth.client.from("profiles").update(patch)
+            .eq("user_id", auth.user.id)
+            .eq("preferences", JSON.stringify(writeGuard.expectedPreferences))
+            .select("user_id");
+        }
+      } else {
+        response = await auth.client.from("profiles")
+          .upsert(payload, { onConflict: "user_id", defaultToNull: false });
+      }
+      const { error, data } = response;
       if (error) {
         console.warn("Profile upsert failed:", error.message);
         return { ok: false, reason: error.message };
       }
+      if (writeGuard && (!Array.isArray(data) || data.length === 0)) return { ok: false, reason: "conflict" };
       return { ok: true };
     } catch (err) {
       console.warn("Profile upsert threw:", err && err.message);

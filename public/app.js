@@ -701,6 +701,10 @@ function readStoredPrefs() {
   }
 }
 
+// A peer can replace the shared cache between this document's saves. Compare
+// settings with this document's own previous values to identify real edits.
+let lastDocumentPreferences = null;
+
 function savePreferences({ clearUserData = false } = {}) {
   const previous = readStoredPrefs();
   const payload = {};
@@ -739,9 +743,10 @@ function savePreferences({ clearUserData = false } = {}) {
     addWarning("The imported life list was too large to save in this browser, but it will work until the page is refreshed.");
     renderWarnings();
   }
-  const beforePreferences = previous ? profileColumnsFromPrefs(previous).preferences : {};
+  const beforePreferences = lastDocumentPreferences ?? (previous ? profileColumnsFromPrefs(previous).preferences : {});
   const afterPreferences = profileColumnsFromPrefs(payload).preferences;
   const preferenceKeys = Object.keys(afterPreferences).filter((key) => afterPreferences[key] !== beforePreferences[key]);
+  lastDocumentPreferences = afterPreferences;
   queueProfileUpsert(changedColumns, preferenceKeys);
 }
 
@@ -1239,30 +1244,29 @@ async function flushProfileUpsert() {
   // the required columns to database defaults the client can't guarantee).
   const patch = profileRowExists ? changed : full;
   const userIdAtStart = window.birdtripAuth.user.id;
-  if (Object.hasOwn(patch, "preferences")) {
-    // JSONB upserts replace the whole object. Refresh untouched settings so
-    // a stale live device cannot overwrite another device's recent edits.
-    const dirtyKeysAtStart = readDirtyPreferenceKeys();
-    const currentAccount = await window.birdtripAuth.getProfile();
-    if (window.birdtripAuth?.user?.id !== userIdAtStart) return;
-    if (!currentAccount) {
-      reportProfileUpsertFailure();
-      return; // retain pending records for retry instead of writing stale JSON
-    }
-    const currentPreferences = normalizeProfileColumns(currentAccount).preferences;
-    patch.preferences = { ...currentPreferences };
-    for (const key of dirtyKeysAtStart) {
-      if (Object.hasOwn(full.preferences, key)) patch.preferences[key] = full.preferences[key];
-      else delete patch.preferences[key];
-    }
-  }
+  const writesPreferences = Object.hasOwn(patch, "preferences");
+  const dirtyKeysAtStart = writesPreferences ? readDirtyPreferenceKeys() : new Set();
   let result = null;
-  try {
-    result = await window.birdtripAuth.upsertProfile(patch);
-  } catch {
-    // upsertProfile catches internally; this guards anything unexpected so
-    // the failure warning below still fires instead of an unhandled rejection.
-    result = null;
+  // Retry bounded optimistic conflicts; exhaustion leaves the edit pending.
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    let writeGuard = null;
+    if (writesPreferences) {
+      const currentAccount = await window.birdtripAuth.getProfile();
+      if (window.birdtripAuth?.user?.id !== userIdAtStart) return;
+      if (!currentAccount) break;
+      const currentPreferences = normalizeProfileColumns(currentAccount).preferences;
+      patch.preferences = { ...currentPreferences };
+      for (const key of dirtyKeysAtStart) {
+        if (Object.hasOwn(full.preferences, key)) patch.preferences[key] = full.preferences[key];
+        else delete patch.preferences[key];
+      }
+      writeGuard = { expectedPreferences: currentPreferences, insertOnly: currentAccount.row_exists !== true };
+    }
+    try {
+      result = await window.birdtripAuth.upsertProfile(patch, writeGuard);
+    } catch { result = null; }
+    if (window.birdtripAuth?.user?.id !== userIdAtStart) return;
+    if (result?.reason !== "conflict") break;
   }
   // A completed write for the previous user cannot become this account
   // baseline or commit its pending reconciliation marker.
