@@ -1432,11 +1432,14 @@ if (require.main === module) {
     // Bound draining below Docker's five-second stop grace period. Closing
     // active HTTP connections lets server.close finish and releases the pool.
     const drainTimer = setTimeout(() => server.closeAllConnections?.(), SHUTDOWN_DRAIN_MS).unref();
+    // Start pool shutdown immediately, so no request or background sweep
+    // can acquire new database work during the HTTP drain. Bound active
+    // query sockets to the same deadline instead of waiting ten seconds.
+    const storeClosed = Promise.resolve(tripStore?.close?.({ forceAfterMs: SHUTDOWN_DRAIN_MS }))
+      .catch((error) => console.error(`[trips] closing database pool failed: ${error.message}`));
     server.close(() => {
       clearTimeout(drainTimer);
-      Promise.resolve()
-        .then(() => tripStore?.close?.())
-        .catch((error) => console.error(`[trips] closing database pool failed: ${error.message}`))
+      storeClosed
         .finally(() => process.exit(0));
     });
     server.closeIdleConnections?.();
