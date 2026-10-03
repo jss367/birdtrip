@@ -57,6 +57,12 @@ Live bird data uses the eBird API. Either:
 
 You can also import an eBird or iNaturalist CSV/TSV life list in the app. Imported common names, scientific names, and eBird species codes stay in the browser and highlight recent reports of species not on your list.
 
+## Sign-In (Optional)
+
+Signed-in users (Google) get their life list, target species, eBird API token, and search preferences remembered across browsers and devices. Sign-in is optional; anonymous use is unchanged.
+
+The feature is currently behind a `?auth=1` query-string flag while it's validated. Enable Supabase by setting `SUPABASE_URL` and `SUPABASE_ANON_KEY` (see `db/migrations/0001_profiles.sql` for the schema and `docs/plans/2026-05-23-user-accounts-design.md` for the design).
+
 OpenStreetMap mode uses public Nominatim and OSRM demo endpoints for geocoding and routing. That is fine for local experimentation, but a production deployment should use services with explicit quotas.
 
 ## Server safeguards

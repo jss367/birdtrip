@@ -1,0 +1,718 @@
+const { test, expect } = require("@playwright/test");
+const { stubApis } = require("./fixtures");
+
+async function accountPage(page, targets = "Gilded Flicker", holdSession = false) {
+  await stubApis(page);
+  await page.route("**/api/config", async (route) => {
+    const response = await route.fetch();
+    const config = await response.json();
+    config.supabase = { enabled: true, url: "https://example.invalid", anonKey: "test" };
+    await route.fulfill({ json: config });
+  });
+  await page.route("https://cdn.jsdelivr.net/**", (route) => route.abort());
+  await page.addInitScript(({ targets, holdSession }) => {
+    const session = { user: { id: "account-a", email: "test@example.invalid" } };
+    window.profileWrites = [];
+    window.supabase = { createClient: () => ({
+      auth: {
+        getSession: () => holdSession ? new Promise((resolve) => { window.finishInitialSession = () => resolve({ data: { session } }); }) : Promise.resolve({ data: { session } }),
+        onAuthStateChange: (callback) => { window.authEvent = callback; },
+        signOut: async () => {
+          window.authEvent("SIGNED_OUT", null);
+          return {};
+        }
+      },
+      from: () => ({
+        select: () => ({ eq: () => ({ maybeSingle: async () => ({
+          data: { life_list: {}, targets, ebird_token: "PRIVATE_TOKEN", preferences: {} }
+        }) }) }),
+        upsert: (patch) => {
+          window.profileWrites.push(patch);
+          const result = { error: { message: "offline" } };
+          return { ...result, select: async () => result };
+        },
+        update: (patch) => ({ eq: () => ({ eq: () => ({ select: async () => {
+          window.profileWrites.push(patch);
+          return { error: { message: "offline" } };
+        } }) }) })
+      })
+    }) };
+  }, { targets, holdSession });
+  await page.goto("/?auth=1");
+  await expect(page.locator("#targets")).toHaveValue(targets);
+}
+
+test("failed first reconciliation preserves a subsequent local clear on reload", async ({ page }) => {
+  // A first merge has a local account preference to write back, so it really fails
+  // rather than committing the sync marker through a no-change diff.
+  await page.addInitScript(() => {
+    if (!localStorage.getItem("testSeeded")) {
+      localStorage.setItem("routeBirdingPrefs", JSON.stringify({ maxStops: "12" }));
+      localStorage.setItem("testSeeded", "1");
+    }
+  });
+  await accountPage(page);
+  await expect.poll(() => page.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+  expect(await page.evaluate(() => localStorage.getItem("routeBirdingSyncedUser"))).toBeNull();
+  await page.locator("#targetRows .target-row input").first().evaluate((el) => {
+    el.value = "";
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await expect.poll(() => page.evaluate(() => [...window.readDirtyProfileColumns()])).toContain("targets");
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => window.birdtripAuth?.user?.id)).toBe("account-a");
+  await expect.poll(() => page.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+  await expect(page.locator("#targets")).toHaveValue("");
+  expect(await page.evaluate(() => window.profileWrites.at(-1).targets)).toBe("");
+});
+
+test("refresh in a second tab cannot consume explicit sign-out intent", async ({ page, context }) => {
+  await accountPage(page);
+  const second = await context.newPage();
+  await accountPage(second);
+  await page.evaluate(() => window.birdtripAuth.signOut());
+  await second.evaluate(() => {
+    // Supabase delivers refresh before the sign-out broadcast to this tab.
+    window.authEvent("TOKEN_REFRESHED", { user: { id: "account-a" } });
+    window.authEvent("SIGNED_IN", { user: { id: "account-a" } });
+    window.authEvent("SIGNED_OUT", null);
+  });
+  await expect(second.locator("#apiToken")).toHaveValue("");
+  await expect(second.locator("#targets")).toHaveValue("");
+  expect(await second.evaluate(() => JSON.parse(localStorage.getItem("routeBirdingPrefs") || "{}").apiToken)).toBeUndefined();
+  expect(await second.evaluate(() => sessionStorage.getItem("birdtripEbirdApiToken"))).toBeNull();
+});
+
+
+test("account switch waits for an old fetch then hydrates the current user", async ({ page }) => {
+  await accountPage(page);
+  await page.evaluate(() => {
+    const auth = window.birdtripAuth;
+    auth.getProfile = () => new Promise((resolve) => { window.finishOldProfile = resolve; });
+    // Start an A reconciliation and hold its fetch.
+    window.runMergeAndHydrate();
+  });
+  await expect.poll(() => page.evaluate(() => typeof window.finishOldProfile)).toBe("function");
+  await page.evaluate(() => {
+    window.authEvent("SIGNED_IN", { user: { id: "account-b" } });
+    window.birdtripAuth.getProfile = async () => ({ targets: "B target", ebird_token: "B_TOKEN", life_list: {}, preferences: {}, row_exists: true });
+  });
+  // Prior account fields are removed without waiting for its slow fetch.
+  await expect(page.locator("#apiToken")).toHaveValue("");
+  await page.evaluate(() => window.finishOldProfile({ targets: "A stale target", ebird_token: "A_TOKEN", life_list: {}, preferences: {} }));
+  await expect(page.locator("#targets")).toHaveValue("B target");
+  await expect(page.locator("#apiToken")).toHaveValue("B_TOKEN");
+});
+
+test("account switch cancels the old merge dialog and hydrates the current user", async ({ page }) => {
+  await accountPage(page);
+  await page.evaluate(() => {
+    window.birdtripAuth.getProfile = async () => ({ targets: "Conflicting A", ebird_token: "PRIVATE_TOKEN", life_list: {}, preferences: {}, row_exists: true });
+    localStorage.removeItem("routeBirdingSyncedUser");
+    localStorage.removeItem("routeBirdingRetainedOwner");
+    window.markProfileDirty(["targets"]);
+    window.runMergeAndHydrate();
+  });
+  await expect(page.locator("#authMergeModal")).toBeVisible();
+  await page.evaluate(() => {
+    window.birdtripAuth.getProfile = async () => ({ targets: "B target", ebird_token: "B_TOKEN", life_list: {}, preferences: {}, row_exists: true });
+    window.authEvent("SIGNED_IN", { user: { id: "account-b" } });
+  });
+  await expect(page.locator("#authMergeModal")).toBeHidden();
+  await expect(page.locator("#targets")).toHaveValue("B target");
+  await expect(page.locator("#apiToken")).toHaveValue("B_TOKEN");
+});
+
+
+test("successful search and saved-trip rewrites retain the auth opt-in", async ({ page }) => {
+  await accountPage(page);
+  await page.evaluate(() => {
+    window.replaceHistoryUrl(window.buildShareUrl({ autoRun: true }).toString());
+  });
+  expect(new URL(page.url()).searchParams.get("auth")).toBe("1");
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => window.birdtripAuth?.enabled)).toBe(true);
+  await page.evaluate(() => window.replaceHistoryUrl("/?bt=1&origin=Saved"));
+  expect(new URL(page.url()).searchParams.get("auth")).toBe("1");
+});
+
+test("another tab's successful flush preserves a debouncing edit through reload", async ({ page, context }) => {
+  await accountPage(page);
+  const second = await context.newPage();
+  await accountPage(second);
+  await page.evaluate(() => {
+    window.birdtripAuth.upsertProfile = () => new Promise((resolve) => { window.completeWrite = resolve; });
+    document.querySelector("#targetRows .target-row input").value = "A edit";
+    window.syncTargetsFromRows();
+  });
+  await expect.poll(() => page.evaluate(() => typeof window.completeWrite)).toBe("function");
+  await second.locator("#targetRows .target-row input").first().evaluate((el) => {
+    el.value = "";
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.evaluate(() => window.completeWrite({ ok: true }));
+  expect(await second.evaluate(() => [...window.readDirtyProfileColumns()])).toContain("targets");
+  await second.reload();
+  await expect.poll(() => second.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+  await expect(second.locator("#targets")).toHaveValue("");
+  expect(await second.evaluate(() => window.profileWrites.at(-1).targets)).toBe("");
+});
+
+
+for (const superseded of [false, true]) {
+test(`a new tab retires ${superseded ? "superseded closed-tab revisions" : "a closed tab dirty revision"} after reconciliation`, async ({ page, context }) => {
+  await accountPage(page);
+  const latest = superseded ? await context.newPage() : page;
+  if (superseded) {
+    await accountPage(latest);
+    await page.locator("#targetRows .target-row input").first().evaluate((el) => {
+      el.value = "Earlier orphan target";
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+  await latest.locator("#targetRows .target-row input").first().evaluate((el) => {
+    el.value = "";
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.close(); // sessionStorage ownership disappears with the tab.
+  if (superseded) await latest.close();
+  const reopened = await context.newPage();
+  // Mock the same account, then allow this reconciliation's write to succeed.
+  await stubApis(reopened);
+  await reopened.route("**/api/config", async (route) => {
+    const response = await route.fetch();
+    const config = await response.json();
+    config.supabase = { enabled: true, url: "https://example.invalid", anonKey: "test" };
+    await route.fulfill({ json: config });
+  });
+  await reopened.route("https://cdn.jsdelivr.net/**", (route) => route.abort());
+  await reopened.addInitScript(() => {
+    window.supabase = { createClient: () => ({
+      auth: {
+        getSession: async () => ({ data: { session: { user: { id: "account-a" } } } }),
+        onAuthStateChange: () => {}
+      },
+      from: () => ({
+        select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: {
+          targets: "Gilded Flicker", ebird_token: "PRIVATE_TOKEN", life_list: {}, preferences: {}
+        } }) }) }),
+        upsert: () => ({ select: async () => ({ data: [{ user_id: "account-a" }] }) }),
+        update: () => ({ eq: () => ({ eq: () => ({ select: async () => ({ data: [{ user_id: "account-a" }] }) }) }) })
+      })
+    }) };
+  });
+  await reopened.goto("/?auth=1");
+  await expect(reopened.locator("#targets")).toHaveValue("");
+  await expect.poll(() => reopened.evaluate(() => [...window.readDirtyProfileColumns()])).toEqual([]);
+  expect(await reopened.evaluate(() => Object.keys(localStorage).filter((key) => key.startsWith("routeBirdingProfileDirty:")))).toEqual([]);
+  await reopened.reload();
+  // Once the pending clear is confirmed, a later remote update wins normally.
+  await expect(reopened.locator("#targets")).toHaveValue("Gilded Flicker");
+});
+
+}
+
+
+test("a stale cross-tab cache cannot claim an unmatched dirty target", async ({ page, context }) => {
+  await accountPage(page);
+  const second = await context.newPage();
+  await accountPage(second);
+  await page.locator("#targetRows .target-row input").first().evaluate((el) => {
+    el.value = "A pending target";
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await second.evaluate(() => {
+    document.querySelector("#recentDays").value = "9";
+    window.savePreferences();
+  });
+  await page.close();
+  await second.close();
+  const reopened = await context.newPage();
+  await accountPage(reopened, "Account latest target");
+  expect(await reopened.evaluate(() => [...window.readDirtyProfileColumns()])).not.toContain("targets");
+  await expect.poll(() => reopened.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+  expect(await reopened.evaluate(() => window.profileWrites.every((patch) => !Object.hasOwn(patch, "targets")))).toBe(true);
+});
+
+test("sign-out from a shared trip does not persist the sender's locked fields", async ({ page }) => {
+  await accountPage(page);
+  await page.evaluate(() => {
+    window.applySharedSearch({ mode: "route", origin: "SenderOrigin", destination: "SenderDestination", targets: "SenderTarget" });
+  });
+  await expect(page.locator("#targets")).toHaveValue("SenderTarget");
+  await page.evaluate(() => window.birdtripAuth.signOut());
+  await expect(page.locator("#targets")).toHaveValue("SenderTarget");
+  const prefs = await page.evaluate(() => JSON.parse(localStorage.getItem("routeBirdingPrefs")));
+  expect(prefs.targets).toBe("");
+  expect(prefs.origin).not.toBe("SenderOrigin");
+  expect(prefs.destination).not.toBe("SenderDestination");
+});
+
+
+test("an explicit mode choice on a shared page persists without adopting its fields", async ({ page }) => {
+  await accountPage(page);
+  await page.evaluate(() => window.applySharedSearch({ mode: "route", origin: "SenderOrigin", targets: "SenderTarget" }));
+  await page.locator("#areaModeButton").click();
+  const prefs = await page.evaluate(() => JSON.parse(localStorage.getItem("routeBirdingPrefs")));
+  expect(prefs.searchMode).toBe("area");
+  expect(prefs.origin).not.toBe("SenderOrigin");
+  expect(prefs.targets).not.toBe("SenderTarget");
+});
+
+
+test("a partly represented orphan revision retires after reconciliation", async ({ page, context }) => {
+  await accountPage(page);
+  await page.evaluate(() => {
+    document.querySelector("#targets").value = "Pending target";
+    document.querySelector("#recentDays").value = "9";
+    window.savePreferences();
+    // A later stale cache save preserves the target but restores preferences.
+    const prefs = JSON.parse(localStorage.getItem("routeBirdingPrefs"));
+    prefs.recentDays = "7";
+    localStorage.setItem("routeBirdingPrefs", JSON.stringify(prefs));
+  });
+  await page.close();
+  const reopened = await context.newPage();
+  await accountPage(reopened, "Pending target");
+  await reopened.evaluate(async () => {
+    window.birdtripAuth.upsertProfile = async () => ({ ok: true });
+    await window.runMergeAndHydrate();
+    await window.flushProfileUpsert();
+  });
+  await expect.poll(() => reopened.evaluate(() => [...window.readDirtyProfileColumns()])).toEqual([]);
+  await reopened.reload();
+  await expect(reopened.locator("#targets")).toHaveValue("Pending target");
+});
+
+test("OAuth restoration retires old sign-out intent without wiping a later refresh loss", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("routeBirdingExplicitSignOut", "1");
+    sessionStorage.setItem("routeBirdingOAuthPending", "1");
+  });
+  await accountPage(page);
+  expect(await page.evaluate(() => localStorage.getItem("routeBirdingExplicitSignOut"))).toBeNull();
+  await page.evaluate(() => window.authEvent("SIGNED_OUT", null));
+  await expect(page.locator("#targets")).toHaveValue("Gilded Flicker");
+  await expect(page.locator("#apiToken")).toHaveValue("PRIVATE_TOKEN");
+});
+
+
+test("reconciliation preserves a live peer's unmatched pending preference", async ({ page, context }) => {
+  await accountPage(page);
+  await page.evaluate(() => {
+    window.birdtripAuth.upsertProfile = () => new Promise((resolve) => { window.finishPeerWrite = resolve; });
+    document.querySelector("#targets").value = "Pending target";
+    document.querySelector("#recentDays").value = "9";
+    window.savePreferences();
+    window.peerDirtyKey = Object.keys(localStorage).find((key) => key.startsWith("routeBirdingProfileDirty:"));
+    window.peerDirtyRaw = localStorage.getItem(window.peerDirtyKey);
+  });
+  await expect.poll(() => page.evaluate(() => typeof window.finishPeerWrite)).toBe("function");
+  // Deterministically simulate a stale whole-cache save while the owner is
+  // still live and its network write remains held.
+  await page.evaluate(() => {
+    const prefs = JSON.parse(localStorage.getItem("routeBirdingPrefs"));
+    prefs.recentDays = "7";
+    localStorage.setItem("routeBirdingPrefs", JSON.stringify(prefs));
+  });
+  const reconciler = await context.newPage();
+  await accountPage(reconciler, "Pending target");
+  await reconciler.evaluate(async () => {
+    window.birdtripAuth.upsertProfile = async () => ({ ok: true });
+    await window.runMergeAndHydrate();
+    await window.flushProfileUpsert();
+  });
+  expect(await page.evaluate(() => localStorage.getItem(window.peerDirtyKey))).toBe(await page.evaluate(() => window.peerDirtyRaw));
+  expect(await page.evaluate(() => localStorage.getItem(`routeBirdingProfileDirtyAck:${JSON.parse(window.peerDirtyRaw).revision}`))).toBeNull();
+  // Failed owner writes leave the exact record pending; a later successful
+  // owner retry confirms its preference rather than a peer clearing it.
+  await page.evaluate(() => window.finishPeerWrite({ ok: false }));
+  await page.evaluate(async () => {
+    window.birdtripAuth.upsertProfile = async (patch) => { window.retryPatch = patch; return { ok: true }; };
+    await window.flushProfileUpsert();
+  });
+  expect(await page.evaluate(() => window.retryPatch.preferences.recentDays)).toBe("9");
+  expect(await page.evaluate(() => localStorage.getItem(window.peerDirtyKey))).toBeNull();
+});
+
+
+test("a pending preference does not overwrite a newer remote setting on reload", async ({ page }) => {
+  await accountPage(page);
+  await expect.poll(() => page.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+  await page.evaluate(async () => {
+    window.birdtripAuth.upsertProfile = async () => ({ ok: true });
+    await window.flushProfileUpsert();
+  });
+  expect(await page.evaluate(() => [...window.readDirtyProfileColumns()])).toEqual([]);
+  await page.evaluate(() => {
+    document.querySelector("#recentDays").value = "9";
+    window.savePreferences();
+  });
+  await page.addInitScript(() => {
+    const createClient = window.supabase.createClient;
+    window.supabase.createClient = (...args) => {
+      const client = createClient(...args);
+      const from = client.from;
+      client.from = (...table) => {
+        const query = from(...table);
+        query.select = () => ({ eq: () => ({ maybeSingle: async () => ({ data: {
+          life_list: {}, targets: "Gilded Flicker", ebird_token: "PRIVATE_TOKEN",
+          preferences: { recentDays: "7", maxStops: "18" }
+        } }) }) });
+        return query;
+      };
+      return client;
+    };
+  });
+  await page.reload();
+  await expect(page.locator("#recentDays")).toHaveValue("9");
+  await expect(page.locator("#maxStops")).toHaveValue("18");
+  await expect.poll(() => page.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+  const written = await page.evaluate(() => window.profileWrites.at(-1).preferences);
+  expect(written.recentDays).toBe("9");
+  expect(written.maxStops).toBe("18");
+});
+
+
+test("a live preference write merges newer remote keys before upserting", async ({ page }) => {
+  await accountPage(page);
+  await expect.poll(() => page.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+  await page.evaluate(async () => {
+    window.birdtripAuth.upsertProfile = async () => ({ ok: true });
+    await window.flushProfileUpsert();
+    // Another device changes only maxStops after this tab hydrated.
+    const current = window.buildProfilePatch();
+    window.birdtripAuth.getProfile = async () => ({ ...current, preferences: { ...current.preferences, maxStops: "18" }, row_exists: true });
+    window.birdtripAuth.upsertProfile = async (patch) => { window.liveWrite = patch; return { ok: true }; };
+    document.querySelector("#recentDays").value = "9";
+    window.savePreferences();
+  });
+  await expect.poll(() => page.evaluate(() => window.liveWrite?.preferences?.recentDays)).toBe("9");
+  expect(await page.evaluate(() => window.liveWrite.preferences.maxStops)).toBe("18");
+});
+
+
+test("concurrent preference writes retry atomically without losing either edit", async ({ page, context }) => {
+  await accountPage(page);
+  const second = await context.newPage();
+  await accountPage(second);
+  for (const tab of [page, second]) {
+    await expect.poll(() => tab.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+    await tab.evaluate(async () => {
+      const original = window.birdtripAuth.upsertProfile;
+      window.birdtripAuth.upsertProfile = async () => ({ ok: true });
+      await window.flushProfileUpsert();
+      window.birdtripAuth.upsertProfile = original;
+    });
+  }
+  let account = await page.evaluate(() => window.buildProfilePatch());
+  let initialReads = 0;
+  let releaseReads;
+  const bothReadOldState = new Promise((resolve) => { releaseReads = resolve; });
+  let conflicts = 0;
+  await context.route("**/test-profile-cas", async (route) => {
+    const request = route.request();
+    if (request.method() === "GET") {
+      const snapshot = JSON.parse(JSON.stringify(account));
+      initialReads += 1;
+      if (initialReads <= 2) {
+        if (initialReads === 2) releaseReads();
+        await bothReadOldState;
+      }
+      await route.fulfill({ json: { data: snapshot } });
+    } else {
+      const { patch, expected } = request.postDataJSON();
+      // Simulate the database predicate+update as one synchronous operation.
+      if (JSON.stringify(expected) !== JSON.stringify(account.preferences)) {
+        conflicts += 1;
+        await route.fulfill({ json: { data: [] } });
+      } else {
+        account = { ...account, ...patch };
+        await route.fulfill({ json: { data: [{ user_id: "account-a" }] } });
+      }
+    }
+  });
+  for (const tab of [page, second]) {
+    await tab.evaluate(() => {
+      window.birdtripAuth.client.from = () => ({
+        select: () => ({ eq: () => ({ maybeSingle: async () => (await fetch("/test-profile-cas")).json() }) }),
+        update: (patch) => ({ eq: () => ({ eq: (_key, expected) => ({ select: async () =>
+          (await fetch("/test-profile-cas", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ patch, expected: JSON.parse(expected) }) })).json()
+        }) }) })
+      });
+    });
+  }
+  await page.evaluate(() => { document.querySelector("#recentDays").value = "9"; window.savePreferences(); });
+  await second.evaluate(() => { document.querySelector("#maxStops").value = "18"; window.savePreferences(); });
+  await expect.poll(() => ({ recentDays: account.preferences.recentDays, maxStops: account.preferences.maxStops, reads: initialReads, conflicts })).toMatchObject({ recentDays: "9", maxStops: "18" });
+  await expect.poll(() => account.preferences.maxStops).toBe("18");
+  expect(conflicts).toBe(1);
+  expect(initialReads).toBe(3);
+});
+
+
+test("a creation conflict reconciles the winning row before any update", async ({ page }) => {
+  await accountPage(page);
+  await expect.poll(() => page.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+  await page.evaluate(async () => {
+    window.clearStateOnSignOut();
+    const empty = { life_list: {}, targets: "", ebird_token: null, preferences: {}, row_exists: false };
+    let created = false;
+    window.winner = { life_list: { species: ["Gilded Flicker"] }, targets: "Winner target", ebird_token: "WINNER_TOKEN", preferences: { recentDays: "14", maxStops: "18" }, row_exists: true };
+    window.writesAfterConflict = [];
+    window.birdtripAuth.getProfile = async () => created ? window.winner : empty;
+    window.birdtripAuth.upsertProfile = async (patch, guard) => {
+      if (guard?.insertOnly) { created = true; return { ok: false, reason: "conflict" }; }
+      window.writesAfterConflict.push(patch);
+      window.winner = { ...window.winner, ...patch };
+      return { ok: true };
+    };
+    document.querySelector("#recentDays").value = "9";
+    window.savePreferences();
+    await window.runMergeAndHydrate();
+  });
+  await expect(page.locator("#targets")).toHaveValue("Winner target");
+  await expect(page.locator("#apiToken")).toHaveValue("WINNER_TOKEN");
+  await expect.poll(() => page.evaluate(() => window.writesAfterConflict.length)).toBeGreaterThan(0);
+  const winner = await page.evaluate(() => window.winner);
+  expect(winner.targets).toBe("Winner target");
+  expect(winner.ebird_token).toBe("WINNER_TOKEN");
+  expect(winner.life_list.species.map((name) => name.toLowerCase())).toEqual(["gilded flicker"]);
+  expect(winner.preferences.recentDays).toBe("9");
+  expect(winner.preferences.maxStops).toBe("18");
+});
+
+test("account preferences exclude private trip inputs on write and hydration", async ({ page }) => {
+  await accountPage(page);
+  await expect.poll(() => page.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+  await page.evaluate(async () => {
+    window.birdtripAuth.upsertProfile = async () => ({ ok: true });
+    await window.flushProfileUpsert();
+    document.querySelector("#origin").value = "Private origin";
+    document.querySelector("#destination").value = "Private destination";
+    document.querySelector("#departTime").value = "09:00";
+    document.querySelector("#speciesQuery").value = "Private species";
+    window.savePreferences();
+    const current = window.buildProfilePatch();
+    window.birdtripAuth.getProfile = async () => ({ ...current, row_exists: true, preferences: {
+      ...current.preferences, maxStops: "18", origin: "Remote origin", destination: "Remote destination", departTime: "10:00", speciesQuery: "Remote species"
+    } });
+    await window.runMergeAndHydrate();
+  });
+  await expect(page.locator("#origin")).toHaveValue("Private origin");
+  await expect(page.locator("#destination")).toHaveValue("Private destination");
+  await expect(page.locator("#departTime")).toHaveValue("09:00");
+  await expect(page.locator("#speciesQuery")).toHaveValue("Private species");
+  await expect(page.locator("#maxStops")).toHaveValue("18");
+  const keys = await page.evaluate(() => Object.keys(window.buildProfilePatch().preferences).sort());
+  expect(keys).toEqual(["mapProvider", "maxDetour", "maxStops", "radiusKm", "recentDays"]);
+  expect(await page.evaluate(() => window.profileWrites.every((patch) => !patch.preferences || Object.keys(patch.preferences).every((key) => ["mapProvider", "maxDetour", "maxStops", "radiusKm", "recentDays"].includes(key))))).toBe(true);
+});
+
+
+test("reload retires inherited records without Web Locks and protects live peers", async ({ page, context }) => {
+  await context.addInitScript(() => Object.defineProperty(navigator, "locks", { value: undefined }));
+  await accountPage(page);
+  const peer = await context.newPage();
+  await accountPage(peer);
+  await page.evaluate(() => {
+    window.birdtripAuth.upsertProfile = () => new Promise((resolve) => { window.finishFallbackWrite = resolve; });
+    document.querySelector("#recentDays").value = "9";
+    window.savePreferences();
+    window.liveFallbackKey = Object.keys(localStorage).find((key) => key.startsWith("routeBirdingProfileDirty:") && JSON.parse(localStorage.getItem(key)).values?.preferences?.includes('"recentDays":"9"'));
+  });
+  await expect.poll(() => page.evaluate(() => typeof window.finishFallbackWrite)).toBe("function");
+  await peer.evaluate(async () => {
+    window.birdtripAuth.upsertProfile = async () => ({ ok: true });
+    await window.runMergeAndHydrate();
+    await window.flushProfileUpsert();
+  });
+  expect(await page.evaluate(() => localStorage.getItem(window.liveFallbackKey))).not.toBeNull();
+  await peer.close();
+  await page.evaluate(() => window.savePreferences()); // persist the owner's current UI snapshot
+  await page.reload(); // non-persisted pagehide closes the prior document owner.
+  await expect(page.locator("#recentDays")).toHaveValue("9");
+  await expect.poll(() => page.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+  await page.evaluate(async () => {
+    window.birdtripAuth.upsertProfile = async () => ({ ok: true });
+    await window.flushProfileUpsert();
+  });
+  await expect.poll(() => page.evaluate(() => [...window.readDirtyProfileColumns()])).toEqual([]);
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => window.birdtripAuth?.user?.id)).toBe("account-a");
+  expect(await page.evaluate(() => [...window.readDirtyProfileColumns()])).toEqual([]);
+});
+
+for (const scenario of [{ auth: false, configured: true }, { auth: true, configured: false }, { auth: true, configured: true }]) {
+  test(`Supabase download requires auth=${scenario.auth} and configured=${scenario.configured}`, async ({ page }) => {
+    await stubApis(page);
+    await page.route("**/api/config", async (route) => {
+      const response = await route.fetch();
+      const config = await response.json();
+      config.supabase = { enabled: scenario.configured, url: "https://example.invalid", anonKey: "test" };
+      await route.fulfill({ json: config });
+    });
+    let downloads = 0;
+    await page.route("https://cdn.jsdelivr.net/npm/@supabase/**", (route) => { downloads += 1; return route.abort(); });
+    await page.goto(scenario.auth ? "/?auth=1" : "/");
+    await expect.poll(() => page.evaluate(() => window.birdtripAuth !== undefined)).toBe(true);
+    await page.evaluate(() => window.waitForAppConfig());
+    expect(downloads).toBe(scenario.auth && scenario.configured ? 1 : 0);
+    await expect(page.locator("#searchForm")).toBeVisible();
+  });
+}
+
+
+for (const blockAllWrites of [false, true]) {
+  test(`cloud edits still save when ${blockAllWrites ? "all local storage writes" : "the local preference cache"} fails`, async ({ page }) => {
+    await accountPage(page);
+    await expect.poll(() => page.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+    await page.evaluate(async (blockAll) => {
+      window.birdtripAuth.upsertProfile = async () => ({ ok: true });
+      await window.flushProfileUpsert();
+      const setItem = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (key, value) {
+        if (this === localStorage && (blockAll || key === "routeBirdingPrefs")) throw new Error("storage blocked");
+        return setItem.call(this, key, value);
+      };
+      window.birdtripAuth.upsertProfile = async (patch) => { window.storageFailureWrite = patch; return { ok: true }; };
+      document.querySelector("#targets").value = "Cloud target";
+      document.querySelector("#apiToken").value = "CLOUD_TOKEN";
+      document.querySelector("#rememberToken").checked = true;
+      document.querySelector("#recentDays").value = "9";
+      window.savePreferences();
+    }, blockAllWrites);
+    await expect.poll(() => page.evaluate(() => window.storageFailureWrite?.targets)).toBe("Cloud target");
+    const patch = await page.evaluate(() => window.storageFailureWrite);
+    expect(patch.ebird_token).toBe("CLOUD_TOKEN");
+    expect(patch.preferences.recentDays).toBe("9");
+    await expect.poll(() => page.evaluate(() => [...window.readDirtyProfileColumns()])).toEqual([]);
+  });
+}
+
+
+test("the first edit during auth restoration uses the document's original settings", async ({ page, context }) => {
+  await accountPage(page);
+  await expect.poll(() => page.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+  await page.evaluate(async () => {
+    window.birdtripAuth.upsertProfile = async () => ({ ok: true });
+    await window.flushProfileUpsert();
+  });
+  const restoring = await context.newPage();
+  await accountPage(restoring, "Gilded Flicker", true);
+  await expect.poll(() => restoring.evaluate(() => typeof window.finishInitialSession)).toBe("function");
+  await page.evaluate(() => { document.querySelector("#maxStops").value = "18"; window.savePreferences(); });
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("routeBirdingPrefs")).maxStops)).toBe("18");
+  const remote = await page.evaluate(() => ({ ...window.buildProfilePatch(), row_exists: true }));
+  await restoring.evaluate((remote) => {
+    window.birdtripAuth.getProfile = async () => remote;
+    document.querySelector("#recentDays").value = "9";
+    window.savePreferences();
+    window.finishInitialSession();
+  }, remote);
+  await expect(restoring.locator("#recentDays")).toHaveValue("9");
+  await expect(restoring.locator("#maxStops")).toHaveValue("18");
+  await expect.poll(() => restoring.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+  expect(await restoring.evaluate(() => window.profileWrites.at(-1).preferences.maxStops)).toBe("18");
+});
+
+test("failed cloud writes accurately warn when edits exist only in memory", async ({ page }) => {
+  await accountPage(page);
+  await expect.poll(() => page.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+  await page.evaluate(async () => {
+    window.birdtripAuth.upsertProfile = async () => ({ ok: true });
+    await window.flushProfileUpsert();
+    const setItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key, value) {
+      if (this === localStorage) throw new Error("storage blocked");
+      return setItem.call(this, key, value);
+    };
+    window.birdtripAuth.upsertProfile = async () => ({ ok: false, reason: "offline" });
+    document.querySelector("#recentDays").value = "9";
+    window.savePreferences();
+  });
+  await expect(page.locator("#warningMessage")).toContainText("Unsaved edits exist only on this page; reloading will lose them.");
+  await expect(page.locator("#warningMessage")).not.toContainText("still saved in this browser");
+  expect(await page.evaluate(() => [...window.readDirtyPreferenceKeys()])).toContain("recentDays");
+});
+
+// A stale restoring tab must not relabel another tab's deletions as its edits.
+test("startup setting edits preserve peer clears of every user-data column", async ({ page, context }) => {
+  await accountPage(page);
+  await expect.poll(() => page.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+  await page.evaluate(async () => {
+    window.birdtripAuth.upsertProfile = async () => ({ ok: true });
+    await window.flushProfileUpsert();
+    const cached = JSON.parse(localStorage.getItem("routeBirdingPrefs"));
+    cached.lifeList = { species: ["Gilded Flicker"], displayNames: ["Gilded Flicker"] };
+    localStorage.setItem("routeBirdingPrefs", JSON.stringify(cached));
+  });
+  const restoring = await context.newPage();
+  await accountPage(restoring, "Gilded Flicker", true);
+  await expect.poll(() => restoring.evaluate(() => typeof window.finishInitialSession)).toBe("function");
+  const remote = await page.evaluate(() => {
+    const cached = JSON.parse(localStorage.getItem("routeBirdingPrefs"));
+    cached.targets = "";
+    cached.rememberToken = false;
+    delete cached.apiToken;
+    delete cached.lifeList;
+    localStorage.setItem("routeBirdingPrefs", JSON.stringify(cached));
+    return { life_list: {}, targets: "", ebird_token: null, preferences: window.buildProfilePatch().preferences, row_exists: true };
+  });
+  await restoring.evaluate((remote) => {
+    window.birdtripAuth.getProfile = async () => remote;
+    document.querySelector("#recentDays").value = "9";
+    window.savePreferences();
+    window.startupDirty = [...window.readDirtyProfileColumns()];
+    window.finishInitialSession();
+  }, remote);
+  expect(await restoring.evaluate(() => window.startupDirty)).toEqual(["preferences"]);
+  await expect(restoring.locator("#targets")).toHaveValue("");
+  await expect(restoring.locator("#apiToken")).toHaveValue("");
+  await expect.poll(() => restoring.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+  expect(await restoring.evaluate(() => window.profileWrites.every((patch) =>
+    !Object.hasOwn(patch, "targets") && !Object.hasOwn(patch, "ebird_token") && !Object.hasOwn(patch, "life_list")))).toBe(true);
+  await expect(restoring.locator("#recentDays")).toHaveValue("9");
+});
+
+for (const lockedField of ["targets", "recentDays"]) {
+  test(`mixed pending revisions retain ${lockedField} hidden by a shared trip`, async ({ page }) => {
+    await accountPage(page);
+    await expect.poll(() => page.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+    await page.evaluate(async (field) => {
+      window.birdtripAuth.upsertProfile = async () => ({ ok: true });
+      await window.flushProfileUpsert();
+      const prefs = JSON.parse(localStorage.getItem("routeBirdingPrefs"));
+      prefs.targets = "Pending target";
+      prefs.recentDays = "9";
+      prefs.lifeList = { species: ["New bird"], displayNames: ["New bird"] };
+      localStorage.setItem("routeBirdingPrefs", JSON.stringify(prefs));
+      const values = { life_list: JSON.stringify(window.normalizeProfileColumns({ life_list: prefs.lifeList }).life_list) };
+      const columns = ["life_list", field === "targets" ? "targets" : "preferences"];
+      values[columns[1]] = JSON.stringify(field === "targets" ? prefs.targets : { ...window.buildProfilePatch().preferences, recentDays: "9" });
+      // Use the application's stable serialization, including sorted object keys.
+      for (const column of columns) values[column] = window.stableStringify(JSON.parse(values[column]));
+      const record = { revision: "hidden-edit", columns, values, preferenceKeys: field === "recentDays" ? ["recentDays"] : [] };
+      window.hiddenRecordKey = "routeBirdingProfileDirty:hidden-edit";
+      localStorage.setItem(window.hiddenRecordKey, JSON.stringify(record));
+      localStorage.setItem(`routeBirdingProfileDirtyOwnerState:${window.hiddenRecordKey}`, "closed");
+      window.restorePreferences();
+      window.applySharedSearch({ mode: "route", origin: "Sender", targets: "Sender target", ...(field === "recentDays" ? { recentDays: "4" } : {}) });
+      window.birdtripAuth.getProfile = async () => ({ life_list: {}, targets: "", ebird_token: "PRIVATE_TOKEN", preferences: { ...window.buildProfilePatch().preferences, recentDays: "3" }, row_exists: true });
+      await window.runMergeAndHydrate();
+      await window.flushProfileUpsert();
+    }, lockedField);
+    expect(await page.evaluate(() => localStorage.getItem(window.hiddenRecordKey))).not.toBeNull();
+    expect(await page.evaluate(() => localStorage.getItem("routeBirdingProfileDirtyAck:hidden-edit"))).toBeNull();
+    await page.evaluate(async () => {
+      window.unlockAllSharedFields();
+      window.restorePreferences();
+      await window.runMergeAndHydrate();
+      await window.flushProfileUpsert();
+    });
+    if (lockedField === "targets") await expect(page.locator("#targets")).toHaveValue("Pending target");
+    else await expect(page.locator("#recentDays")).toHaveValue("9");
+    await expect.poll(() => page.evaluate(() => localStorage.getItem(window.hiddenRecordKey))).toBeNull();
+  });
+}

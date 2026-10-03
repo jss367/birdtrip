@@ -1,0 +1,314 @@
+// public/auth.js
+// All Supabase interaction lives here. app.js calls into this module
+// via window.birdtripAuth. Behind a `?auth=1` (or no `?auth=0`) flag.
+
+(function () {
+  const url = new URL(window.location.href);
+  // Default: opt-in via ?auth=1. After validation, swap to ?auth!=0.
+  const FEATURE_FLAG = url.searchParams.get("auth") === "1";
+
+  const auth = {
+    enabled: false,
+    client: null,
+    session: null,
+    user: null,
+    // True while a user-requested sign-out is in flight or has just completed.
+    // Listeners consult this to tell an explicit sign-out (privacy-wipe local
+    // data) apart from involuntary session loss such as a failed token
+    // refresh (keep local data). app.js resets it after consuming it.
+    explicitSignOut: false,
+    listeners: new Set()
+  };
+
+  // Carries explicit sign-out intent to other open tabs. Supabase broadcasts
+  // a sign-out to every tab as a SIGNED_OUT event, but a failed token refresh
+  // surfaces the same way, and only the tab that clicked sign out has
+  // explicitSignOut set in memory. The initiating tab writes this marker
+  // before calling Supabase; other tabs read it when their SIGNED_OUT lands
+  // and wipe their local copy of the account data too. Cleared by the next
+  // sign-in (any tab), so it can't outlive the sign-out and mislabel a later
+  // refresh failure.
+  const SIGN_OUT_MARKER_KEY = "routeBirdingExplicitSignOut";
+  const SIGN_IN_PENDING_KEY = "routeBirdingOAuthPending";
+  function oauthSignInPending() {
+    try { return sessionStorage.getItem(SIGN_IN_PENDING_KEY) === "1"; } catch { return false; }
+  }
+  function setOAuthSignInPending(pending) {
+    try {
+      if (pending) sessionStorage.setItem(SIGN_IN_PENDING_KEY, "1");
+      else sessionStorage.removeItem(SIGN_IN_PENDING_KEY);
+    } catch { /* storage unavailable */ }
+  }
+  const oauthCallback = url.searchParams.has("code") || /(?:^#|&)access_token=/.test(url.hash);
+  // True while this tab's signOut() awaits Supabase, so a session event that
+  // slips in meanwhile (a refresh completing) can't retire the intent early.
+  let signOutInFlight = false;
+
+  function writeSignOutMarker(present) {
+    try {
+      if (present) localStorage.setItem(SIGN_OUT_MARKER_KEY, "1");
+      else localStorage.removeItem(SIGN_OUT_MARKER_KEY);
+    } catch {
+      // Storage unavailable; other tabs fall back to treating the event as
+      // involuntary session loss, which keeps local data.
+    }
+  }
+
+  function signOutMarkerPresent() {
+    try {
+      return localStorage.getItem(SIGN_OUT_MARKER_KEY) === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  window.birdtripAuth = auth;
+
+  let sdkReady = null;
+  function loadSupabaseSdk() {
+    if (window.supabase?.createClient) return Promise.resolve();
+    if (!sdkReady) {
+      sdkReady = new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.4/dist/umd/supabase.js";
+        script.integrity = "sha384-ysv13JVP3fufiEXfjML9OdCa/rRbMJvUBOWyor82wfuK8INNZAvmbxHgKIHi+oqz";
+        script.crossOrigin = "anonymous";
+        script.onload = resolve;
+        script.onerror = () => reject(new Error("Supabase SDK unavailable"));
+        document.head.append(script);
+      });
+    }
+    return sdkReady;
+  }
+
+  auth.init = async function init(config) {
+    if (!FEATURE_FLAG) return;
+    if (!config || !config.supabase || !config.supabase.enabled) {
+      showAuthStatus("Sign-in unavailable");
+      return;
+    }
+    try { await loadSupabaseSdk(); } catch { /* handled by unavailable status below */ }
+    if (!window.supabase || typeof window.supabase.createClient !== "function") {
+      console.warn("Supabase JS did not load; auth disabled.");
+      showAuthStatus("Sign-in unavailable");
+      return;
+    }
+
+    auth.enabled = true;
+    auth.client = window.supabase.createClient(
+      config.supabase.url,
+      config.supabase.anonKey,
+      {
+        auth: {
+          persistSession: true,
+          autoRefreshToken: true,
+          detectSessionInUrl: true
+        }
+      }
+    );
+
+    try {
+      const { data } = await auth.client.auth.getSession();
+      setSession(data ? data.session : null, { fireListeners: false, confirmedSignIn: oauthSignInPending() || oauthCallback });
+    } catch (err) {
+      console.warn("Initial session fetch failed:", err && err.message);
+    }
+
+    auth.client.auth.onAuthStateChange((event, newSession) => {
+      // A SIGNED_OUT broadcast from another tab's user-requested sign-out
+      // arrives with the marker set; a refresh failure in this tab does not.
+      // Gated on the event name so a stale marker can't set the flag from an
+      // unrelated null-session event (e.g. INITIAL_SESSION with no user).
+      if (event === "SIGNED_OUT" && !newSession && signOutMarkerPresent()) {
+        auth.explicitSignOut = true;
+      }
+      const confirmedSignIn = event === "SIGNED_IN" && newSession?.user
+        && (!auth.user || auth.user.id !== newSession.user.id);
+      setSession(newSession, { confirmedSignIn });
+    });
+
+    revealAuthBar();
+    renderAuthState();
+  };
+
+  auth.signIn = async function signIn() {
+    if (!auth.client) return;
+    // Preserve any other query params (e.g. shared trip links) across the round trip.
+    const here = new URL(window.location.href);
+    here.searchParams.set("auth", "1");
+    here.hash = "";
+    setOAuthSignInPending(true);
+    const { error } = await auth.client.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo: here.toString() }
+    });
+    if (error) {
+      setOAuthSignInPending(false);
+      showAuthStatus(`Sign-in failed: ${error.message}`);
+    }
+  };
+
+  auth.signOut = async function signOut() {
+    if (!auth.client) return;
+    // Only clear the session/UI once Supabase confirms the sign-out. Clearing
+    // on failure would make the page look signed out (and wipe local user
+    // data via the sign-out listener) while the persisted Supabase session is
+    // still valid, so a reload on a shared browser would restore the account.
+    let error = null;
+    // Set before awaiting: Supabase emits SIGNED_OUT through onAuthStateChange
+    // while the call is still in flight, and the listeners must already know
+    // that null session is user-requested.
+    auth.explicitSignOut = true;
+    writeSignOutMarker(true);
+    signOutInFlight = true;
+    try {
+      ({ error } = await auth.client.auth.signOut());
+    } catch (err) {
+      error = err;
+    } finally {
+      signOutInFlight = false;
+    }
+    if (error) {
+      auth.explicitSignOut = false;
+      writeSignOutMarker(false);
+      console.warn("Sign-out failed:", error && error.message);
+      showAuthStatus(`Sign-out failed: ${(error && error.message) || "please try again"}`);
+      return;
+    }
+    setSession(null);
+  };
+
+  auth.getProfile = async function getProfile() {
+    if (!auth.client || !auth.user) return null;
+    try {
+      const { data, error } = await auth.client
+        .from("profiles")
+        .select("life_list, targets, ebird_token, preferences")
+        .eq("user_id", auth.user.id)
+        .maybeSingle();
+      if (error) {
+        console.warn("Profile fetch failed:", error.message);
+        return null;
+      }
+      // row_exists tells the caller whether a profiles row is already in the
+      // database: the first write for a brand-new account must send every
+      // column (see queueProfileUpsert), not just a diff against the empty
+      // defaults below.
+      if (data) return { ...data, row_exists: true };
+      return {
+        life_list: {},
+        targets: "",
+        ebird_token: null,
+        preferences: {},
+        row_exists: false
+      };
+    } catch (err) {
+      console.warn("Profile fetch threw:", err && err.message);
+      return null;
+    }
+  };
+
+  auth.upsertProfile = async function upsertProfile(patch, writeGuard = null) {
+    if (!auth.client || !auth.user) return { ok: false, reason: "not-signed-in" };
+    const payload = { user_id: auth.user.id, ...patch };
+    try {
+      let response;
+      if (writeGuard) {
+        if (writeGuard.insertOnly) {
+          // Never replace a row created by a peer after our missing-row read.
+          response = await auth.client.from("profiles")
+            .upsert(payload, { onConflict: "user_id", ignoreDuplicates: true, defaultToNull: false })
+            .select("user_id");
+        } else {
+          // Postgres evaluates the JSONB predicate and update atomically.
+          response = await auth.client.from("profiles").update(patch)
+            .eq("user_id", auth.user.id)
+            .eq("preferences", JSON.stringify(writeGuard.expectedPreferences))
+            .select("user_id");
+        }
+      } else {
+        response = await auth.client.from("profiles")
+          .upsert(payload, { onConflict: "user_id", defaultToNull: false });
+      }
+      const { error, data } = response;
+      if (error) {
+        console.warn("Profile upsert failed:", error.message);
+        return { ok: false, reason: error.message };
+      }
+      if (writeGuard && (!Array.isArray(data) || data.length === 0)) return { ok: false, reason: "conflict" };
+      return { ok: true };
+    } catch (err) {
+      console.warn("Profile upsert threw:", err && err.message);
+      return { ok: false, reason: (err && err.message) || "unknown" };
+    }
+  };
+
+  auth.onChange = function onChange(fn) {
+    auth.listeners.add(fn);
+    // Fire immediately with current state so callers don't have to special-case.
+    try { fn(auth.user); } catch (err) { console.error(err); }
+    return () => auth.listeners.delete(fn);
+  };
+
+  function setSession(session, options) {
+    const fireListeners = !options || options.fireListeners !== false;
+    auth.session = session || null;
+    auth.user = session && session.user ? session.user : null;
+    if (auth.user && !signOutInFlight && options?.confirmedSignIn) {
+      setOAuthSignInPending(false);
+      // Only a confirmed transition into a signed-in user retires intent.
+      // Refresh/restore callbacks in another tab can precede SIGNED_OUT
+      // and must leave the shared marker available for that broadcast.
+      auth.explicitSignOut = false;
+      writeSignOutMarker(false);
+    }
+    renderAuthState();
+    if (!fireListeners) return;
+    auth.listeners.forEach((fn) => {
+      try { fn(auth.user); } catch (err) { console.error(err); }
+    });
+  }
+
+  function revealAuthBar() {
+    const bar = document.querySelector("#authBar");
+    if (bar) bar.hidden = false;
+  }
+
+  function renderAuthState() {
+    const signInBtn = document.querySelector("#signInButton");
+    const signedInBox = document.querySelector("#signedInBox");
+    const avatar = document.querySelector("#userAvatar");
+    const emailEl = document.querySelector("#userEmail");
+    if (!signInBtn || !signedInBox) return;
+    if (auth.user) {
+      signInBtn.hidden = true;
+      signedInBox.hidden = false;
+      if (avatar) {
+        const url = auth.user.user_metadata && auth.user.user_metadata.avatar_url;
+        avatar.src = url || "";
+        avatar.hidden = !url;
+      }
+      if (emailEl) emailEl.textContent = auth.user.email || "";
+    } else {
+      signInBtn.hidden = false;
+      signedInBox.hidden = true;
+    }
+  }
+
+  function showAuthStatus(msg) {
+    const el = document.querySelector("#authStatus");
+    if (!el) return;
+    el.textContent = msg;
+    el.hidden = false;
+    const bar = document.querySelector("#authBar");
+    if (bar) bar.hidden = false;
+    setTimeout(() => { el.hidden = true; }, 5000);
+  }
+
+  document.addEventListener("DOMContentLoaded", () => {
+    const signInBtn = document.querySelector("#signInButton");
+    const signOutBtn = document.querySelector("#signOutButton");
+    if (signInBtn) signInBtn.addEventListener("click", () => auth.signIn());
+    if (signOutBtn) signOutBtn.addEventListener("click", () => auth.signOut());
+  });
+})();
