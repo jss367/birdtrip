@@ -562,3 +562,31 @@ for (const scenario of [{ auth: false, configured: true }, { auth: true, configu
     await expect(page.locator("#searchForm")).toBeVisible();
   });
 }
+
+
+for (const blockAllWrites of [false, true]) {
+  test(`cloud edits still save when ${blockAllWrites ? "all local storage writes" : "the local preference cache"} fails`, async ({ page }) => {
+    await accountPage(page);
+    await expect.poll(() => page.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+    await page.evaluate(async (blockAll) => {
+      window.birdtripAuth.upsertProfile = async () => ({ ok: true });
+      await window.flushProfileUpsert();
+      const setItem = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (key, value) {
+        if (this === localStorage && (blockAll || key === "routeBirdingPrefs")) throw new Error("storage blocked");
+        return setItem.call(this, key, value);
+      };
+      window.birdtripAuth.upsertProfile = async (patch) => { window.storageFailureWrite = patch; return { ok: true }; };
+      document.querySelector("#targets").value = "Cloud target";
+      document.querySelector("#apiToken").value = "CLOUD_TOKEN";
+      document.querySelector("#rememberToken").checked = true;
+      document.querySelector("#recentDays").value = "9";
+      window.savePreferences();
+    }, blockAllWrites);
+    await expect.poll(() => page.evaluate(() => window.storageFailureWrite?.targets)).toBe("Cloud target");
+    const patch = await page.evaluate(() => window.storageFailureWrite);
+    expect(patch.ebird_token).toBe("CLOUD_TOKEN");
+    expect(patch.preferences.recentDays).toBe("9");
+    await expect.poll(() => page.evaluate(() => [...window.readDirtyProfileColumns()])).toEqual([]);
+  });
+}

@@ -734,16 +734,13 @@ function savePreferences({ clearUserData = false } = {}) {
   try {
     localStorage.setItem("routeBirdingPrefs", JSON.stringify(payload));
   } catch {
-    if (!payload.lifeList) return;
-    delete payload.lifeList;
-    try {
-      localStorage.setItem("routeBirdingPrefs", JSON.stringify(payload));
-    } catch {
-      // Storage is blocked or full; preferences last until the page is refreshed.
-      return;
+    if (payload.lifeList) {
+      delete payload.lifeList;
+      try { localStorage.setItem("routeBirdingPrefs", JSON.stringify(payload)); } catch { /* cloud writes still queue */ }
+      addWarning("The imported life list could not be saved in this browser.");
+      renderWarnings();
     }
-    addWarning("The imported life list was too large to save in this browser, but it will work until the page is refreshed.");
-    renderWarnings();
+    // A blocked/full local cache must not prevent signed-in cloud persistence.
   }
   const beforePreferences = lastDocumentPreferences ?? (previous ? profileColumnsFromPrefs(previous).preferences : {});
   const afterPreferences = profileColumnsFromPrefs(payload).preferences;
@@ -794,6 +791,9 @@ const PROFILE_DIRTY_OWNERS_KEY = `${PROFILE_DIRTY_KEY}Owners`;
 const PROFILE_DIRTY_PREFIX = `${PROFILE_DIRTY_KEY}:`;
 const PROFILE_DIRTY_ACK_PREFIX = `${PROFILE_DIRTY_KEY}Ack:`;
 let reconciledDirtyRecords = new Map();
+const memoryDirtyColumns = new Map();
+const memoryDirtyPreferenceKeys = new Map();
+let memoryDirtyRevision = 0;
 function profileDirtyRevision() {
   // randomUUID is unavailable on non-HTTPS LAN development origins.
   return crypto.randomUUID?.() || `${Date.now()}-${Math.random()}-${Math.random()}`;
@@ -880,7 +880,7 @@ function matchingDirtyPreferenceKeys(record, full) {
 
 function readDirtyPreferenceKeys() {
   const full = buildProfilePatch();
-  const keys = new Set();
+  const keys = new Set(memoryDirtyPreferenceKeys.keys());
   try {
     if (parseDirtyColumns(localStorage.getItem(PROFILE_DIRTY_KEY)).includes("preferences")) {
       for (const key of Object.keys(full.preferences)) keys.add(key);
@@ -899,7 +899,7 @@ function readDirtyPreferenceKeys() {
 }
 
 function readDirtyProfileColumns() {
-  const columns = new Set();
+  const columns = new Set(memoryDirtyColumns.keys());
   const full = buildProfilePatch();
   try {
     for (const column of parseDirtyColumns(localStorage.getItem(PROFILE_DIRTY_KEY))) columns.add(column);
@@ -922,6 +922,13 @@ function readDirtyProfileColumns() {
 
 function markProfileDirty(columns, changedPreferenceKeys) {
   if (!columns.length) return;
+  const full = buildProfilePatch();
+  const revision = ++memoryDirtyRevision;
+  for (const column of columns) memoryDirtyColumns.set(column, revision);
+  const memoryKeys = changedPreferenceKeys ?? (memoryDirtyPreferenceKeys.size ? [] : lastSyncedProfile
+    ? Object.keys(full.preferences).filter((key) => full.preferences[key] !== lastSyncedProfile.preferences?.[key])
+    : Object.keys(full.preferences));
+  if (columns.includes("preferences")) for (const key of memoryKeys) memoryDirtyPreferenceKeys.set(key, revision);
   try {
     const previousRaw = localStorage.getItem(profileDirtyRecordKey);
     const previousRecord = JSON.parse(previousRaw || "null");
@@ -929,7 +936,6 @@ function markProfileDirty(columns, changedPreferenceKeys) {
     const dirty = new Set(acknowledged ? [] : parseDirtyColumns(previousRaw));
     for (const column of columns) dirty.add(column);
     // The revision changes even for a second edit to the same column.
-    const full = buildProfilePatch();
     const values = Object.fromEntries([...dirty].map((column) => [column, stableStringify(full[column])]));
     const preferenceKeys = new Set(acknowledged ? [] : previousRecord?.preferenceKeys || []);
     const currentPreferenceKeys = changedPreferenceKeys ?? (previousRecord?.preferenceKeys ? [] : lastSyncedProfile
@@ -978,6 +984,8 @@ async function captureReconciledDirtyRecords() {
 }
 
 function wipeDirtyProfileRecords() {
+  memoryDirtyColumns.clear();
+  memoryDirtyPreferenceKeys.clear();
   try {
     const keys = [];
     for (let index = 0; index < localStorage.length; index += 1) {
@@ -1012,8 +1020,14 @@ function retainedOwnerPresent() {
   }
 }
 
-function clearProfileDirtyIfIdle(captured, reconciled) {
+function clearProfileDirtyIfIdle(captured, reconciled, memory) {
   if (profileUpsertTimer || profileUpsertPending) return;
+  for (const [key, revision] of memory.columns) {
+    if (memoryDirtyColumns.get(key) === revision) memoryDirtyColumns.delete(key);
+  }
+  for (const [key, revision] of memory.preferences) {
+    if (memoryDirtyPreferenceKeys.get(key) === revision) memoryDirtyPreferenceKeys.delete(key);
+  }
   try {
     for (const [key, raw] of captured) {
       // Only this document writes its current key. Newer edits must survive
@@ -1270,11 +1284,12 @@ async function flushProfileUpsert() {
   if (window.birdtripAuth?.user?.id !== userIdBeforeCapture) return;
   const { full, changed } = changedProfileColumns();
   const reconciledRecordsAtStart = new Map(reconciledDirtyRecords);
+  const memoryAtStart = { columns: new Map(memoryDirtyColumns), preferences: new Map(memoryDirtyPreferenceKeys) };
   if (!Object.keys(changed).length) {
     // Local state already matches the account, so a first reconciliation
     // (if one is pending) is complete without a write.
     commitPendingSyncedUser();
-    clearProfileDirtyIfIdle(dirtyRecordsAtStart, reconciledRecordsAtStart);
+    clearProfileDirtyIfIdle(dirtyRecordsAtStart, reconciledRecordsAtStart, memoryAtStart);
     return;
   }
   // The first write for an account with no profiles row is an insert: send
@@ -1324,7 +1339,7 @@ async function flushProfileUpsert() {
     lastSyncedProfile = { ...lastSyncedProfile, ...patch };
     profileUpsertFailed = false;
     commitPendingSyncedUser();
-    clearProfileDirtyIfIdle(dirtyRecordsAtStart, reconciledRecordsAtStart);
+    clearProfileDirtyIfIdle(dirtyRecordsAtStart, reconciledRecordsAtStart, memoryAtStart);
   }
 }
 
