@@ -151,13 +151,23 @@ test("another tab's successful flush preserves a debouncing edit through reload"
 });
 
 
-test("a new tab retires a closed tab's dirty revision after reconciliation", async ({ page, context }) => {
+for (const superseded of [false, true]) {
+test(`a new tab retires ${superseded ? "superseded closed-tab revisions" : "a closed tab dirty revision"} after reconciliation`, async ({ page, context }) => {
   await accountPage(page);
-  await page.locator("#targetRows .target-row input").first().evaluate((el) => {
+  const latest = superseded ? await context.newPage() : page;
+  if (superseded) {
+    await accountPage(latest);
+    await page.locator("#targetRows .target-row input").first().evaluate((el) => {
+      el.value = "Earlier orphan target";
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+  await latest.locator("#targetRows .target-row input").first().evaluate((el) => {
     el.value = "";
     el.dispatchEvent(new Event("input", { bubbles: true }));
   });
   await page.close(); // sessionStorage ownership disappears with the tab.
+  if (superseded) await latest.close();
   const reopened = await context.newPage();
   // Mock the same account, then allow this reconciliation's write to succeed.
   await stubApis(reopened);
@@ -189,3 +199,5 @@ test("a new tab retires a closed tab's dirty revision after reconciliation", asy
   // Once the pending clear is confirmed, a later remote update wins normally.
   await expect(reopened.locator("#targets")).toHaveValue("Gilded Flicker");
 });
+
+}

@@ -848,21 +848,28 @@ function captureOwnedDirtyRecords() {
   return captured;
 }
 
-// Capture peer/orphan revisions only when their actual pending values are
-// represented in the local snapshot being reconciled. A regular flush uses
-// only its own records; reconciliation can confirm records from closed tabs.
+// A represented dirty column confirms its current value and supersedes older
+// revisions of that column. Capture those revisions before awaiting account
+// data, so a later peer edit still has a distinct unacknowledged revision.
+// A regular flush uses only its own records.
 function captureReconciledDirtyRecords(full) {
   const captured = new Map();
   try {
+    const pending = new Map();
+    const representedColumns = new Set();
     for (let index = 0; index < localStorage.length; index += 1) {
       const key = localStorage.key(index);
       if (!key?.startsWith(PROFILE_DIRTY_PREFIX)) continue;
       const raw = localStorage.getItem(key);
       const record = JSON.parse(raw || "null");
       if (!record?.revision || localStorage.getItem(`${PROFILE_DIRTY_ACK_PREFIX}${record.revision}`)) continue;
-      if (parseDirtyColumns(raw).every((column) => record.values?.[column] === stableStringify(full[column]))) {
-        captured.set(key, raw);
+      pending.set(key, raw);
+      for (const column of parseDirtyColumns(raw)) {
+        if (record.values?.[column] === stableStringify(full[column])) representedColumns.add(column);
       }
+    }
+    for (const [key, raw] of pending) {
+      if (parseDirtyColumns(raw).every((column) => representedColumns.has(column))) captured.set(key, raw);
     }
   } catch { /* storage unavailable */ }
   return captured;
