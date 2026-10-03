@@ -100,3 +100,52 @@ test("ArrowUp with nothing highlighted selects the last suggestion", async ({ pa
   await page.locator("#origin").press("ArrowUp");
   await expect(page.locator("#originSuggestions li.is-active")).toHaveText("Test Charlie");
 });
+
+
+test("editing then undoing the origin still invalidates delayed geolocation", async ({ page }) => {
+  await stubApis(page);
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "geolocation", { value: {
+      getCurrentPosition(resolve) {
+        window.releaseLocation = () => resolve({ coords: { latitude: 41.5, longitude: 2.2 } });
+      }
+    } });
+  });
+  await page.route("**/api/reverse-geocode**", (route) => route.fulfill({ json: { name: "Late Location" } }));
+  await page.goto("/");
+  const before = await page.locator("#origin").inputValue();
+  await page.click("#useCurrentLocationButton");
+  await page.fill("#origin", "Explicit edit");
+  await page.fill("#origin", before);
+  await page.evaluate(() => window.releaseLocation());
+  await page.waitForTimeout(200);
+  await expect(page.locator("#origin")).toHaveValue(before);
+  await expect(page.locator("#useCurrentLocationButton")).toBeEnabled();
+  await expect(page.locator("#useCurrentLocationLabel")).not.toContainText("Locating");
+});
+
+test("reselecting the same origin invalidates delayed geolocation", async ({ page }) => {
+  await stubApis(page);
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "geolocation", { value: {
+      getCurrentPosition(resolve) {
+        window.releaseLocation = () => resolve({ coords: { latitude: 41.5, longitude: 2.2 } });
+      }
+    } });
+  });
+  await page.route("**/api/reverse-geocode**", (route) => route.fulfill({ json: { name: "Late Location" } }));
+  await page.goto("/");
+  await page.fill("#origin", "Test Center, Barcelona");
+  await expect(page.locator("#originSuggestions li[role=option]")).toHaveCount(1);
+  await page.locator("#origin").press("Escape");
+  await page.click("#useCurrentLocationButton");
+  // Reopen the list without editing the origin.
+  await page.locator("#origin").press("ArrowDown");
+  await expect(page.locator("#originSuggestions li[role=option]")).toBeVisible();
+  await page.locator("#originSuggestions li[role=option]").click();
+  const selected = await page.locator("#origin").inputValue();
+  await page.evaluate(() => window.releaseLocation());
+  await page.waitForTimeout(200);
+  await expect(page.locator("#origin")).toHaveValue(selected);
+  await expect(page.locator("#useCurrentLocationButton")).toBeEnabled();
+});

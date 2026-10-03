@@ -3161,6 +3161,7 @@ let currentLocationRequestId = 0;
 
 function abandonCurrentLocationLookup() {
   currentLocationRequestId += 1;
+  els.useCurrentLocationButton.disabled = false;
   const label = els.useCurrentLocationLabel;
   if (label.dataset.idleLabel) label.textContent = label.dataset.idleLabel;
 }
@@ -3255,6 +3256,7 @@ function setupLocationAutocomplete(field) {
   ctx.listEl = listEl;
 
   inputEl.addEventListener("input", () => {
+    if (field === "origin") abandonCurrentLocationLookup();
     ctx.resolved = null;
     // A highlight belongs to the text it was made against.
     setAutocompleteActive(field, -1);
@@ -3429,6 +3431,7 @@ function selectAutocompleteItem(field, index) {
   const item = ctx.items[index];
   const inputEl = els[field];
   if (!item || !inputEl) return;
+  if (field === "origin") abandonCurrentLocationLookup();
   inputEl.value = item.name || "";
   ctx.resolved = item;
   ctx.lastQuery = item.name || "";
