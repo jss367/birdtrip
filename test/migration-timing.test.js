@@ -56,6 +56,22 @@ test("groups are matched by family words in the common name", () => {
   assert.equal(timing.classifyGroup("American Robin"), null);
 });
 
+test("group classification covers Old World migrants and keeps owls and cuckoos out of raptors", () => {
+  for (const name of ["European Honey-buzzard", "Common Buzzard", "Eurasian Hobby", "Changeable Hawk-Eagle", "African Cuckoo-Hawk"]) {
+    assert.equal(timing.classifyGroup(name), "raptors", name);
+  }
+  for (const name of ["Ruff", "Common Greenshank", "Common Redshank", "Little Stint", "Eurasian Dotterel", "Collared Pratincole", "Wandering Tattler"]) {
+    assert.equal(timing.classifyGroup(name), "shorebirds", name);
+  }
+  for (const name of ["Garganey", "Common Pochard", "Smew"]) {
+    assert.equal(timing.classifyGroup(name), "waterfowl", name);
+  }
+  // Hyphens are word breaks, so these would otherwise match "hawk"/"eagle".
+  for (const name of ["Northern Hawk Owl", "Eurasian Eagle-Owl", "Large Hawk-Cuckoo", "Ruffed Grouse"]) {
+    assert.equal(timing.classifyGroup(name), null, name);
+  }
+});
+
 test("status classification covers the main occurrence shapes", () => {
   const passage = [0, 0, 0, 0.4, 0.9, 0, 0, 0, 0.6, 0.4, 0, 0];
   assert.equal(timing.classifyStatus(passage, SEASONS), "passage");

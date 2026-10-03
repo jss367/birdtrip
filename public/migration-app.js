@@ -84,6 +84,9 @@
     if (!response.ok) {
       const error = new Error(body?.error || `Request failed (${response.status})`);
       error.status = response.status;
+      // Only eBird endpoints can fail on the token; a 401/403 from geocoding
+      // is the upstream geocoder's, so renderError must not blame the token.
+      error.ebird = url.startsWith("/api/ebird/");
       throw error;
     }
     return body;
@@ -152,8 +155,11 @@
     if (els.suggestions.hidden) return;
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
-      const step = event.key === "ArrowDown" ? 1 : -1;
-      ac.active = (ac.active + step + ac.items.length) % ac.items.length;
+      const count = ac.items.length;
+      // With nothing highlighted, ArrowDown starts at the first item and
+      // ArrowUp at the last.
+      if (ac.active < 0) ac.active = event.key === "ArrowDown" ? 0 : count - 1;
+      else ac.active = (ac.active + (event.key === "ArrowDown" ? 1 : -1) + count) % count;
       renderSuggestions();
     } else if (event.key === "Enter" && ac.active >= 0) {
       event.preventDefault();
@@ -191,7 +197,7 @@
   }
 
   function renderError(error) {
-    if (error && (error.status === 401 || error.status === 403)) return renderTokenNotice();
+    if (error?.ebird && (error.status === 401 || error.status === 403)) return renderTokenNotice();
     renderMessage("triangle-alert", escapeHtml(error?.message || "Something went wrong. Try again."));
   }
 

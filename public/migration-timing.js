@@ -27,19 +27,22 @@
     Object.freeze({
       key: "waterfowl",
       label: "Waterfowl",
-      pattern: /\b(?:duck|shelduck|goose|swan|teal|wigeon|scaup|merganser|bufflehead|goldeneye|pintail|gadwall|shoveler|canvasback|redhead|scoter|eider|brant|mallard)\b/i,
+      pattern: /\b(?:duck|shelduck|goose|swan|teal|wigeon|garganey|pochard|scaup|merganser|smew|bufflehead|goldeneye|pintail|gadwall|shoveler|canvasback|redhead|scoter|eider|brant|mallard)\b/i,
       description: "Ducks, geese, and swans."
     }),
     Object.freeze({
       key: "shorebirds",
       label: "Shorebirds",
-      pattern: /\b(?:sandpiper|plover|lapwing|dowitcher|yellowlegs|godwit|curlew|whimbrel|turnstone|sanderling|dunlin|snipe|woodcock|phalarope|avocet|stilt|killdeer|willet|knot|oystercatcher|surfbird)\b/i,
+      pattern: /\b(?:sandpiper|plover|lapwing|dotterel|dowitcher|yellowlegs|greenshank|redshank|tattler|godwit|curlew|whimbrel|turnstone|ruff|stint|sanderling|dunlin|snipe|woodcock|phalarope|avocet|stilt|killdeer|willet|knot|oystercatcher|surfbird|pratincole|courser|thick-knee)\b/i,
       description: "Sandpipers, plovers, and their relatives."
     }),
     Object.freeze({
       key: "raptors",
       label: "Raptors",
-      pattern: /\b(?:hawk|sparrowhawk|goshawk|eagle|falcon|gyrfalcon|kestrel|merlin|harrier|kite|osprey|vulture|caracara)\b/i,
+      // Hyphens are word breaks, so owls (Northern Hawk Owl, Eurasian
+      // Eagle-Owl) and hawk-cuckoos are excluded up front; Hawk-Eagles and
+      // African Cuckoo-Hawk are raptors and still match.
+      pattern: /^(?!.*\b(?:owl|hawk-cuckoo)\b).*\b(?:hawk|sparrowhawk|goshawk|shikra|eagle|buzzard|falcon|gyrfalcon|falconet|kestrel|merlin|hobby|harrier|kite|baza|osprey|vulture|condor|caracara)\b/i,
       description: "Hawks, eagles, falcons, kites, and vultures."
     }),
     Object.freeze({
