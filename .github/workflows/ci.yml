@@ -61,6 +61,15 @@ jobs:
             sleep 1
           done
           echo "server never became healthy"; docker logs birdtrip; exit 1
+      - name: docker stop exits cleanly
+        run: |
+          # node is PID 1 in the container; without a SIGTERM handler docker
+          # stop falls back to SIGKILL (exit code 137) after the grace period.
+          docker stop --time 5 birdtrip
+          code=$(docker inspect -f '{{.State.ExitCode}}' birdtrip)
+          if [ "$code" != 0 ]; then
+            echo "expected exit code 0 after docker stop, got $code"; docker logs birdtrip; exit 1
+          fi
       - name: Clean up container
         if: always()
         run: docker rm -f birdtrip || true

@@ -2,6 +2,8 @@ const test = require("node:test");
 const { before, after } = require("node:test");
 const assert = require("node:assert/strict");
 const net = require("node:net");
+const path = require("node:path");
+const { spawn } = require("node:child_process");
 
 const { server } = require("../server.js");
 
@@ -83,4 +85,52 @@ test("static paths still resolve after the URL guards", async () => {
   assert.match(response.headers.get("content-type"), /text\/html/);
   const outside = await fetch(`http://127.0.0.1:${port}/..%2F..%2Fpackage.json`);
   assert.notEqual(outside.status, 200);
+});
+
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.on("error", reject);
+    probe.listen(0, "127.0.0.1", () => {
+      const { port: free } = probe.address();
+      probe.close(() => resolve(free));
+    });
+  });
+}
+
+// In Docker node is PID 1, where an unhandled SIGTERM is ignored and
+// `docker stop` ends in SIGKILL; the server must exit cleanly on its own.
+test("SIGTERM shuts the server down cleanly with exit code 0", async () => {
+  const childPort = await freePort();
+  const child = spawn(process.execPath, [path.join(__dirname, "../server.js")], {
+    env: { ...process.env, PORT: String(childPort), DATABASE_URL: "" },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  const exited = new Promise((resolve) => {
+    child.on("exit", (code, signal) => resolve({ code, signal }));
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      let output = "";
+      child.stdout.on("data", (chunk) => {
+        output += chunk;
+        if (output.includes("Birdtrip running")) resolve();
+      });
+      exited.then(() => reject(new Error(`server exited before listening: ${output}`)));
+    });
+    // Leave a keep-alive connection open; it must not hold up shutdown.
+    const response = await fetch(`http://127.0.0.1:${childPort}/healthz`);
+    assert.equal(await response.text(), "ok");
+
+    const started = Date.now();
+    child.kill("SIGTERM");
+    const result = await Promise.race([
+      exited,
+      new Promise((resolve) => setTimeout(() => resolve("timeout"), 5000))
+    ]);
+    assert.deepEqual(result, { code: 0, signal: null });
+    assert.ok(Date.now() - started < 5000);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  }
 });

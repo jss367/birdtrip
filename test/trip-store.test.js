@@ -160,3 +160,22 @@ test("expiry sweeps delete stale trips and run at most once per hour", async () 
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(calls.filter((call) => call.text.startsWith("DELETE")).length, afterFirstCreate + 1);
 });
+
+test("close ends the pool once and is a no-op for a store that never connected", async () => {
+  let ended = 0;
+  const pool = {
+    query: async () => ({ rows: [], rowCount: 0 }),
+    end: async () => {
+      ended += 1;
+    }
+  };
+  const idle = createTripStore({ connectionString: "postgres://unused", createPool: () => pool });
+  await idle.close();
+  assert.equal(ended, 0);
+
+  const store = createTripStore({ connectionString: "postgres://unused", createPool: () => pool });
+  await store.ensureReady();
+  await store.close();
+  await store.close();
+  assert.equal(ended, 1);
+});
