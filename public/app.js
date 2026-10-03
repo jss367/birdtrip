@@ -681,6 +681,7 @@ function restorePreferences() {
       displayNames: displayNames.map(String).filter(Boolean)
     };
   }
+  lastDocumentPreferences = Object.fromEntries(ACCOUNT_PREF_FIELDS.map((field) => [field, els[field].value]));
   return saved;
 }
 
@@ -706,6 +707,7 @@ function readStoredPrefs() {
 // A peer can replace the shared cache between this document's saves. Compare
 // settings with this document's own previous values to identify real edits.
 let lastDocumentPreferences = null;
+let latestCacheWriteSucceeded = true;
 
 function savePreferences({ clearUserData = false } = {}) {
   const previous = readStoredPrefs();
@@ -733,7 +735,9 @@ function savePreferences({ clearUserData = false } = {}) {
   const changedColumns = previous ? profileColumnsChangedBetween(previous, payload) : PROFILE_COLUMNS;
   try {
     localStorage.setItem("routeBirdingPrefs", JSON.stringify(payload));
+    latestCacheWriteSucceeded = true;
   } catch {
+    latestCacheWriteSucceeded = false;
     if (payload.lifeList) {
       delete payload.lifeList;
       try { localStorage.setItem("routeBirdingPrefs", JSON.stringify(payload)); } catch { /* cloud writes still queue */ }
@@ -782,7 +786,6 @@ const RETAINED_OWNER_KEY = "routeBirdingRetainedOwner";
 // works within a page session when localStorage is unavailable.
 let retainedDataOwnerId = null;
 let profileUpsertTimer = 0;
-let profileUpsertFailed = false;
 
 // Each document writes its own record. Reloads inherit only their pending
 // records through sessionStorage; another tab's records are never cleared by
@@ -1337,17 +1340,17 @@ async function flushProfileUpsert() {
     // Serialized writes apply in order, so advancing the baseline here always
     // reflects the latest applied write, never a stale overlapping response.
     lastSyncedProfile = { ...lastSyncedProfile, ...patch };
-    profileUpsertFailed = false;
     commitPendingSyncedUser();
     clearProfileDirtyIfIdle(dirtyRecordsAtStart, reconciledRecordsAtStart, memoryAtStart);
   }
 }
 
 function reportProfileUpsertFailure() {
-  if (profileUpsertFailed) return;
-  addWarning("Couldn't save to your account - still saved in this browser.");
+  state.warnings = state.warnings.filter((message) => !message.startsWith("Couldn't save to your account"));
+  addWarning(latestCacheWriteSucceeded
+    ? "Couldn't save to your account - still saved in this browser."
+    : "Couldn't save to your account or browser storage. Unsaved edits exist only on this page; reloading will lose them.");
   renderWarnings();
-  profileUpsertFailed = true;
 }
 
 // Reentrancy guard: the auth listener can fire repeatedly during sign-in.

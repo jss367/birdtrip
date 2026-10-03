@@ -1,7 +1,7 @@
 const { test, expect } = require("@playwright/test");
 const { stubApis } = require("./fixtures");
 
-async function accountPage(page, targets = "Gilded Flicker") {
+async function accountPage(page, targets = "Gilded Flicker", holdSession = false) {
   await stubApis(page);
   await page.route("**/api/config", async (route) => {
     const response = await route.fetch();
@@ -10,12 +10,12 @@ async function accountPage(page, targets = "Gilded Flicker") {
     await route.fulfill({ json: config });
   });
   await page.route("https://cdn.jsdelivr.net/**", (route) => route.abort());
-  await page.addInitScript((targets) => {
+  await page.addInitScript(({ targets, holdSession }) => {
     const session = { user: { id: "account-a", email: "test@example.invalid" } };
     window.profileWrites = [];
     window.supabase = { createClient: () => ({
       auth: {
-        getSession: async () => ({ data: { session } }),
+        getSession: () => holdSession ? new Promise((resolve) => { window.finishInitialSession = () => resolve({ data: { session } }); }) : Promise.resolve({ data: { session } }),
         onAuthStateChange: (callback) => { window.authEvent = callback; },
         signOut: async () => {
           window.authEvent("SIGNED_OUT", null);
@@ -37,7 +37,7 @@ async function accountPage(page, targets = "Gilded Flicker") {
         } }) }) })
       })
     }) };
-  }, targets);
+  }, { targets, holdSession });
   await page.goto("/?auth=1");
   await expect(page.locator("#targets")).toHaveValue(targets);
 }
@@ -590,3 +590,49 @@ for (const blockAllWrites of [false, true]) {
     await expect.poll(() => page.evaluate(() => [...window.readDirtyProfileColumns()])).toEqual([]);
   });
 }
+
+
+test("the first edit during auth restoration uses the document's original settings", async ({ page, context }) => {
+  await accountPage(page);
+  await expect.poll(() => page.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+  await page.evaluate(async () => {
+    window.birdtripAuth.upsertProfile = async () => ({ ok: true });
+    await window.flushProfileUpsert();
+  });
+  const restoring = await context.newPage();
+  await accountPage(restoring, "Gilded Flicker", true);
+  await expect.poll(() => restoring.evaluate(() => typeof window.finishInitialSession)).toBe("function");
+  await page.evaluate(() => { document.querySelector("#maxStops").value = "18"; window.savePreferences(); });
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("routeBirdingPrefs")).maxStops)).toBe("18");
+  const remote = await page.evaluate(() => ({ ...window.buildProfilePatch(), row_exists: true }));
+  await restoring.evaluate((remote) => {
+    window.birdtripAuth.getProfile = async () => remote;
+    document.querySelector("#recentDays").value = "9";
+    window.savePreferences();
+    window.finishInitialSession();
+  }, remote);
+  await expect(restoring.locator("#recentDays")).toHaveValue("9");
+  await expect(restoring.locator("#maxStops")).toHaveValue("18");
+  await expect.poll(() => restoring.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+  expect(await restoring.evaluate(() => window.profileWrites.at(-1).preferences.maxStops)).toBe("18");
+});
+
+test("failed cloud writes accurately warn when edits exist only in memory", async ({ page }) => {
+  await accountPage(page);
+  await expect.poll(() => page.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+  await page.evaluate(async () => {
+    window.birdtripAuth.upsertProfile = async () => ({ ok: true });
+    await window.flushProfileUpsert();
+    const setItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key, value) {
+      if (this === localStorage) throw new Error("storage blocked");
+      return setItem.call(this, key, value);
+    };
+    window.birdtripAuth.upsertProfile = async () => ({ ok: false, reason: "offline" });
+    document.querySelector("#recentDays").value = "9";
+    window.savePreferences();
+  });
+  await expect(page.locator("#warningMessage")).toContainText("Unsaved edits exist only on this page; reloading will lose them.");
+  await expect(page.locator("#warningMessage")).not.toContainText("still saved in this browser");
+  expect(await page.evaluate(() => [...window.readDirtyPreferenceKeys()])).toContain("recentDays");
+});
