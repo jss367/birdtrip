@@ -241,6 +241,8 @@ const PREF_FIELDS = [
 // handling; must NOT be re-applied by the silent preferences merge or we'd
 // clobber the user's conflict choice.
 const ACCOUNT_OWNED_FIELDS = new Set(["targets"]);
+// Trip locations, departure times and species queries stay in the local cache.
+const ACCOUNT_PREF_FIELDS = ["maxDetour", "radiusKm", "recentDays", "maxStops", "mapProvider"];
 
 function normalizeMode(mode) {
   return mode === "area" || mode === "species" ? mode : "route";
@@ -903,7 +905,7 @@ function markProfileDirty(columns, changedPreferenceKeys) {
     const full = buildProfilePatch();
     const values = Object.fromEntries([...dirty].map((column) => [column, stableStringify(full[column])]));
     const preferenceKeys = new Set(acknowledged ? [] : previousRecord?.preferenceKeys || []);
-    const currentPreferenceKeys = changedPreferenceKeys ?? (lastSyncedProfile
+    const currentPreferenceKeys = changedPreferenceKeys ?? (previousRecord?.preferenceKeys ? [] : lastSyncedProfile
       ? Object.keys(full.preferences).filter((key) => full.preferences[key] !== lastSyncedProfile.preferences?.[key])
       : Object.keys(full.preferences));
     if (columns.includes("preferences")) for (const key of currentPreferenceKeys) preferenceKeys.add(key);
@@ -1064,7 +1066,9 @@ function normalizeProfileColumns(profile) {
     targets: typeof profile.targets === "string" ? profile.targets : "",
     ebird_token: typeof profile.ebird_token === "string" && profile.ebird_token.length
       ? profile.ebird_token : null,
-    preferences: (profile.preferences && typeof profile.preferences === "object") ? profile.preferences : {}
+    preferences: Object.fromEntries(ACCOUNT_PREF_FIELDS
+      .filter((field) => typeof profile.preferences?.[field] === "string")
+      .map((field) => [field, profile.preferences[field]]))
   };
 }
 
@@ -1088,7 +1092,7 @@ function buildProfilePatch() {
       ? (typeof synced.targets === "string" ? synced.targets : "")
       : (els.targets.value || ""),
     ebird_token: els.rememberToken.checked ? (els.apiToken.value || null) : null,
-    preferences: PREF_FIELDS.reduce((acc, field) => {
+    preferences: ACCOUNT_PREF_FIELDS.reduce((acc, field) => {
       if (ACCOUNT_OWNED_FIELDS.has(field)) return acc;
       if (sharedFieldLocks.has(field)) {
         // Echo the account's own value (or omit the key if it never stored
@@ -1109,7 +1113,7 @@ function buildProfilePatch() {
 // they are held constant here and never read as a local edit.
 function profileColumnsFromPrefs(payload) {
   const prefs = {};
-  for (const field of PREF_FIELDS) {
+  for (const field of ACCOUNT_PREF_FIELDS) {
     if (ACCOUNT_OWNED_FIELDS.has(field) || sharedFieldLocks.has(field)) continue;
     prefs[field] = typeof payload[field] === "string" ? payload[field] : "";
   }
@@ -1188,7 +1192,7 @@ function queueProfileUpsert(columns = PROFILE_COLUMNS, preferenceKeys) {
   // rather than the caller's cache diff: the baseline is what the account
   // actually holds, so it also catches columns the cache already disagreed
   // with (e.g. a queued write the user has since edited again).
-  markProfileDirty(Object.keys(changedProfileColumns().changed), preferenceKeys);
+  markProfileDirty(lastSyncedProfile ? Object.keys(changedProfileColumns().changed) : columns, preferenceKeys);
   if (profileUpsertTimer) clearTimeout(profileUpsertTimer);
   profileUpsertTimer = setTimeout(() => {
     profileUpsertTimer = 0;
@@ -1242,7 +1246,7 @@ async function flushProfileUpsert() {
   // The first write for an account with no profiles row is an insert: send
   // every column so the row is created whole (a partial insert would leave
   // the required columns to database defaults the client can't guarantee).
-  const patch = profileRowExists ? changed : full;
+  const patch = { ...(profileRowExists ? changed : full) };
   const userIdAtStart = window.birdtripAuth.user.id;
   const writesPreferences = Object.hasOwn(patch, "preferences");
   const dirtyKeysAtStart = writesPreferences ? readDirtyPreferenceKeys() : new Set();
@@ -1254,13 +1258,19 @@ async function flushProfileUpsert() {
       const currentAccount = await window.birdtripAuth.getProfile();
       if (window.birdtripAuth?.user?.id !== userIdAtStart) return;
       if (!currentAccount) break;
+      if (!profileRowExists && currentAccount.row_exists === true) {
+        // A peer created the row after our missing-row read. Reconcile every
+        // column against it instead of reusing the old full insert payload.
+        await runMergeAndHydrate();
+        return;
+      }
       const currentPreferences = normalizeProfileColumns(currentAccount).preferences;
       patch.preferences = { ...currentPreferences };
       for (const key of dirtyKeysAtStart) {
         if (Object.hasOwn(full.preferences, key)) patch.preferences[key] = full.preferences[key];
         else delete patch.preferences[key];
       }
-      writeGuard = { expectedPreferences: currentPreferences, insertOnly: currentAccount.row_exists !== true };
+      writeGuard = { expectedPreferences: currentAccount.preferences || {}, insertOnly: currentAccount.row_exists !== true };
     }
     try {
       result = await window.birdtripAuth.upsertProfile(patch, writeGuard);
@@ -1729,7 +1739,7 @@ function applyMergeDecisions(account, decisions) {
     transitions.push(hydratePreferencesFromAccount(account));
   } else if (decisions.preferences === "merge-silently"
       && account.preferences && typeof account.preferences === "object") {
-    for (const field of PREF_FIELDS) {
+    for (const field of ACCOUNT_PREF_FIELDS) {
       if (ACCOUNT_OWNED_FIELDS.has(field)) continue;
       const value = account.preferences[field];
       if (typeof value === "string" && value.length) {
@@ -1858,7 +1868,7 @@ function hydratePreferencesFromAccount(account) {
   const prefs = (account.preferences && typeof account.preferences === "object")
     ? account.preferences : {};
   const transitions = [];
-  for (const field of PREF_FIELDS) {
+  for (const field of ACCOUNT_PREF_FIELDS) {
     if (ACCOUNT_OWNED_FIELDS.has(field)) continue;
     if (!Object.prototype.hasOwnProperty.call(prefs, field)) continue;
     const value = prefs[field];
@@ -1897,7 +1907,7 @@ function applyAccountProfile(profile, which) {
   }
 
   if (which.preferences && profile.preferences && typeof profile.preferences === "object") {
-    for (const field of PREF_FIELDS) {
+    for (const field of ACCOUNT_PREF_FIELDS) {
       const value = profile.preferences[field];
       if (typeof value === "string" && value.length) {
         applyPreferenceField(field, value);

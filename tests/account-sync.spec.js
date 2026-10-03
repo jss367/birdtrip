@@ -43,11 +43,11 @@ async function accountPage(page, targets = "Gilded Flicker") {
 }
 
 test("failed first reconciliation preserves a subsequent local clear on reload", async ({ page }) => {
-  // A first merge has a local preference to write back, so it really fails
+  // A first merge has a local account preference to write back, so it really fails
   // rather than committing the sync marker through a no-change diff.
   await page.addInitScript(() => {
     if (!localStorage.getItem("testSeeded")) {
-      localStorage.setItem("routeBirdingPrefs", JSON.stringify({ origin: "Local origin" }));
+      localStorage.setItem("routeBirdingPrefs", JSON.stringify({ maxStops: "12" }));
       localStorage.setItem("testSeeded", "1");
     }
   });
@@ -449,4 +449,63 @@ test("concurrent preference writes retry atomically without losing either edit",
   await expect.poll(() => account.preferences.maxStops).toBe("18");
   expect(conflicts).toBe(1);
   expect(initialReads).toBe(3);
+});
+
+
+test("a creation conflict reconciles the winning row before any update", async ({ page }) => {
+  await accountPage(page);
+  await expect.poll(() => page.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+  await page.evaluate(async () => {
+    window.clearStateOnSignOut();
+    const empty = { life_list: {}, targets: "", ebird_token: null, preferences: {}, row_exists: false };
+    let created = false;
+    window.winner = { life_list: { species: ["Gilded Flicker"] }, targets: "Winner target", ebird_token: "WINNER_TOKEN", preferences: { recentDays: "14", maxStops: "18" }, row_exists: true };
+    window.writesAfterConflict = [];
+    window.birdtripAuth.getProfile = async () => created ? window.winner : empty;
+    window.birdtripAuth.upsertProfile = async (patch, guard) => {
+      if (guard?.insertOnly) { created = true; return { ok: false, reason: "conflict" }; }
+      window.writesAfterConflict.push(patch);
+      window.winner = { ...window.winner, ...patch };
+      return { ok: true };
+    };
+    document.querySelector("#recentDays").value = "9";
+    window.savePreferences();
+    await window.runMergeAndHydrate();
+  });
+  await expect(page.locator("#targets")).toHaveValue("Winner target");
+  await expect(page.locator("#apiToken")).toHaveValue("WINNER_TOKEN");
+  await expect.poll(() => page.evaluate(() => window.writesAfterConflict.length)).toBeGreaterThan(0);
+  const winner = await page.evaluate(() => window.winner);
+  expect(winner.targets).toBe("Winner target");
+  expect(winner.ebird_token).toBe("WINNER_TOKEN");
+  expect(winner.life_list.species.map((name) => name.toLowerCase())).toEqual(["gilded flicker"]);
+  expect(winner.preferences.recentDays).toBe("9");
+  expect(winner.preferences.maxStops).toBe("18");
+});
+
+test("account preferences exclude private trip inputs on write and hydration", async ({ page }) => {
+  await accountPage(page);
+  await expect.poll(() => page.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+  await page.evaluate(async () => {
+    window.birdtripAuth.upsertProfile = async () => ({ ok: true });
+    await window.flushProfileUpsert();
+    document.querySelector("#origin").value = "Private origin";
+    document.querySelector("#destination").value = "Private destination";
+    document.querySelector("#departTime").value = "09:00";
+    document.querySelector("#speciesQuery").value = "Private species";
+    window.savePreferences();
+    const current = window.buildProfilePatch();
+    window.birdtripAuth.getProfile = async () => ({ ...current, row_exists: true, preferences: {
+      ...current.preferences, maxStops: "18", origin: "Remote origin", destination: "Remote destination", departTime: "10:00", speciesQuery: "Remote species"
+    } });
+    await window.runMergeAndHydrate();
+  });
+  await expect(page.locator("#origin")).toHaveValue("Private origin");
+  await expect(page.locator("#destination")).toHaveValue("Private destination");
+  await expect(page.locator("#departTime")).toHaveValue("09:00");
+  await expect(page.locator("#speciesQuery")).toHaveValue("Private species");
+  await expect(page.locator("#maxStops")).toHaveValue("18");
+  const keys = await page.evaluate(() => Object.keys(window.buildProfilePatch().preferences).sort());
+  expect(keys).toEqual(["mapProvider", "maxDetour", "maxStops", "radiusKm", "recentDays"]);
+  expect(await page.evaluate(() => window.profileWrites.every((patch) => !patch.preferences || Object.keys(patch.preferences).every((key) => ["mapProvider", "maxDetour", "maxStops", "radiusKm", "recentDays"].includes(key))))).toBe(true);
 });
