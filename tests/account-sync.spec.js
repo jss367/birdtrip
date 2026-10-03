@@ -149,3 +149,43 @@ test("another tab's successful flush preserves a debouncing edit through reload"
   await expect(second.locator("#targets")).toHaveValue("");
   expect(await second.evaluate(() => window.profileWrites.at(-1).targets)).toBe("");
 });
+
+
+test("a new tab retires a closed tab's dirty revision after reconciliation", async ({ page, context }) => {
+  await accountPage(page);
+  await page.locator("#targetRows .target-row input").first().evaluate((el) => {
+    el.value = "";
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.close(); // sessionStorage ownership disappears with the tab.
+  const reopened = await context.newPage();
+  // Mock the same account, then allow this reconciliation's write to succeed.
+  await stubApis(reopened);
+  await reopened.route("**/api/config", async (route) => {
+    const response = await route.fetch();
+    const config = await response.json();
+    config.supabase = { enabled: true, url: "https://example.invalid", anonKey: "test" };
+    await route.fulfill({ json: config });
+  });
+  await reopened.route("https://cdn.jsdelivr.net/**", (route) => route.abort());
+  await reopened.addInitScript(() => {
+    window.supabase = { createClient: () => ({
+      auth: {
+        getSession: async () => ({ data: { session: { user: { id: "account-a" } } } }),
+        onAuthStateChange: () => {}
+      },
+      from: () => ({
+        select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: {
+          targets: "Gilded Flicker", ebird_token: "PRIVATE_TOKEN", life_list: {}, preferences: {}
+        } }) }) }),
+        upsert: async () => ({})
+      })
+    }) };
+  });
+  await reopened.goto("/?auth=1");
+  await expect(reopened.locator("#targets")).toHaveValue("");
+  await expect.poll(() => reopened.evaluate(() => [...window.readDirtyProfileColumns()])).toEqual([]);
+  await reopened.reload();
+  // Once the pending clear is confirmed, a later remote update wins normally.
+  await expect(reopened.locator("#targets")).toHaveValue("Gilded Flicker");
+});

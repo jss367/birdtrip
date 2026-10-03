@@ -779,6 +779,8 @@ let profileUpsertFailed = false;
 // this tab's flush. A fresh key also separates duplicated-tab descendants.
 const PROFILE_DIRTY_OWNERS_KEY = `${PROFILE_DIRTY_KEY}Owners`;
 const PROFILE_DIRTY_PREFIX = `${PROFILE_DIRTY_KEY}:`;
+const PROFILE_DIRTY_ACK_PREFIX = `${PROFILE_DIRTY_KEY}Ack:`;
+let reconciledDirtyRecords = new Map();
 function profileDirtyRevision() {
   // randomUUID is unavailable on non-HTTPS LAN development origins.
   return crypto.randomUUID?.() || `${Date.now()}-${Math.random()}-${Math.random()}`;
@@ -811,7 +813,10 @@ function readDirtyProfileColumns() {
     for (let index = 0; index < localStorage.length; index += 1) {
       const key = localStorage.key(index);
       if (!key?.startsWith(PROFILE_DIRTY_PREFIX)) continue;
-      for (const column of parseDirtyColumns(localStorage.getItem(key))) columns.add(column);
+      const raw = localStorage.getItem(key);
+      const record = JSON.parse(raw || "null");
+      if (record?.revision && localStorage.getItem(`${PROFILE_DIRTY_ACK_PREFIX}${record.revision}`)) continue;
+      for (const column of parseDirtyColumns(raw)) columns.add(column);
     }
   } catch { /* storage unavailable */ }
   return columns;
@@ -820,10 +825,15 @@ function readDirtyProfileColumns() {
 function markProfileDirty(columns) {
   if (!columns.length) return;
   try {
-    const dirty = new Set(parseDirtyColumns(localStorage.getItem(profileDirtyRecordKey)));
+    const previousRaw = localStorage.getItem(profileDirtyRecordKey);
+    const previousRecord = JSON.parse(previousRaw || "null");
+    const acknowledged = previousRecord?.revision && localStorage.getItem(`${PROFILE_DIRTY_ACK_PREFIX}${previousRecord.revision}`);
+    const dirty = new Set(acknowledged ? [] : parseDirtyColumns(previousRaw));
     for (const column of columns) dirty.add(column);
     // The revision changes even for a second edit to the same column.
-    localStorage.setItem(profileDirtyRecordKey, JSON.stringify({ revision: profileDirtyRevision(), columns: [...dirty] }));
+    const full = buildProfilePatch();
+    const values = Object.fromEntries([...dirty].map((column) => [column, stableStringify(full[column])]));
+    localStorage.setItem(profileDirtyRecordKey, JSON.stringify({ revision: profileDirtyRevision(), columns: [...dirty], values }));
   } catch { /* storage unavailable */ }
 }
 
@@ -838,12 +848,32 @@ function captureOwnedDirtyRecords() {
   return captured;
 }
 
+// Capture peer/orphan revisions only when their actual pending values are
+// represented in the local snapshot being reconciled. A regular flush uses
+// only its own records; reconciliation can confirm records from closed tabs.
+function captureReconciledDirtyRecords(full) {
+  const captured = new Map();
+  try {
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (!key?.startsWith(PROFILE_DIRTY_PREFIX)) continue;
+      const raw = localStorage.getItem(key);
+      const record = JSON.parse(raw || "null");
+      if (!record?.revision || localStorage.getItem(`${PROFILE_DIRTY_ACK_PREFIX}${record.revision}`)) continue;
+      if (parseDirtyColumns(raw).every((column) => record.values?.[column] === stableStringify(full[column]))) {
+        captured.set(key, raw);
+      }
+    }
+  } catch { /* storage unavailable */ }
+  return captured;
+}
+
 function wipeDirtyProfileRecords() {
   try {
     const keys = [];
     for (let index = 0; index < localStorage.length; index += 1) {
       const key = localStorage.key(index);
-      if (key?.startsWith(PROFILE_DIRTY_PREFIX)) keys.push(key);
+      if (key?.startsWith(PROFILE_DIRTY_PREFIX) || key?.startsWith(PROFILE_DIRTY_ACK_PREFIX)) keys.push(key);
     }
     for (const key of keys) localStorage.removeItem(key);
     localStorage.removeItem(PROFILE_DIRTY_KEY);
@@ -873,13 +903,22 @@ function retainedOwnerPresent() {
   }
 }
 
-function clearProfileDirtyIfIdle(captured) {
+function clearProfileDirtyIfIdle(captured, reconciled) {
   if (profileUpsertTimer || profileUpsertPending) return;
   try {
     for (const [key, raw] of captured) {
       // Only this document writes its current key. Newer edits must survive
       // the completion of an older write; other tabs have different keys.
       if (localStorage.getItem(key) === raw) localStorage.removeItem(key);
+    }
+    for (const [, raw] of reconciled) {
+      const record = JSON.parse(raw);
+      // Acknowledge the exact immutable revision, never delete a peer's key:
+      // it may already contain a newer edit by the time this write completes.
+      localStorage.setItem(`${PROFILE_DIRTY_ACK_PREFIX}${record.revision}`, "1");
+    }
+    for (const [key, raw] of reconciled) {
+      if (reconciledDirtyRecords.get(key) === raw) reconciledDirtyRecords.delete(key);
     }
   } catch { /* storage unavailable */ }
 }
@@ -1110,11 +1149,12 @@ async function flushProfileUpsert() {
   // stale browser can't overwrite columns another device updated.
   const { full, changed } = changedProfileColumns();
   const dirtyRecordsAtStart = captureOwnedDirtyRecords();
+  const reconciledRecordsAtStart = new Map(reconciledDirtyRecords);
   if (!Object.keys(changed).length) {
     // Local state already matches the account, so a first reconciliation
     // (if one is pending) is complete without a write.
     commitPendingSyncedUser();
-    clearProfileDirtyIfIdle(dirtyRecordsAtStart);
+    clearProfileDirtyIfIdle(dirtyRecordsAtStart, reconciledRecordsAtStart);
     return;
   }
   // The first write for an account with no profiles row is an insert: send
@@ -1142,7 +1182,7 @@ async function flushProfileUpsert() {
     lastSyncedProfile = { ...lastSyncedProfile, ...patch };
     profileUpsertFailed = false;
     commitPendingSyncedUser();
-    clearProfileDirtyIfIdle(dirtyRecordsAtStart);
+    clearProfileDirtyIfIdle(dirtyRecordsAtStart, reconciledRecordsAtStart);
   }
 }
 
@@ -1172,6 +1212,7 @@ function clearStateOnSignOut() {
   lastSyncedProfile = null;
   profileRowExists = false;
   pendingSyncedUserId = null;
+  reconciledDirtyRecords = new Map();
   // Drop any write still debouncing: it belongs to the account that just
   // signed out and would only produce a spurious "couldn't save" warning.
   if (profileUpsertTimer) {
@@ -1240,6 +1281,7 @@ function handleInvoluntarySessionLoss(lostUserId) {
   lastSyncedProfile = null;
   profileRowExists = false;
   pendingSyncedUserId = null;
+  reconciledDirtyRecords = new Map();
   // Drop any write still debouncing: it can't complete without a session.
   if (profileUpsertTimer) {
     clearTimeout(profileUpsertTimer);
@@ -1337,6 +1379,7 @@ async function performMergeAndHydrate() {
       }
     }
 
+    const dirtyRecordsToReconcile = captureReconciledDirtyRecords(buildProfilePatch());
     let account = await window.birdtripAuth.getProfile();
     // The user may have signed out (or switched accounts) while we were awaiting.
     if (!window.birdtripAuth.user || window.birdtripAuth.user.id !== userIdAtStart) return;
@@ -1517,6 +1560,7 @@ async function performMergeAndHydrate() {
     // Don't persist the reconciliation marker yet: it becomes durable only
     // after the write-back below confirms the account holds the merged state.
     pendingSyncedUserId = userIdAtStart;
+    reconciledDirtyRecords = dirtyRecordsToReconcile;
     // Persist ownership before attempting the first write-back. A failed
     // write must not erase the meaning of subsequent dirty local clears on
     // reload; a different account must also never inherit this cached data.
