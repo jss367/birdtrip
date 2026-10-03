@@ -66,16 +66,16 @@ test("browser zones match origins by standard time so daylight saving does not b
   assert.equal(timing.matchesSolarZone({ standardOffsetMinutes: -300, lng: undefined }), true);
 });
 
-test("browser zones just east of the antimeridian match their solar zone across the date line", () => {
-  // Tonga, Samoa, and Kiritimati keep UTC+13/+14 clocks at solar UTC-12/-10;
-  // Chatham's UTC+12:45 sits at solar UTC-12.
-  assert.equal(timing.matchesSolarZone({ standardOffsetMinutes: 780, lng: -175.2 }), true);
-  assert.equal(timing.matchesSolarZone({ standardOffsetMinutes: 765, lng: -176.56 }), true);
-  assert.equal(timing.matchesSolarZone({ standardOffsetMinutes: 780, lng: -171.76 }), true);
-  assert.equal(timing.matchesSolarZone({ standardOffsetMinutes: 840, lng: -157.4 }), true);
-  // Auckland is on the near side of the line and still matches.
+test("date-line browser clocks are not inferred from longitude alone", () => {
+  // These origins need civil timezone metadata before we can safely use
+  // the viewer's calendar date; longitude-only matches remain approximate.
+  for (const [standardOffsetMinutes, lng] of [[780, -175.2], [765, -176.56], [780, -171.76], [840, -157.4]]) {
+    assert.equal(timing.matchesSolarZone({ standardOffsetMinutes, lng }), false);
+  }
+  // Samoa and Kiritimati viewers must not lend their calendar date to Hawaii.
+  assert.equal(timing.matchesSolarZone({ standardOffsetMinutes: 780, lng: -157.86 }), false);
+  assert.equal(timing.matchesSolarZone({ standardOffsetMinutes: 840, lng: -157.86 }), false);
   assert.equal(timing.matchesSolarZone({ standardOffsetMinutes: 720, lng: 174.76 }), true);
-  // An Auckland viewer opening a Honolulu trip is still clearly elsewhere.
   assert.equal(timing.matchesSolarZone({ standardOffsetMinutes: 720, lng: -157.86 }), false);
 });
 
