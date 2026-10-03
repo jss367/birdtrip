@@ -328,3 +328,41 @@ test("reconciliation preserves a live peer's unmatched pending preference", asyn
   expect(await page.evaluate(() => window.retryPatch.preferences.recentDays)).toBe("9");
   expect(await page.evaluate(() => localStorage.getItem(window.peerDirtyKey))).toBeNull();
 });
+
+
+test("a pending preference does not overwrite a newer remote setting on reload", async ({ page }) => {
+  await accountPage(page);
+  await expect.poll(() => page.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+  await page.evaluate(async () => {
+    window.birdtripAuth.upsertProfile = async () => ({ ok: true });
+    await window.flushProfileUpsert();
+  });
+  expect(await page.evaluate(() => [...window.readDirtyProfileColumns()])).toEqual([]);
+  await page.evaluate(() => {
+    document.querySelector("#recentDays").value = "9";
+    window.savePreferences();
+  });
+  await page.addInitScript(() => {
+    const createClient = window.supabase.createClient;
+    window.supabase.createClient = (...args) => {
+      const client = createClient(...args);
+      const from = client.from;
+      client.from = (...table) => {
+        const query = from(...table);
+        query.select = () => ({ eq: () => ({ maybeSingle: async () => ({ data: {
+          life_list: {}, targets: "Gilded Flicker", ebird_token: "PRIVATE_TOKEN",
+          preferences: { recentDays: "7", maxStops: "18" }
+        } }) }) });
+        return query;
+      };
+      return client;
+    };
+  });
+  await page.reload();
+  await expect(page.locator("#recentDays")).toHaveValue("9");
+  await expect(page.locator("#maxStops")).toHaveValue("18");
+  await expect.poll(() => page.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+  const written = await page.evaluate(() => window.profileWrites.at(-1).preferences);
+  expect(written.recentDays).toBe("9");
+  expect(written.maxStops).toBe("18");
+});

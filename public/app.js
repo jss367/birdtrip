@@ -739,7 +739,10 @@ function savePreferences({ clearUserData = false } = {}) {
     addWarning("The imported life list was too large to save in this browser, but it will work until the page is refreshed.");
     renderWarnings();
   }
-  queueProfileUpsert(changedColumns);
+  const beforePreferences = previous ? profileColumnsFromPrefs(previous).preferences : {};
+  const afterPreferences = profileColumnsFromPrefs(payload).preferences;
+  const preferenceKeys = Object.keys(afterPreferences).filter((key) => afterPreferences[key] !== beforePreferences[key]);
+  queueProfileUpsert(changedColumns, preferenceKeys);
 }
 
 const PROFILE_UPSERT_DEBOUNCE_MS = 750;
@@ -832,6 +835,35 @@ function parseDirtyColumns(raw) {
   } catch { return PROFILE_COLUMNS; }
 }
 
+function matchingDirtyPreferenceKeys(record, full) {
+  const keys = Array.isArray(record?.preferenceKeys) ? record.preferenceKeys : Object.keys(full.preferences);
+  if (!record?.values) return keys;
+  try {
+    const values = JSON.parse(record.values.preferences || "{}");
+    return keys.filter((key) => stableStringify(values[key]) === stableStringify(full.preferences[key]));
+  } catch { return []; }
+}
+
+function readDirtyPreferenceKeys() {
+  const full = buildProfilePatch();
+  const keys = new Set();
+  try {
+    if (parseDirtyColumns(localStorage.getItem(PROFILE_DIRTY_KEY)).includes("preferences")) {
+      for (const key of Object.keys(full.preferences)) keys.add(key);
+    }
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (!key?.startsWith(PROFILE_DIRTY_PREFIX)) continue;
+      const raw = localStorage.getItem(key);
+      const record = JSON.parse(raw || "null");
+      if (record?.revision && localStorage.getItem(`${PROFILE_DIRTY_ACK_PREFIX}${record.revision}`)) continue;
+      if (!parseDirtyColumns(raw).includes("preferences")) continue;
+      for (const field of matchingDirtyPreferenceKeys(record, full)) keys.add(field);
+    }
+  } catch { /* storage unavailable */ }
+  return keys;
+}
+
 function readDirtyProfileColumns() {
   const columns = new Set();
   const full = buildProfilePatch();
@@ -846,14 +878,15 @@ function readDirtyProfileColumns() {
       for (const column of parseDirtyColumns(raw)) {
         // Another tab may have replaced the whole browser cache with stale
         // values. Its snapshot cannot claim an unmatched pending value.
-        if (!record?.values || record.values[column] === stableStringify(full[column])) columns.add(column);
+        if (column === "preferences" ? matchingDirtyPreferenceKeys(record, full).length > 0
+          : !record?.values || record.values[column] === stableStringify(full[column])) columns.add(column);
       }
     }
   } catch { /* storage unavailable */ }
   return columns;
 }
 
-function markProfileDirty(columns) {
+function markProfileDirty(columns, changedPreferenceKeys) {
   if (!columns.length) return;
   try {
     const previousRaw = localStorage.getItem(profileDirtyRecordKey);
@@ -864,7 +897,12 @@ function markProfileDirty(columns) {
     // The revision changes even for a second edit to the same column.
     const full = buildProfilePatch();
     const values = Object.fromEntries([...dirty].map((column) => [column, stableStringify(full[column])]));
-    localStorage.setItem(profileDirtyRecordKey, JSON.stringify({ revision: profileDirtyRevision(), columns: [...dirty], values }));
+    const preferenceKeys = new Set(acknowledged ? [] : previousRecord?.preferenceKeys || []);
+    const currentPreferenceKeys = changedPreferenceKeys ?? (lastSyncedProfile
+      ? Object.keys(full.preferences).filter((key) => full.preferences[key] !== lastSyncedProfile.preferences?.[key])
+      : Object.keys(full.preferences));
+    if (columns.includes("preferences")) for (const key of currentPreferenceKeys) preferenceKeys.add(key);
+    localStorage.setItem(profileDirtyRecordKey, JSON.stringify({ revision: profileDirtyRevision(), columns: [...dirty], values, preferenceKeys: [...preferenceKeys] }));
   } catch { /* storage unavailable */ }
 }
 
@@ -1116,7 +1154,7 @@ let profileUpsertPending = false;
 // `columns`: the profile columns the caller's save changed, per its cache
 // diff (savePreferences). Only consulted before an account baseline exists;
 // once one does, the diff against it is authoritative.
-function queueProfileUpsert(columns = PROFILE_COLUMNS) {
+function queueProfileUpsert(columns = PROFILE_COLUMNS, preferenceKeys) {
   if (suppressProfileUpsert) return;
   if (!window.birdtripAuth || !window.birdtripAuth.user) {
     // Nobody is signed in *yet*. The form is interactive before /api/config
@@ -1137,7 +1175,7 @@ function queueProfileUpsert(columns = PROFILE_COLUMNS) {
     // cache diff reports (not every column): a column this edit left alone
     // still matches the last confirmed sync, and the account, possibly
     // updated from another device since, stays canonical for it.
-    if (syncedUserMarkerPresent() || retainedOwnerPresent()) markProfileDirty(columns);
+    if (syncedUserMarkerPresent() || retainedOwnerPresent()) markProfileDirty(columns, preferenceKeys);
     return;
   }
   // The columns now ahead of the account stay recorded until an upsert (or a
@@ -1145,7 +1183,7 @@ function queueProfileUpsert(columns = PROFILE_COLUMNS) {
   // rather than the caller's cache diff: the baseline is what the account
   // actually holds, so it also catches columns the cache already disagreed
   // with (e.g. a queued write the user has since edited again).
-  markProfileDirty(Object.keys(changedProfileColumns().changed));
+  markProfileDirty(Object.keys(changedProfileColumns().changed), preferenceKeys);
   if (profileUpsertTimer) clearTimeout(profileUpsertTimer);
   profileUpsertTimer = setTimeout(() => {
     profileUpsertTimer = 0;
@@ -1574,14 +1612,14 @@ async function performMergeAndHydrate() {
 
     // Preferences merge silently: account-wins for any non-empty account value,
     // local wins where account is empty. Excludes ACCOUNT_OWNED_FIELDS, which
-    // have their own column + explicit conflict handling above. Under
-    // dirtyLocalWins local preferences (including clears) are the newest
-    // edits, so they stand and the write-back carries them to the account;
-    // a clean column under an ownership tie hydrates canonically instead.
+    // have their own column + explicit conflict handling above. With pending
+    // edits, keep only the recorded preference keys and hydrate clean keys
+    // from the account so a stale setting cannot overwrite a remote edit.
     if (accountCanonical("preferences")) {
       decisions.preferences = "use-account";
     } else if (dirtyLocalWins("preferences")) {
-      decisions.preferences = "keep-local";
+      decisions.preferences = "merge-dirty";
+      decisions.preferenceKeys = readDirtyPreferenceKeys();
     } else {
       decisions.preferences = "merge-silently";
     }
@@ -1657,12 +1695,16 @@ function applyMergeDecisions(account, decisions) {
   }
 
   // preferences: silent account-wins per non-empty field, skipping any field
-  // that has its own column + explicit conflict handling. "keep-local"
-  // (dirty reconciliation) leaves every local preference in place instead;
+  // that has its own column + explicit conflict handling. "merge-dirty"
+  // preserves only settings with matching pending mutations;
   // "use-account" (clean column under an ownership tie) hydrates them
   // canonically, clears included.
   const transitions = [];
-  if (decisions.preferences === "use-account") {
+  if (decisions.preferences === "merge-dirty") {
+    const cleanPreferences = Object.fromEntries(Object.entries(account.preferences || {})
+      .filter(([key]) => !decisions.preferenceKeys.has(key)));
+    transitions.push(hydratePreferencesFromAccount({ ...account, preferences: cleanPreferences }));
+  } else if (decisions.preferences === "use-account") {
     transitions.push(hydratePreferencesFromAccount(account));
   } else if (decisions.preferences === "merge-silently"
       && account.preferences && typeof account.preferences === "object") {
