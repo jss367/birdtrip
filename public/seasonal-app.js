@@ -41,8 +41,12 @@
     if (window.lucide) window.lucide.createIcons();
   }
 
-  function setStatus(message) {
-    if (els.status) els.status.textContent = message || "";
+  function setStatus(message, options = {}) {
+    if (!els.status) return;
+    els.status.textContent = message || "";
+    // Clipboard-fallback URLs must stay fully visible and copyable; the
+    // default status style truncates at 340px.
+    els.status.classList.toggle("is-expanded", Boolean(options.expanded));
   }
 
   function storedApiToken() {
@@ -76,6 +80,9 @@
       const error = new Error(body?.error || `Request failed (${response.status})`);
       error.status = response.status;
       error.body = body;
+      // Only eBird endpoints can fail on the token; a 401/403 from geocoding
+      // is the upstream geocoder's, so renderError must not blame the token.
+      error.ebird = url.startsWith("/api/ebird/");
       throw error;
     }
     return body;
@@ -149,8 +156,11 @@
       if (list.hidden) return;
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
-        const step = event.key === "ArrowDown" ? 1 : -1;
-        ac.active = (ac.active + step + ac.items.length) % ac.items.length;
+        const count = ac.items.length;
+        // With nothing highlighted, ArrowDown starts at the first item and
+        // ArrowUp at the last.
+        if (ac.active < 0) ac.active = event.key === "ArrowDown" ? 0 : count - 1;
+        else ac.active = (ac.active + (event.key === "ArrowDown" ? 1 : -1) + count) % count;
         render();
       } else if (event.key === "Enter" && ac.active >= 0) {
         event.preventDefault();
@@ -219,7 +229,7 @@
   }
 
   function renderError(error) {
-    if (error && (error.status === 401 || error.status === 403)) return renderTokenNotice();
+    if (error?.ebird && (error.status === 401 || error.status === 403)) return renderTokenNotice();
     renderMessage("triangle-alert", escapeHtml(error?.message || "Something went wrong. Try again."));
   }
 
@@ -545,7 +555,7 @@
       await copyTextToClipboard(window.location.href);
       setStatus("Link copied.");
     } catch {
-      setStatus(window.location.href);
+      setStatus(window.location.href, { expanded: true });
     }
   });
 

@@ -69,10 +69,17 @@
   // is UTC+1 in winter but UTC+2 in summer, and only the former is within
   // tolerance. Zones that run two hours ahead of solar time all year (western
   // Spain, western China) still fail and fall back to the solar estimate.
+  // Civil zones ahead of UTC+12 (Chatham, Samoa, Tonga, Kiritimati) lie just
+  // east of the antimeridian, where solar time reads about a day behind their
+  // clocks (Tonga is UTC+13 at solar UTC-12), so those zones are also compared
+  // a day ahead. Other zones are not wrapped: an Auckland (UTC+12) viewer
+  // opening a Hawaii trip is a day and two hours away, not one hour.
   function matchesSolarZone({ standardOffsetMinutes, lng }) {
     const solarOffset = approximateUtcOffsetMinutes(lng);
     if (!Number.isFinite(standardOffsetMinutes) || solarOffset === null) return true;
-    return Math.abs(standardOffsetMinutes - solarOffset) <= 90;
+    const difference = standardOffsetMinutes - solarOffset;
+    if (Math.abs(difference) <= 90) return true;
+    return standardOffsetMinutes > 720 && Math.abs(difference - 1440) <= 90;
   }
 
   // Resolve the UTC offset (in minutes) to use when displaying a stop's clock
@@ -210,9 +217,14 @@
       if (hoursAfterSunrise >= 3 && hoursBeforeSunset >= 2.5) {
         return { quality: "prime", note: "midday thermals are ideal here" };
       }
-      return { quality: "fair", note: "soaring birds wait for thermals to build mid-morning" };
+      if (hoursBeforeSunset < 0) return { quality: "fair", note: "soaring birds have settled to roost after sunset" };
+      if (hoursAfterSunrise < hoursBeforeSunset) {
+        return { quality: "fair", note: "soaring birds wait for thermals to build mid-morning" };
+      }
+      return { quality: "fair", note: "thermals fade and soaring birds settle late in the day" };
     }
     if (timeWindow === "daylight") {
+      if (hoursBeforeSunset < 0) return { quality: "fair", note: "light is going after sunset, though open water stays watchable" };
       if (hoursAfterSunrise <= 4) return { quality: "prime", note: "morning light and activity are ideal" };
       return { quality: "good", note: "open-water birds stay active through the day" };
     }
