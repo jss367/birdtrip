@@ -77,3 +77,40 @@ test("refresh in a second tab cannot consume explicit sign-out intent", async ({
   await expect(second.locator("#targets")).toHaveValue("");
   expect(await second.evaluate(() => localStorage.getItem("routeBirdingApiToken"))).toBeNull();
 });
+
+
+test("account switch waits for an old fetch then hydrates the current user", async ({ page }) => {
+  await accountPage(page);
+  await page.evaluate(() => {
+    const auth = window.birdtripAuth;
+    auth.getProfile = () => new Promise((resolve) => { window.finishOldProfile = resolve; });
+    // Start an A reconciliation and hold its fetch.
+    window.runMergeAndHydrate();
+    window.authEvent("SIGNED_IN", { user: { id: "account-b" } });
+    auth.getProfile = async () => ({ targets: "B target", ebird_token: "B_TOKEN", life_list: {}, preferences: {}, row_exists: true });
+  });
+  // Prior account fields are removed without waiting for its slow fetch.
+  await expect(page.locator("#apiToken")).toHaveValue("");
+  await page.evaluate(() => window.finishOldProfile({ targets: "A stale target", ebird_token: "A_TOKEN", life_list: {}, preferences: {} }));
+  await expect(page.locator("#targets")).toHaveValue("B target");
+  await expect(page.locator("#apiToken")).toHaveValue("B_TOKEN");
+});
+
+test("account switch cancels the old merge dialog and hydrates the current user", async ({ page }) => {
+  await accountPage(page);
+  await page.evaluate(() => {
+    window.birdtripAuth.getProfile = async () => ({ targets: "Conflicting A", ebird_token: "PRIVATE_TOKEN", life_list: {}, preferences: {}, row_exists: true });
+    localStorage.removeItem("routeBirdingSyncedUser");
+    localStorage.removeItem("routeBirdingRetainedOwner");
+    window.markProfileDirty(["targets"]);
+    window.runMergeAndHydrate();
+  });
+  await expect(page.locator("#authMergeModal")).toBeVisible();
+  await page.evaluate(() => {
+    window.birdtripAuth.getProfile = async () => ({ targets: "B target", ebird_token: "B_TOKEN", life_list: {}, preferences: {}, row_exists: true });
+    window.authEvent("SIGNED_IN", { user: { id: "account-b" } });
+  });
+  await expect(page.locator("#authMergeModal")).toBeHidden();
+  await expect(page.locator("#targets")).toHaveValue("B target");
+  await expect(page.locator("#apiToken")).toHaveValue("B_TOKEN");
+});

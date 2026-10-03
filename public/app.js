@@ -1076,6 +1076,7 @@ async function flushProfileUpsert() {
   // every column so the row is created whole (a partial insert would leave
   // the required columns to database defaults the client can't guarantee).
   const patch = profileRowExists ? changed : full;
+  const userIdAtStart = window.birdtripAuth.user.id;
   let result = null;
   try {
     result = await window.birdtripAuth.upsertProfile(patch);
@@ -1084,6 +1085,9 @@ async function flushProfileUpsert() {
     // the failure warning below still fires instead of an unhandled rejection.
     result = null;
   }
+  // A completed write for the previous user cannot become this account
+  // baseline or commit its pending reconciliation marker.
+  if (window.birdtripAuth?.user?.id !== userIdAtStart) return;
   if (!result || !result.ok) {
     reportProfileUpsertFailure();
   } else {
@@ -1105,7 +1109,9 @@ function reportProfileUpsertFailure() {
 }
 
 // Reentrancy guard: the auth listener can fire repeatedly during sign-in.
-let mergeAndHydrateInFlight = false;
+let mergeAndHydratePromise = null;
+let mergeAndHydrateUserId = null;
+let cancelAccountMergeDialog = null;
 
 // Resolves once the current sign-in's merge/hydrate has finished (immediately
 // when nobody is signed in). The shared-link auto-run awaits this so a run=1
@@ -1216,12 +1222,29 @@ const MERGE_OPTIONS_SCALAR_CONFLICT = [
   { value: "keep-local", label: "Use this browser" }
 ];
 
-async function runMergeAndHydrate() {
-  if (mergeAndHydrateInFlight) return;
-  if (!window.birdtripAuth || !window.birdtripAuth.user) return;
+function runMergeAndHydrate() {
+  const userId = window.birdtripAuth?.user?.id;
+  if (!userId) return Promise.resolve();
+  if (mergeAndHydratePromise) {
+    const activeUserId = mergeAndHydrateUserId;
+    return mergeAndHydratePromise.catch(() => {}).then(() => {
+      if (window.birdtripAuth?.user?.id && window.birdtripAuth.user.id !== activeUserId) {
+        return runMergeAndHydrate();
+      }
+    });
+  }
+  mergeAndHydrateUserId = userId;
+  mergeAndHydratePromise = performMergeAndHydrate().finally(() => {
+    mergeAndHydratePromise = null;
+    mergeAndHydrateUserId = null;
+  });
+  return mergeAndHydratePromise;
+}
+
+async function performMergeAndHydrate() {
+  if (!window.birdtripAuth?.user) return;
   const userIdAtStart = window.birdtripAuth.user.id;
-  mergeAndHydrateInFlight = true;
-  try {
+  {
     // Local data that still belongs to another account must not reach this
     // one. Two records can name that owner: the retained-owner record from
     // an involuntary session loss this page observed, and the sync marker
@@ -1449,8 +1472,6 @@ async function runMergeAndHydrate() {
     // Same as the hydrate branch: keep any adapter transition the merge
     // started inside accountHydrationReady.
     await applied;
-  } finally {
-    mergeAndHydrateInFlight = false;
   }
 }
 
@@ -1553,11 +1574,13 @@ function showMergeDialog(conflicts) {
       confirm.removeEventListener("click", onConfirm);
       document.removeEventListener("keydown", onKey);
       modal.hidden = true;
+      cancelAccountMergeDialog = null;
       resolve(choices);
     };
     const onKey = (e) => {
       if (e.key === "Escape") onConfirm();
     };
+    cancelAccountMergeDialog = onConfirm;
     confirm.addEventListener("click", onConfirm);
     document.addEventListener("keydown", onKey);
   });
@@ -2350,7 +2373,12 @@ async function loadAppConfig() {
         const wasSignedIn = Boolean(priorUserId);
         const isSignedIn = Boolean(nextUserId);
         previousUserId = nextUserId;
+        // A modal for the previous account must not block the new account.
+        cancelAccountMergeDialog?.();
         if (isSignedIn) {
+          // Clear the previous account immediately, even while its fetch is
+          // pending. The queued hydrate fills only the current user's data.
+          if (wasSignedIn) clearStateOnSignOut();
           // onChange fires synchronously with a restored session while
           // loadAppConfig() is still awaited, so this promise is in place
           // before waitForAppConfig() releases the startup auto-run.
