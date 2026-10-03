@@ -149,3 +149,36 @@ test("reselecting the same origin invalidates delayed geolocation", async ({ pag
   await expect(page.locator("#origin")).toHaveValue(selected);
   await expect(page.locator("#useCurrentLocationButton")).toBeEnabled();
 });
+
+
+for (const kind of ["location", "species"]) {
+  test(`Escape dismisses ${kind} autocomplete while a replacement request stalls`, async ({ page }) => {
+    await stubApis(page);
+    const endpoint = kind === "location" ? "**/api/geocode**" : "**/api/ebird/taxonomy/search**";
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    await page.route(endpoint, async (route) => {
+      const q = new URL(route.request().url()).searchParams.get("q") || "";
+      if (q.endsWith("x")) await gate;
+      await route.fulfill({ json: kind === "location"
+        ? [{ name: "Test Center", lat: 41.4, lng: 2.1 }]
+        : [{ comName: "Test Bird", speciesCode: "test" }] });
+    });
+    await page.goto("/");
+    if (kind === "species") await page.click('[data-mode="species"]');
+    const input = page.locator(kind === "location" ? "#origin" : "#speciesQuery");
+    const list = page.locator(kind === "location" ? "#originSuggestions" : "#speciesSuggestions");
+    try {
+      await input.fill("Test");
+      await expect(list.locator("li[role=option]")).toHaveCount(1);
+      await input.press("x");
+      // Old items are still in memory, while new text has a loading display.
+      await expect(list.locator(".is-loading")).toHaveCount(1);
+      await input.press("Escape");
+      await expect(list).toBeHidden();
+      release();
+      await page.waitForTimeout(300);
+      await expect(list).toBeHidden();
+    } finally { release(); }
+  });
+}

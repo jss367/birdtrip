@@ -3279,6 +3279,13 @@ function setupLocationAutocomplete(field) {
   });
 
   inputEl.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      if (ctx.timer) clearTimeout(ctx.timer);
+      ctx.controller?.abort();
+      ctx.controller = null;
+      hideAutocomplete(field);
+      return;
+    }
     // Items fetched for other text (still on screen, or hidden behind
     // "Searching…") must not be navigable or selectable with Enter.
     if (listEl.hidden || !ctx.items.length || inputEl.value.trim() !== ctx.lastQuery) {
@@ -3299,8 +3306,6 @@ function setupLocationAutocomplete(field) {
         event.preventDefault();
         selectAutocompleteItem(field, ctx.activeIndex);
       }
-    } else if (event.key === "Escape") {
-      hideAutocomplete(field);
     }
   });
 
@@ -3489,6 +3494,13 @@ function setupSpeciesAutocomplete() {
   });
 
   inputEl.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      if (ctx.timer) clearTimeout(ctx.timer);
+      ctx.controller?.abort();
+      ctx.controller = null;
+      hideSpeciesAutocomplete();
+      return;
+    }
     if (listEl.hidden || !ctx.items.length || inputEl.value.trim() !== ctx.lastQuery) {
       if (event.key === "ArrowDown" && inputEl.value.trim().length >= 2) {
         event.preventDefault();
@@ -3507,8 +3519,6 @@ function setupSpeciesAutocomplete() {
         event.preventDefault();
         selectSpeciesItem(ctx.activeIndex);
       }
-    } else if (event.key === "Escape") {
-      hideSpeciesAutocomplete();
     }
   });
 
