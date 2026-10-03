@@ -366,3 +366,21 @@ test("a pending preference does not overwrite a newer remote setting on reload",
   expect(written.recentDays).toBe("9");
   expect(written.maxStops).toBe("18");
 });
+
+
+test("a live preference write merges newer remote keys before upserting", async ({ page }) => {
+  await accountPage(page);
+  await expect.poll(() => page.evaluate(() => window.profileWrites.length)).toBeGreaterThan(0);
+  await page.evaluate(async () => {
+    window.birdtripAuth.upsertProfile = async () => ({ ok: true });
+    await window.flushProfileUpsert();
+    // Another device changes only maxStops after this tab hydrated.
+    const current = window.buildProfilePatch();
+    window.birdtripAuth.getProfile = async () => ({ ...current, preferences: { ...current.preferences, maxStops: "18" }, row_exists: true });
+    window.birdtripAuth.upsertProfile = async (patch) => { window.liveWrite = patch; return { ok: true }; };
+    document.querySelector("#recentDays").value = "9";
+    window.savePreferences();
+  });
+  await expect.poll(() => page.evaluate(() => window.liveWrite?.preferences?.recentDays)).toBe("9");
+  expect(await page.evaluate(() => window.liveWrite.preferences.maxStops)).toBe("18");
+});

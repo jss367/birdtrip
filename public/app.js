@@ -1239,6 +1239,23 @@ async function flushProfileUpsert() {
   // the required columns to database defaults the client can't guarantee).
   const patch = profileRowExists ? changed : full;
   const userIdAtStart = window.birdtripAuth.user.id;
+  if (Object.hasOwn(patch, "preferences")) {
+    // JSONB upserts replace the whole object. Refresh untouched settings so
+    // a stale live device cannot overwrite another device's recent edits.
+    const dirtyKeysAtStart = readDirtyPreferenceKeys();
+    const currentAccount = await window.birdtripAuth.getProfile();
+    if (window.birdtripAuth?.user?.id !== userIdAtStart) return;
+    if (!currentAccount) {
+      reportProfileUpsertFailure();
+      return; // retain pending records for retry instead of writing stale JSON
+    }
+    const currentPreferences = normalizeProfileColumns(currentAccount).preferences;
+    patch.preferences = { ...currentPreferences };
+    for (const key of dirtyKeysAtStart) {
+      if (Object.hasOwn(full.preferences, key)) patch.preferences[key] = full.preferences[key];
+      else delete patch.preferences[key];
+    }
+  }
   let result = null;
   try {
     result = await window.birdtripAuth.upsertProfile(patch);
