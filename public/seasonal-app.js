@@ -3,6 +3,7 @@
   const STORAGE_KEY = "birdtripSeasonalView";
   const PREFS_KEY = "routeBirdingPrefs";
   const SESSION_TOKEN_KEY = "birdtripEbirdApiToken";
+  const UNSEEN_ONLY_KEY = "birdtripSeasonalUnseenOnly";
   const SEASON_ICONS = { winter: "snowflake", spring: "flower-2", summer: "sun", fall: "leaf" };
   const RECENT_RADIUS_KM = 25;
   const RECENT_DAYS = 30;
@@ -20,12 +21,18 @@
     resultContext: document.querySelector("#resultContext"),
     status: document.querySelector("#pageStatus"),
     shareButton: document.querySelector("#shareButton"),
-    tooltip: document.querySelector("#seasonalTooltip")
+    tooltip: document.querySelector("#seasonalTooltip"),
+    unseenOnlyToggle: document.querySelector("#unseenOnlyToggle"),
+    unseenOnly: document.querySelector("#unseenOnly")
   };
 
   const state = {
     busy: false,
-    ebirdConfigured: null
+    ebirdConfigured: null,
+    lifeList: { species: new Set(), count: 0 },
+    // The last rendered search, so the life-list toggle can re-render it
+    // without fetching again.
+    lastResult: null
   };
 
   function escapeHtml(value) {
@@ -62,6 +69,57 @@
     } catch {
       return "";
     }
+  }
+
+  // The trip planner owns the life list (import, clear, and account sync) and
+  // caches it in its preferences; this page only reads that cache.
+  function readLifeList() {
+    try {
+      const lifeList = JSON.parse(window.localStorage.getItem(PREFS_KEY) || "{}")?.lifeList;
+      const species = Array.isArray(lifeList?.species) ? lifeList.species : [];
+      const displayNames = Array.isArray(lifeList?.displayNames) ? lifeList.displayNames : [];
+      const aliases = new Set(species.map(BS.normalizeSpeciesName).filter(Boolean));
+      return { species: aliases, count: aliases.size ? displayNames.length || aliases.size : 0 };
+    } catch {
+      return { species: new Set(), count: 0 };
+    }
+  }
+
+  function readUnseenOnly() {
+    try {
+      return window.localStorage.getItem(UNSEEN_ONLY_KEY) === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  function saveUnseenOnly(value) {
+    try {
+      if (value) window.localStorage.setItem(UNSEEN_ONLY_KEY, "1");
+      else window.localStorage.removeItem(UNSEEN_ONLY_KEY);
+    } catch {
+      // Storage unavailable - the toggle still applies on this page.
+    }
+  }
+
+  function hasLifeList() {
+    return state.lifeList.species.size > 0;
+  }
+
+  function unseenOnly() {
+    return hasLifeList() && els.unseenOnly.checked;
+  }
+
+  function isUnseen(species) {
+    return hasLifeList() && !BS.isOnLifeList(species, state.lifeList.species);
+  }
+
+  function syncLifeList() {
+    state.lifeList = readLifeList();
+    els.unseenOnlyToggle.hidden = !hasLifeList();
+    els.unseenOnlyToggle.title = hasLifeList()
+      ? `Compared with the ${state.lifeList.count.toLocaleString()} species on the life list imported in the Trip Planner`
+      : "";
   }
 
   async function apiJson(url, { signal } = {}) {
@@ -285,6 +343,12 @@
     return `<p class="seasonal-recent"><i data-lucide="radar"></i><span>Reported at ${places} ${near} in the last ${RECENT_DAYS} days.${latest}${top}</span></p>`;
   }
 
+  function lifeListChipHtml(species, { showSeen = false } = {}) {
+    if (!hasLifeList()) return "";
+    if (isUnseen(species)) return '<span class="stop-chip chip-lifer">Not on your life list</span>';
+    return showSeen ? '<span class="stop-chip chip-seen">On your life list</span>' : "";
+  }
+
   function speciesCardHtml(place, data, lookup) {
     const species = lookup.species;
     const entry = data.species.find((item) => item.speciesCode === species.speciesCode);
@@ -304,6 +368,7 @@
         <div class="seasonal-species-head">
           <h3>${escapeHtml(comName)}</h3>
           ${sciName ? `<p class="seasonal-sci">${escapeHtml(sciName)}</p>` : ""}
+          ${lifeListChipHtml({ speciesCode: species.speciesCode, comName, sciName }, { showSeen: true })}
         </div>
         <p class="seasonal-species-lead">${escapeHtml(sentence)}</p>
         ${detail}
@@ -317,6 +382,7 @@
         <div class="seasonal-species-head">
           <h4>${escapeHtml(item.comName)}</h4>
           <p class="seasonal-sci">${escapeHtml(item.sciName)}</p>
+          ${unseenOnly() ? "" : lifeListChipHtml(item)}
         </div>
         ${monthStripHtml(item, seasonMonths)}
         <p class="seasonal-rates">Reported on <b>${formatPercent(item.seasonRate)}</b> of sampled ${escapeHtml(seasonLabel.toLowerCase())} dates · ${formatPercent(item.offSeasonRate)} the rest of the year</p>
@@ -335,9 +401,39 @@
     return sentence.charAt(0).toUpperCase() + sentence.slice(1) + ".";
   }
 
+  // Counts each bird once, even when it peaks in two seasons.
+  function uniqueSpecialties(specialties, seasons) {
+    const byCode = new Map();
+    for (const season of seasons) {
+      for (const item of specialties[season.key]) byCode.set(item.speciesCode, item);
+    }
+    return [...byCode.values()];
+  }
+
+  function lifeListSummaryHtml(specialties, seasons) {
+    if (!hasLifeList()) {
+      return '<p class="seasonal-life-list-note">Import your life list in the <a href="./">Trip Planner</a> to see which of these birds you haven\'t seen yet.</p>';
+    }
+    if (unseenOnly()) {
+      return '<p class="seasonal-life-list-note">Showing only birds that aren\'t on your life list.</p>';
+    }
+    const birds = uniqueSpecialties(specialties, seasons);
+    if (!birds.length) return "";
+    const unseen = birds.filter(isUnseen).length;
+    const birdsLabel = `${birds.length} seasonal ${birds.length === 1 ? "bird" : "birds"}`;
+    const text = unseen
+      ? `<b>${unseen}</b> of these ${birdsLabel} ${unseen === 1 ? "isn't" : "aren't"} on your life list.`
+      : "You've seen every seasonal bird shown here.";
+    return `<p class="seasonal-life-list-note">${text}</p>`;
+  }
+
   function renderResults(place, data, lookup) {
+    state.lastResult = { place, data, lookup };
     const seasons = BS.seasonsForLatitude(place.lat);
-    const specialties = BS.seasonalSpecialties(data.species, data.sampledDays, { seasons });
+    // Filter before ranking, so each season fills its list with unseen birds
+    // rather than showing whatever survives from the overall top picks.
+    const pool = unseenOnly() ? data.species.filter(isUnseen) : data.species;
+    const specialties = BS.seasonalSpecialties(pool, data.sampledDays, { seasons });
     const minSamples = Math.min(...data.sampledDays);
     const maxSamples = Math.max(...data.sampledDays);
     const sampleSummary = minSamples === maxSamples
@@ -351,7 +447,9 @@
       const items = specialties[season.key];
       const body = items.length
         ? items.map((item) => speciesRowHtml(item, season.months, season.label)).join("")
-        : '<p class="seasonal-none">No strong specialties stood out for this season.</p>';
+        : unseenOnly()
+          ? `<p class="seasonal-none">You've seen every strong ${escapeHtml(season.label.toLowerCase())} specialty here.</p>`
+          : '<p class="seasonal-none">No strong specialties stood out for this season.</p>';
       return `
         <section class="seasonal-season">
           <header class="seasonal-season-header">
@@ -366,7 +464,8 @@
     els.results.innerHTML = `${lookup ? speciesCardHtml(place, data, lookup) : ""}
       <div class="seasonal-overview">
         <span>${escapeHtml(place.name)}</span>
-        ${lead ? `<h3>${escapeHtml(lead)}</h3>` : "<h3>No season stood out strongly here.</h3>"}
+        ${lead ? `<h3>${escapeHtml(lead)}</h3>` : `<h3>${unseenOnly() ? "No unseen birds stood out strongly in any season here." : "No season stood out strongly here."}</h3>`}
+        ${lifeListSummaryHtml(specialties, seasons)}
         <p>Bars show the share of sampled dates with at least one report, January through December; green months belong to that card's season. This day-level occurrence is not complete-checklist frequency.</p>
       </div>
       <div class="seasonal-grid">${seasonCards}</div>`;
@@ -485,6 +584,7 @@
       return;
     }
     state.busy = true;
+    state.lastResult = null;
     els.submit.disabled = true;
     const picked = speciesAc.resolvedFor(speciesQuery);
     const resolvedPlace = locationAc.resolvedFor(query);
@@ -528,6 +628,24 @@
     }
   }
 
+  function rerenderLastResult() {
+    if (!state.lastResult || state.busy) return;
+    const { place, data, lookup } = state.lastResult;
+    renderResults(place, data, lookup);
+  }
+
+  els.unseenOnly.addEventListener("change", () => {
+    saveUnseenOnly(els.unseenOnly.checked);
+    rerenderLastResult();
+  });
+
+  // Importing or clearing the life list in a planner tab updates this page.
+  window.addEventListener("storage", (event) => {
+    if (event.key !== PREFS_KEY && event.key !== null) return;
+    syncLifeList();
+    rerenderLastResult();
+  });
+
   els.form.addEventListener("submit", (event) => {
     event.preventDefault();
     runSearch();
@@ -560,6 +678,8 @@
   });
 
   async function init() {
+    els.unseenOnly.checked = readUnseenOnly();
+    syncLifeList();
     renderIcons();
     try {
       const response = await fetch("/api/config");

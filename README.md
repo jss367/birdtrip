@@ -55,7 +55,7 @@ Live bird data uses the eBird API. Either:
 - paste an eBird API token into the app, or
 - start the server with `EBIRD_API_KEY=... npm start`.
 
-You can also import an eBird or iNaturalist CSV/TSV life list in the app. Imported common names, scientific names, and eBird species codes stay in the browser and highlight recent reports of species not on your list.
+You can also import an eBird or iNaturalist CSV/TSV life list in the app. Imported common names, scientific names, and eBird species codes stay in the browser and highlight recent reports of species not on your list. The Seasonal Birds page reads the same list to mark seasonal specialties you haven't seen, and can filter to only those.
 
 ## Sign-In (Optional)
 

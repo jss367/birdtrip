@@ -203,6 +203,20 @@
     };
   }
 
+  function normalizeSpeciesName(value) {
+    return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+  }
+
+  // Mirrors the trip planner's life-list match: a species counts as seen when
+  // its common name, scientific name, or eBird code is on the imported list,
+  // whose entries are already normalized.
+  function isOnLifeList(species, lifeList) {
+    if (!species || !lifeList || !lifeList.size) return false;
+    return [species.comName, species.sciName, species.speciesCode]
+      .map(normalizeSpeciesName)
+      .some((alias) => alias && lifeList.has(alias));
+  }
+
   root.BirdtripSeasonal = Object.freeze({
     MONTH_LABELS,
     SEASONS,
@@ -215,6 +229,8 @@
     formatMonthRanges,
     speciesTiming,
     speciesTimingSentence,
-    recentSightingsSummary
+    recentSightingsSummary,
+    normalizeSpeciesName,
+    isOnLifeList
   });
 }(globalThis));

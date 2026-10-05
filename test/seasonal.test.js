@@ -235,3 +235,18 @@ test("recent sightings summary counts places and finds the latest report", () =>
   assert.equal(empty.locationCount, 0);
   assert.equal(empty.latest, null);
 });
+
+test("life-list matching accepts a common name, scientific name, or eBird code", () => {
+  const owl = { speciesCode: "burowl", comName: "Burrowing Owl", sciName: "Athene cunicularia" };
+  assert.equal(seasonal.isOnLifeList(owl, new Set(["burrowing owl"])), true);
+  assert.equal(seasonal.isOnLifeList(owl, new Set(["athene cunicularia"])), true);
+  assert.equal(seasonal.isOnLifeList(owl, new Set(["burowl"])), true);
+  assert.equal(seasonal.isOnLifeList(owl, new Set(["great horned owl"])), false);
+  assert.equal(seasonal.isOnLifeList(owl, new Set()), false);
+  assert.equal(seasonal.isOnLifeList(owl, null), false);
+});
+
+test("species names normalize the way the trip planner stores its life list", () => {
+  assert.equal(seasonal.normalizeSpeciesName("  Burrowing   Owl "), "burrowing owl");
+  assert.equal(seasonal.normalizeSpeciesName(null), "");
+});
