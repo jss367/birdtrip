@@ -3401,6 +3401,44 @@ button.stop-chip {
   font-size: 0.86rem;
 }
 
+.seasonal-unseen-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+  border: 1px solid var(--amber-border);
+  border-radius: 999px;
+  background: var(--amber-soft);
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.seasonal-results-region .results-header {
+  flex-wrap: wrap;
+}
+
+.seasonal-species-head .stop-chip {
+  margin-left: auto;
+  align-self: center;
+}
+
+.seasonal-unseen-toggle input {
+  accent-color: var(--amber-strong);
+}
+
+.seasonal-unseen-toggle > span {
+  color: var(--amber-strong);
+}
+
+.seasonal-overview .seasonal-life-list-note {
+  color: var(--text);
+}
+
+.chip-seen {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
 .seasonal-months {
   display: flex;
   align-items: flex-end;
