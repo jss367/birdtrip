@@ -1,7 +1,7 @@
 /* global state, initializeMap */
 const { test, expect } = require("@playwright/test");
 const { stubApis } = require("./fixtures");
-const { runRouteSearch } = require("./helpers");
+const { runRouteSearch, runAreaSearch } = require("./helpers");
 
 test("a failed search clears the previous route's summary, miles, and order toggle", async ({ page }) => {
   await runRouteSearch(page);
@@ -278,3 +278,23 @@ test("clearing results invalidates pending current location", async ({ page }) =
   await expect(page.locator(".current-location-marker")).toHaveCount(0);
   expect(await page.evaluate(() => state.currentLocation)).toBeNull();
 });
+
+for (const changeOrigin of [false, true]) {
+  test(`search ${changeOrigin ? "removes location marker for a different origin" : "keeps the selected current location marker"}`, async ({ page }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "geolocation", { value: {
+        getCurrentPosition(resolve) {
+          resolve({ coords: { latitude: 41.4, longitude: 2.1 } });
+        }
+      } });
+    });
+    await page.route("**/api/reverse-geocode**", (route) => route.fulfill({ json: { name: "My current location" } }));
+    await runAreaSearch(page, { beforeSubmit: async () => {
+      await page.click("#useCurrentLocationButton");
+      await expect(page.locator("#origin")).toHaveValue("My current location");
+      await expect(page.locator(".current-location-marker")).toHaveCount(1);
+      if (changeOrigin) await page.fill("#origin", "Test Center, Barcelona");
+    } });
+    await expect(page.locator(".current-location-marker")).toHaveCount(changeOrigin ? 0 : 1);
+  });
+}

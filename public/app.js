@@ -4428,8 +4428,14 @@ function clearSearchArtifacts() {
   clearWarning();
   els.report.innerHTML = "";
   els.detailsPanel.hidden = true;
-  state.currentLocation = null;
-  if (state.mapAdapter) state.mapAdapter.clear();
+  const selectedOrigin = autocomplete.origin.resolved;
+  state.currentLocation = selectedOrigin?.userLocation && selectedOrigin.name === els.origin.value.trim()
+    ? { lat: selectedOrigin.lat, lng: selectedOrigin.lng }
+    : null;
+  if (state.mapAdapter) {
+    state.mapAdapter.clear();
+    if (state.currentLocation) state.mapAdapter.setCurrentLocation(state.currentLocation);
+  }
   els.resultsList.className = "results-list empty";
   els.resultsList.innerHTML = `<div class="empty-state search-loading"><i data-lucide="loader"></i><p>${state.mode === "species" ? "Mapping sightings..." : state.mode === "area" ? "Searching area..." : "Searching route corridor..."}</p></div>`;
   // A failed search must not leave the previous search's summary, mileage,
