@@ -2,6 +2,7 @@ const state = {
   mode: "route",
   searchInFlight: false,
   mapAdapter: null,
+  currentLocation: null,
   route: null,
   routeName: "",
   // The route the trip-name field currently describes, and whether the user
@@ -2446,6 +2447,7 @@ function restoreTripState(trip) {
   state.itinerary = null;
   state.itineraryRequestId += 1;
 
+  state.currentLocation = null;
   if (state.mapAdapter) state.mapAdapter.clear();
   els.detailsPanel.hidden = true;
   els.report.innerHTML = "";
@@ -2798,6 +2800,7 @@ async function initializeMap(provider, options = {}) {
     state.mapAdapter = new LeafletMapAdapter(container);
   }
   state.mapAdapter.init();
+  if (state.currentLocation) state.mapAdapter.setCurrentLocation(state.currentLocation);
   const dataNow = mapDataSnapshot();
   if (!preserveData && dataNow.every((value, index) => value === dataBefore[index])) return;
   const routeCoordinates = state.route?.geometry?.coordinates;
@@ -2812,7 +2815,7 @@ async function initializeMap(provider, options = {}) {
 }
 
 function mapDataSnapshot() {
-  return [state.route, state.itinerary, state.areaCenter, state.params, state.results, state.sightingLocations];
+  return [state.route, state.itinerary, state.areaCenter, state.params, state.results, state.sightingLocations, state.currentLocation];
 }
 
 function loadGoogleMapsScript(key) {
@@ -2892,6 +2895,7 @@ function resetAutocomplete(field) {
 }
 
 function clearResults() {
+  abandonCurrentLocationLookup();
   state.searchUrl = null;
   state.results = [];
   state.candidatePool = [];
@@ -2911,6 +2915,7 @@ function clearResults() {
   state.itineraryRequestId += 1;
   state.params = null;
   state.warnings = [];
+  state.currentLocation = null;
   if (state.mapAdapter) state.mapAdapter.clear();
   clearFieldErrors();
   clearWarning();
@@ -4423,6 +4428,7 @@ function clearSearchArtifacts() {
   clearWarning();
   els.report.innerHTML = "";
   els.detailsPanel.hidden = true;
+  state.currentLocation = null;
   if (state.mapAdapter) state.mapAdapter.clear();
   els.resultsList.className = "results-list empty";
   els.resultsList.innerHTML = `<div class="empty-state search-loading"><i data-lucide="loader"></i><p>${state.mode === "species" ? "Mapping sightings..." : state.mode === "area" ? "Searching area..." : "Searching route corridor..."}</p></div>`;
@@ -4611,7 +4617,8 @@ async function useCurrentLocationForOrigin() {
       throw new Error("Location coordinates were unavailable.");
     }
     if (!isCurrent()) return;
-    if (state.mapAdapter) state.mapAdapter.setCurrentLocation({ lat, lng });
+    state.currentLocation = { lat, lng };
+    if (state.mapAdapter) state.mapAdapter.setCurrentLocation(state.currentLocation);
     const provider = providerFromInput();
     label.textContent = "Resolving…";
     let displayName = "";

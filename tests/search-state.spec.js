@@ -1,4 +1,4 @@
-/* global state */
+/* global state, initializeMap */
 const { test, expect } = require("@playwright/test");
 const { stubApis } = require("./fixtures");
 const { runRouteSearch } = require("./helpers");
@@ -227,3 +227,54 @@ for (const reverseFails of [false, true]) {
     } finally { release(); }
   });
 }
+
+for (const adapterReady of [true, false]) {
+  test(`current location survives map initialization when adapter is ${adapterReady ? "ready" : "loading"}`, async ({ page }) => {
+    await stubApis(page);
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "geolocation", { value: {
+        getCurrentPosition(resolve) {
+          resolve({ coords: { latitude: 41.5, longitude: 2.2 } });
+        }
+      } });
+    });
+    await page.route("**/api/reverse-geocode**", (route) => route.fulfill({ json: { name: "Barcelona" } }));
+    await page.goto("/");
+    await page.waitForFunction(() => state.mapAdapter?.map);
+    if (!adapterReady) {
+      await page.evaluate(() => {
+        state.mapAdapter.destroy();
+        state.mapAdapter = null;
+      });
+    }
+    await page.click("#useCurrentLocationButton");
+    await expect(page.locator("#origin")).toHaveValue("Barcelona");
+    await page.evaluate(() => initializeMap("osm", { preserveData: false }));
+    await expect(page.locator(".current-location-marker")).toHaveCount(1);
+    expect(await page.evaluate(() => state.mapAdapter.currentLocationMarker.getLatLng())).toEqual({ lat: 41.5, lng: 2.2 });
+    await page.click("#clearButton");
+    await page.evaluate(() => initializeMap("osm"));
+    await expect(page.locator(".current-location-marker")).toHaveCount(0);
+  });
+}
+
+test("clearing results invalidates pending current location", async ({ page }) => {
+  await stubApis(page);
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "geolocation", { value: {
+      getCurrentPosition(resolve) {
+        window.releaseLocation = () => resolve({ coords: { latitude: 41.5, longitude: 2.2 } });
+      }
+    } });
+  });
+  await page.goto("/");
+  const before = await page.locator("#origin").inputValue();
+  await page.click("#useCurrentLocationButton");
+  await expect(page.locator("#useCurrentLocationLabel")).toHaveText("Locating…");
+  await page.click("#clearButton");
+  await page.evaluate(() => window.releaseLocation());
+  await expect(page.locator("#useCurrentLocationButton")).toBeEnabled();
+  await expect(page.locator("#origin")).toHaveValue(before);
+  await expect(page.locator(".current-location-marker")).toHaveCount(0);
+  expect(await page.evaluate(() => state.currentLocation)).toBeNull();
+});
