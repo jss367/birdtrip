@@ -4611,6 +4611,7 @@ async function useCurrentLocationForOrigin() {
       throw new Error("Location coordinates were unavailable.");
     }
     if (!isCurrent()) return;
+    if (state.mapAdapter) state.mapAdapter.setCurrentLocation({ lat, lng });
     const provider = providerFromInput();
     label.textContent = "Resolving…";
     let displayName = "";
@@ -8699,6 +8700,7 @@ class LeafletMapAdapter {
     this.areaLayer = null;
     this.markerLayer = null;
     this.pendingPopupId = null;
+    this.currentLocationMarker = null;
   }
 
   init() {
@@ -8799,6 +8801,19 @@ class LeafletMapAdapter {
     });
   }
 
+  setCurrentLocation(position) {
+    if (this.currentLocationMarker) this.map.removeLayer(this.currentLocationMarker);
+    this.currentLocationMarker = L.circleMarker([position.lat, position.lng], {
+      radius: 8,
+      color: "#fff",
+      weight: 3,
+      fillColor: "#2563eb",
+      fillOpacity: 1,
+      className: "current-location-marker"
+    }).bindPopup("Your current location").addTo(this.map);
+    this.flyTo(position, 12);
+  }
+
   flyTo(candidate, minZoom) {
     this.map.flyTo([candidate.lat, candidate.lng], Math.max(this.map.getZoom(), minZoom), { duration: 0.6 });
   }
@@ -8814,6 +8829,10 @@ class LeafletMapAdapter {
       this.areaLayer = null;
     }
     if (this.markerLayer) this.markerLayer.clearLayers();
+    if (this.currentLocationMarker) {
+      this.map.removeLayer(this.currentLocationMarker);
+      this.currentLocationMarker = null;
+    }
   }
 
   destroy() {
@@ -8836,6 +8855,7 @@ class GoogleMapAdapter {
     this.areaMarker = null;
     this.markers = [];
     this.infoWindow = null;
+    this.currentLocationMarker = null;
   }
 
   init() {
@@ -8951,6 +8971,25 @@ class GoogleMapAdapter {
     });
   }
 
+  setCurrentLocation(position) {
+    if (this.currentLocationMarker) this.currentLocationMarker.setMap(null);
+    const maps = window.google.maps;
+    this.currentLocationMarker = new maps.Marker({
+      position: { lat: position.lat, lng: position.lng },
+      map: this.map,
+      title: "Your current location",
+      icon: {
+        path: maps.SymbolPath.CIRCLE,
+        scale: 8,
+        strokeColor: "#fff",
+        strokeWeight: 3,
+        fillColor: "#2563eb",
+        fillOpacity: 1
+      }
+    });
+    this.flyTo(position, 12);
+  }
+
   flyTo(candidate, minZoom) {
     this.map.panTo({ lat: candidate.lat, lng: candidate.lng });
     if (this.map.getZoom() < minZoom) this.map.setZoom(minZoom);
@@ -8973,6 +9012,10 @@ class GoogleMapAdapter {
     this.markers.forEach((marker) => marker.setMap(null));
     this.markers = [];
     if (this.infoWindow) this.infoWindow.close();
+    if (this.currentLocationMarker) {
+      this.currentLocationMarker.setMap(null);
+      this.currentLocationMarker = null;
+    }
   }
 
   destroy() {

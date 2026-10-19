@@ -1,3 +1,4 @@
+/* global state */
 const { test, expect } = require("@playwright/test");
 const { stubApis } = require("./fixtures");
 const { runRouteSearch } = require("./helpers");
@@ -45,6 +46,7 @@ test("a location that arrives after a search started does not replace the origin
   await page.evaluate(() => window.releaseLocation());
   await page.waitForTimeout(200);
   await expect(page.locator("#origin")).toHaveValue("Test Center, Barcelona");
+  await expect(page.locator(".current-location-marker")).toHaveCount(0);
   await expect(label).toHaveText(idleLabel);
   await expect(button).toBeEnabled();
 });
@@ -179,6 +181,49 @@ for (const kind of ["location", "species"]) {
       release();
       await page.waitForTimeout(300);
       await expect(list).toBeHidden();
+    } finally { release(); }
+  });
+}
+
+for (const reverseFails of [false, true]) {
+  test(`current location appears before reverse geocoding ${reverseFails ? "fails" : "finishes"}`, async ({ page }) => {
+    await stubApis(page);
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "geolocation", { value: {
+        getCurrentPosition(resolve) {
+          resolve({ coords: { latitude: 41.5, longitude: 2.2 } });
+        }
+      } });
+    });
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    await page.route("**/api/reverse-geocode**", async (route) => {
+      await gate;
+      await route.fulfill(reverseFails
+        ? { status: 500, json: { error: "Unavailable" } }
+        : { json: { name: "Barcelona, Spain" } });
+    });
+    await page.goto("/");
+    await page.waitForFunction(() => state.mapAdapter?.map);
+    try {
+      await page.click("#useCurrentLocationButton");
+      await expect(page.locator("#useCurrentLocationLabel")).toHaveText("Resolving…");
+      const marker = page.locator(".current-location-marker");
+      await expect(marker).toBeVisible();
+      await expect.poll(() => page.evaluate(() => {
+        const map = state.mapAdapter.map;
+        return map.getCenter().distanceTo([41.5, 2.2]) < 10 && map.getZoom() >= 12;
+      })).toBe(true);
+      await marker.click();
+      await expect(page.locator(".leaflet-popup")).toContainText("Your current location");
+      release();
+      await expect(page.locator("#origin")).toHaveValue(reverseFails
+        ? "Current location (41.5000, 2.2000)" : "Barcelona, Spain");
+      await expect(marker).toHaveCount(1);
+      // Repeated use replaces the marker rather than accumulating dots.
+      await page.click("#useCurrentLocationButton");
+      await expect(page.locator("#useCurrentLocationButton")).toBeEnabled();
+      await expect(marker).toHaveCount(1);
     } finally { release(); }
   });
 }
