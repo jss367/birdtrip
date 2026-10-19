@@ -1,6 +1,7 @@
+/* global state, initializeMap */
 const { test, expect } = require("@playwright/test");
 const { stubApis } = require("./fixtures");
-const { runRouteSearch } = require("./helpers");
+const { runRouteSearch, runAreaSearch } = require("./helpers");
 
 test("a failed search clears the previous route's summary, miles, and order toggle", async ({ page }) => {
   await runRouteSearch(page);
@@ -45,6 +46,7 @@ test("a location that arrives after a search started does not replace the origin
   await page.evaluate(() => window.releaseLocation());
   await page.waitForTimeout(200);
   await expect(page.locator("#origin")).toHaveValue("Test Center, Barcelona");
+  await expect(page.locator(".current-location-marker")).toHaveCount(0);
   await expect(label).toHaveText(idleLabel);
   await expect(button).toBeEnabled();
 });
@@ -179,6 +181,205 @@ for (const kind of ["location", "species"]) {
       release();
       await page.waitForTimeout(300);
       await expect(list).toBeHidden();
+    } finally { release(); }
+  });
+}
+
+for (const reverseFails of [false, true]) {
+  test(`current location appears before reverse geocoding ${reverseFails ? "fails" : "finishes"}`, async ({ page }) => {
+    await stubApis(page);
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "geolocation", { value: {
+        getCurrentPosition(resolve) {
+          resolve({ coords: { latitude: 41.5, longitude: 2.2 } });
+        }
+      } });
+    });
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    await page.route("**/api/reverse-geocode**", async (route) => {
+      await gate;
+      await route.fulfill(reverseFails
+        ? { status: 500, json: { error: "Unavailable" } }
+        : { json: { name: "Barcelona, Spain" } });
+    });
+    await page.goto("/");
+    await page.waitForFunction(() => state.mapAdapter?.map);
+    try {
+      await page.click("#useCurrentLocationButton");
+      await expect(page.locator("#useCurrentLocationLabel")).toHaveText("Resolving…");
+      const marker = page.locator(".current-location-marker");
+      await expect(marker).toBeVisible();
+      await expect.poll(() => page.evaluate(() => {
+        const map = state.mapAdapter.map;
+        return map.getCenter().distanceTo([41.5, 2.2]) < 10 && map.getZoom() >= 12;
+      })).toBe(true);
+      await marker.click();
+      await expect(page.locator(".leaflet-popup")).toContainText("Your current location");
+      release();
+      await expect(page.locator("#origin")).toHaveValue(reverseFails
+        ? "Current location (41.5000, 2.2000)" : "Barcelona, Spain");
+      await expect(marker).toHaveCount(1);
+      // Repeated use replaces the marker rather than accumulating dots.
+      await page.click("#useCurrentLocationButton");
+      await expect(page.locator("#useCurrentLocationButton")).toBeEnabled();
+      await expect(marker).toHaveCount(1);
+    } finally { release(); }
+  });
+}
+
+for (const adapterReady of [true, false]) {
+  test(`current location survives map initialization when adapter is ${adapterReady ? "ready" : "loading"}`, async ({ page }) => {
+    await stubApis(page);
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "geolocation", { value: {
+        getCurrentPosition(resolve) {
+          resolve({ coords: { latitude: 41.5, longitude: 2.2 } });
+        }
+      } });
+    });
+    await page.route("**/api/reverse-geocode**", (route) => route.fulfill({ json: { name: "Barcelona" } }));
+    await page.goto("/");
+    await page.waitForFunction(() => state.mapAdapter?.map);
+    if (!adapterReady) {
+      await page.evaluate(() => {
+        state.mapAdapter.destroy();
+        state.mapAdapter = null;
+      });
+    }
+    await page.click("#useCurrentLocationButton");
+    await expect(page.locator("#origin")).toHaveValue("Barcelona");
+    await page.evaluate(() => initializeMap("osm", { preserveData: false }));
+    await expect(page.locator(".current-location-marker")).toHaveCount(1);
+    expect(await page.evaluate(() => state.mapAdapter.currentLocationMarker.getLatLng())).toEqual({ lat: 41.5, lng: 2.2 });
+    await page.click("#clearButton");
+    await page.evaluate(() => initializeMap("osm"));
+    await expect(page.locator(".current-location-marker")).toHaveCount(0);
+  });
+}
+
+test("clearing results invalidates pending current location", async ({ page }) => {
+  await stubApis(page);
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "geolocation", { value: {
+      getCurrentPosition(resolve) {
+        window.releaseLocation = () => resolve({ coords: { latitude: 41.5, longitude: 2.2 } });
+      }
+    } });
+  });
+  await page.goto("/");
+  const before = await page.locator("#origin").inputValue();
+  await page.click("#useCurrentLocationButton");
+  await expect(page.locator("#useCurrentLocationLabel")).toHaveText("Locating…");
+  await page.click("#clearButton");
+  await page.evaluate(() => window.releaseLocation());
+  await expect(page.locator("#useCurrentLocationButton")).toBeEnabled();
+  await expect(page.locator("#origin")).toHaveValue(before);
+  await expect(page.locator(".current-location-marker")).toHaveCount(0);
+  expect(await page.evaluate(() => state.currentLocation)).toBeNull();
+});
+
+for (const changeOrigin of [false, true]) {
+  test(`search ${changeOrigin ? "removes location marker for a different origin" : "keeps the selected current location marker"}`, async ({ page }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "geolocation", { value: {
+        getCurrentPosition(resolve) {
+          resolve({ coords: { latitude: 41.4, longitude: 2.1 } });
+        }
+      } });
+    });
+    await page.route("**/api/reverse-geocode**", (route) => route.fulfill({ json: { name: "My current location" } }));
+    await runAreaSearch(page, { beforeSubmit: async () => {
+      await page.click("#useCurrentLocationButton");
+      await expect(page.locator("#origin")).toHaveValue("My current location");
+      await expect(page.locator(".current-location-marker")).toHaveCount(1);
+      if (changeOrigin) await page.fill("#origin", "Test Center, Barcelona");
+    } });
+    await expect(page.locator(".current-location-marker")).toHaveCount(changeOrigin ? 0 : 1);
+  });
+}
+
+for (const action of ["edit", "select"]) {
+  test(`${action} origin removes location marker while reverse geocoding is pending`, async ({ page }) => {
+    await stubApis(page);
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "geolocation", { value: {
+        getCurrentPosition(resolve) {
+          resolve({ coords: { latitude: 41.4, longitude: 2.1 } });
+        }
+      } });
+    });
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    await page.route("**/api/reverse-geocode**", async (route) => {
+      await gate;
+      await route.fulfill({ json: { name: "My current location" } });
+    });
+    await page.goto("/");
+    await page.fill("#origin", "Test Center");
+    await expect(page.locator("#originSuggestions li[role=option]")).toHaveCount(1);
+    await page.locator("#origin").press("Escape");
+    try {
+      await page.click("#useCurrentLocationButton");
+      await expect(page.locator("#useCurrentLocationLabel")).toHaveText("Resolving…");
+      await expect(page.locator(".current-location-marker")).toHaveCount(1);
+      if (action === "edit") {
+        await page.fill("#origin", "Another origin");
+      } else {
+        await page.locator("#origin").press("ArrowDown");
+        await page.locator("#originSuggestions li[role=option]").click();
+      }
+      const selected = await page.locator("#origin").inputValue();
+      await expect(page.locator(".current-location-marker")).toHaveCount(0);
+      expect(await page.evaluate(() => state.currentLocation)).toBeNull();
+      const response = page.waitForResponse("**/api/reverse-geocode**");
+      release();
+      await (await response).finished();
+      await page.evaluate(() => initializeMap("osm"));
+      await expect(page.locator(".current-location-marker")).toHaveCount(0);
+      await expect(page.locator("#origin")).toHaveValue(selected);
+    } finally { release(); }
+  });
+}
+
+for (const stage of ["geolocation", "reverse geocoding"]) {
+  test(`loading a saved trip cancels pending ${stage} with the same origin`, async ({ page }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "geolocation", { value: {
+        getCurrentPosition(resolve) {
+          window.releaseLocation = () => resolve({ coords: { latitude: 41.5, longitude: 2.2 } });
+        }
+      } });
+    });
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    await page.route("**/api/reverse-geocode**", async (route) => {
+      await gate;
+      await route.fulfill({ json: { name: "Late current location" } });
+    });
+    await runAreaSearch(page);
+    const origin = await page.locator("#origin").inputValue();
+    await page.fill("#tripName", "Saved location test");
+    await page.click("#saveTripButton");
+    try {
+      await page.click("#useCurrentLocationButton");
+      if (stage === "reverse geocoding") {
+        await page.evaluate(() => window.releaseLocation());
+        await expect(page.locator("#useCurrentLocationLabel")).toHaveText("Resolving…");
+      }
+      await page.click("#loadTripButton");
+      await expect(page.locator("#progressTitle")).toHaveText("Trip loaded");
+      if (stage === "geolocation") {
+        await page.evaluate(() => window.releaseLocation());
+      } else {
+        const response = page.waitForResponse("**/api/reverse-geocode**");
+        release();
+        await (await response).finished();
+      }
+      await expect(page.locator("#origin")).toHaveValue(origin);
+      await expect(page.locator(".current-location-marker")).toHaveCount(0);
+      expect(await page.evaluate(() => state.currentLocation)).toBeNull();
+      await expect(page.locator("#useCurrentLocationButton")).toBeEnabled();
     } finally { release(); }
   });
 }

@@ -2,6 +2,7 @@ const state = {
   mode: "route",
   searchInFlight: false,
   mapAdapter: null,
+  currentLocation: null,
   route: null,
   routeName: "",
   // The route the trip-name field currently describes, and whether the user
@@ -2226,6 +2227,7 @@ function saveCurrentTrip() {
 async function loadSelectedTrip() {
   const trip = currentSavedTrip();
   if (!trip) return;
+  abandonCurrentLocationLookup({ clearMarker: true });
 
   try {
     const settings = {
@@ -2446,6 +2448,7 @@ function restoreTripState(trip) {
   state.itinerary = null;
   state.itineraryRequestId += 1;
 
+  state.currentLocation = null;
   if (state.mapAdapter) state.mapAdapter.clear();
   els.detailsPanel.hidden = true;
   els.report.innerHTML = "";
@@ -2798,6 +2801,7 @@ async function initializeMap(provider, options = {}) {
     state.mapAdapter = new LeafletMapAdapter(container);
   }
   state.mapAdapter.init();
+  if (state.currentLocation) state.mapAdapter.setCurrentLocation(state.currentLocation);
   const dataNow = mapDataSnapshot();
   if (!preserveData && dataNow.every((value, index) => value === dataBefore[index])) return;
   const routeCoordinates = state.route?.geometry?.coordinates;
@@ -2812,7 +2816,7 @@ async function initializeMap(provider, options = {}) {
 }
 
 function mapDataSnapshot() {
-  return [state.route, state.itinerary, state.areaCenter, state.params, state.results, state.sightingLocations];
+  return [state.route, state.itinerary, state.areaCenter, state.params, state.results, state.sightingLocations, state.currentLocation];
 }
 
 function loadGoogleMapsScript(key) {
@@ -2874,6 +2878,7 @@ function useSampleRoute() {
 }
 
 function resetAutocomplete(field) {
+  if (field === "origin") abandonCurrentLocationLookup({ clearMarker: true });
   const ctx = autocomplete[field];
   if (!ctx) return;
   if (ctx.timer) {
@@ -2892,6 +2897,7 @@ function resetAutocomplete(field) {
 }
 
 function clearResults() {
+  abandonCurrentLocationLookup();
   state.searchUrl = null;
   state.results = [];
   state.candidatePool = [];
@@ -2911,6 +2917,7 @@ function clearResults() {
   state.itineraryRequestId += 1;
   state.params = null;
   state.warnings = [];
+  state.currentLocation = null;
   if (state.mapAdapter) state.mapAdapter.clear();
   clearFieldErrors();
   clearWarning();
@@ -4423,7 +4430,14 @@ function clearSearchArtifacts() {
   clearWarning();
   els.report.innerHTML = "";
   els.detailsPanel.hidden = true;
-  if (state.mapAdapter) state.mapAdapter.clear();
+  const selectedOrigin = autocomplete.origin.resolved;
+  state.currentLocation = selectedOrigin?.userLocation && selectedOrigin.name === els.origin.value.trim()
+    ? { lat: selectedOrigin.lat, lng: selectedOrigin.lng }
+    : null;
+  if (state.mapAdapter) {
+    state.mapAdapter.clear();
+    if (state.currentLocation) state.mapAdapter.setCurrentLocation(state.currentLocation);
+  }
   els.resultsList.className = "results-list empty";
   els.resultsList.innerHTML = `<div class="empty-state search-loading"><i data-lucide="loader"></i><p>${state.mode === "species" ? "Mapping sightings..." : state.mode === "area" ? "Searching area..." : "Searching route corridor..."}</p></div>`;
   // A failed search must not leave the previous search's summary, mileage,
@@ -4574,7 +4588,11 @@ function parseCurrentLocationFallback(query, provider) {
 // by another click or abandoned by a search must not touch the origin.
 let currentLocationRequestId = 0;
 
-function abandonCurrentLocationLookup() {
+function abandonCurrentLocationLookup({ clearMarker = false } = {}) {
+  if (clearMarker) {
+    state.currentLocation = null;
+    if (state.mapAdapter) state.mapAdapter.clearCurrentLocation();
+  }
   currentLocationRequestId += 1;
   els.useCurrentLocationButton.disabled = false;
   const label = els.useCurrentLocationLabel;
@@ -4611,6 +4629,8 @@ async function useCurrentLocationForOrigin() {
       throw new Error("Location coordinates were unavailable.");
     }
     if (!isCurrent()) return;
+    state.currentLocation = { lat, lng };
+    if (state.mapAdapter) state.mapAdapter.setCurrentLocation(state.currentLocation);
     const provider = providerFromInput();
     label.textContent = "Resolving…";
     let displayName = "";
@@ -4673,7 +4693,7 @@ function setupLocationAutocomplete(field) {
 
   inputEl.addEventListener("input", () => {
     unlockSharedField(field);
-    if (field === "origin") abandonCurrentLocationLookup();
+    if (field === "origin") abandonCurrentLocationLookup({ clearMarker: true });
     ctx.resolved = null;
     // A highlight belongs to the text it was made against.
     setAutocompleteActive(field, -1);
@@ -4853,7 +4873,7 @@ function selectAutocompleteItem(field, index) {
   const item = ctx.items[index];
   const inputEl = els[field];
   if (!item || !inputEl) return;
-  if (field === "origin") abandonCurrentLocationLookup();
+  if (field === "origin") abandonCurrentLocationLookup({ clearMarker: true });
   inputEl.value = item.name || "";
   ctx.resolved = item;
   ctx.lastQuery = item.name || "";
@@ -8699,6 +8719,7 @@ class LeafletMapAdapter {
     this.areaLayer = null;
     this.markerLayer = null;
     this.pendingPopupId = null;
+    this.currentLocationMarker = null;
   }
 
   init() {
@@ -8799,6 +8820,26 @@ class LeafletMapAdapter {
     });
   }
 
+  clearCurrentLocation() {
+    if (this.currentLocationMarker) {
+      this.map.removeLayer(this.currentLocationMarker);
+      this.currentLocationMarker = null;
+    }
+  }
+
+  setCurrentLocation(position) {
+    if (this.currentLocationMarker) this.map.removeLayer(this.currentLocationMarker);
+    this.currentLocationMarker = L.circleMarker([position.lat, position.lng], {
+      radius: 8,
+      color: "#fff",
+      weight: 3,
+      fillColor: "#2563eb",
+      fillOpacity: 1,
+      className: "current-location-marker"
+    }).bindPopup("Your current location").addTo(this.map);
+    this.flyTo(position, 12);
+  }
+
   flyTo(candidate, minZoom) {
     this.map.flyTo([candidate.lat, candidate.lng], Math.max(this.map.getZoom(), minZoom), { duration: 0.6 });
   }
@@ -8814,6 +8855,7 @@ class LeafletMapAdapter {
       this.areaLayer = null;
     }
     if (this.markerLayer) this.markerLayer.clearLayers();
+    this.clearCurrentLocation();
   }
 
   destroy() {
@@ -8836,6 +8878,7 @@ class GoogleMapAdapter {
     this.areaMarker = null;
     this.markers = [];
     this.infoWindow = null;
+    this.currentLocationMarker = null;
   }
 
   init() {
@@ -8951,6 +8994,32 @@ class GoogleMapAdapter {
     });
   }
 
+  clearCurrentLocation() {
+    if (this.currentLocationMarker) {
+      this.currentLocationMarker.setMap(null);
+      this.currentLocationMarker = null;
+    }
+  }
+
+  setCurrentLocation(position) {
+    if (this.currentLocationMarker) this.currentLocationMarker.setMap(null);
+    const maps = window.google.maps;
+    this.currentLocationMarker = new maps.Marker({
+      position: { lat: position.lat, lng: position.lng },
+      map: this.map,
+      title: "Your current location",
+      icon: {
+        path: maps.SymbolPath.CIRCLE,
+        scale: 8,
+        strokeColor: "#fff",
+        strokeWeight: 3,
+        fillColor: "#2563eb",
+        fillOpacity: 1
+      }
+    });
+    this.flyTo(position, 12);
+  }
+
   flyTo(candidate, minZoom) {
     this.map.panTo({ lat: candidate.lat, lng: candidate.lng });
     if (this.map.getZoom() < minZoom) this.map.setZoom(minZoom);
@@ -8973,6 +9042,7 @@ class GoogleMapAdapter {
     this.markers.forEach((marker) => marker.setMap(null));
     this.markers = [];
     if (this.infoWindow) this.infoWindow.close();
+    this.clearCurrentLocation();
   }
 
   destroy() {
