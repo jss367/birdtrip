@@ -2877,6 +2877,7 @@ function useSampleRoute() {
 }
 
 function resetAutocomplete(field) {
+  if (field === "origin") abandonCurrentLocationLookup({ clearMarker: true });
   const ctx = autocomplete[field];
   if (!ctx) return;
   if (ctx.timer) {
@@ -4586,7 +4587,11 @@ function parseCurrentLocationFallback(query, provider) {
 // by another click or abandoned by a search must not touch the origin.
 let currentLocationRequestId = 0;
 
-function abandonCurrentLocationLookup() {
+function abandonCurrentLocationLookup({ clearMarker = false } = {}) {
+  if (clearMarker) {
+    state.currentLocation = null;
+    if (state.mapAdapter) state.mapAdapter.clearCurrentLocation();
+  }
   currentLocationRequestId += 1;
   els.useCurrentLocationButton.disabled = false;
   const label = els.useCurrentLocationLabel;
@@ -4687,7 +4692,7 @@ function setupLocationAutocomplete(field) {
 
   inputEl.addEventListener("input", () => {
     unlockSharedField(field);
-    if (field === "origin") abandonCurrentLocationLookup();
+    if (field === "origin") abandonCurrentLocationLookup({ clearMarker: true });
     ctx.resolved = null;
     // A highlight belongs to the text it was made against.
     setAutocompleteActive(field, -1);
@@ -4867,7 +4872,7 @@ function selectAutocompleteItem(field, index) {
   const item = ctx.items[index];
   const inputEl = els[field];
   if (!item || !inputEl) return;
-  if (field === "origin") abandonCurrentLocationLookup();
+  if (field === "origin") abandonCurrentLocationLookup({ clearMarker: true });
   inputEl.value = item.name || "";
   ctx.resolved = item;
   ctx.lastQuery = item.name || "";
@@ -8814,6 +8819,13 @@ class LeafletMapAdapter {
     });
   }
 
+  clearCurrentLocation() {
+    if (this.currentLocationMarker) {
+      this.map.removeLayer(this.currentLocationMarker);
+      this.currentLocationMarker = null;
+    }
+  }
+
   setCurrentLocation(position) {
     if (this.currentLocationMarker) this.map.removeLayer(this.currentLocationMarker);
     this.currentLocationMarker = L.circleMarker([position.lat, position.lng], {
@@ -8842,10 +8854,7 @@ class LeafletMapAdapter {
       this.areaLayer = null;
     }
     if (this.markerLayer) this.markerLayer.clearLayers();
-    if (this.currentLocationMarker) {
-      this.map.removeLayer(this.currentLocationMarker);
-      this.currentLocationMarker = null;
-    }
+    this.clearCurrentLocation();
   }
 
   destroy() {
@@ -8984,6 +8993,13 @@ class GoogleMapAdapter {
     });
   }
 
+  clearCurrentLocation() {
+    if (this.currentLocationMarker) {
+      this.currentLocationMarker.setMap(null);
+      this.currentLocationMarker = null;
+    }
+  }
+
   setCurrentLocation(position) {
     if (this.currentLocationMarker) this.currentLocationMarker.setMap(null);
     const maps = window.google.maps;
@@ -9025,10 +9041,7 @@ class GoogleMapAdapter {
     this.markers.forEach((marker) => marker.setMap(null));
     this.markers = [];
     if (this.infoWindow) this.infoWindow.close();
-    if (this.currentLocationMarker) {
-      this.currentLocationMarker.setMap(null);
-      this.currentLocationMarker = null;
-    }
+    this.clearCurrentLocation();
   }
 
   destroy() {

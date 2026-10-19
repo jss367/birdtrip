@@ -298,3 +298,46 @@ for (const changeOrigin of [false, true]) {
     await expect(page.locator(".current-location-marker")).toHaveCount(changeOrigin ? 0 : 1);
   });
 }
+
+for (const action of ["edit", "select"]) {
+  test(`${action} origin removes location marker while reverse geocoding is pending`, async ({ page }) => {
+    await stubApis(page);
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "geolocation", { value: {
+        getCurrentPosition(resolve) {
+          resolve({ coords: { latitude: 41.4, longitude: 2.1 } });
+        }
+      } });
+    });
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    await page.route("**/api/reverse-geocode**", async (route) => {
+      await gate;
+      await route.fulfill({ json: { name: "My current location" } });
+    });
+    await page.goto("/");
+    await page.fill("#origin", "Test Center");
+    await expect(page.locator("#originSuggestions li[role=option]")).toHaveCount(1);
+    await page.locator("#origin").press("Escape");
+    try {
+      await page.click("#useCurrentLocationButton");
+      await expect(page.locator("#useCurrentLocationLabel")).toHaveText("Resolving…");
+      await expect(page.locator(".current-location-marker")).toHaveCount(1);
+      if (action === "edit") {
+        await page.fill("#origin", "Another origin");
+      } else {
+        await page.locator("#origin").press("ArrowDown");
+        await page.locator("#originSuggestions li[role=option]").click();
+      }
+      const selected = await page.locator("#origin").inputValue();
+      await expect(page.locator(".current-location-marker")).toHaveCount(0);
+      expect(await page.evaluate(() => state.currentLocation)).toBeNull();
+      const response = page.waitForResponse("**/api/reverse-geocode**");
+      release();
+      await (await response).finished();
+      await page.evaluate(() => initializeMap("osm"));
+      await expect(page.locator(".current-location-marker")).toHaveCount(0);
+      await expect(page.locator("#origin")).toHaveValue(selected);
+    } finally { release(); }
+  });
+}
