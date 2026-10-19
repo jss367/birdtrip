@@ -2227,6 +2227,7 @@ function saveCurrentTrip() {
 async function loadSelectedTrip() {
   const trip = currentSavedTrip();
   if (!trip) return;
+  abandonCurrentLocationLookup({ clearMarker: true });
 
   try {
     const settings = {
