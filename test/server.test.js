@@ -13,8 +13,20 @@ const {
   nearestHotspotRegion,
   pruneResponseCache,
   pruneSeasonalityCache,
-  rateLimitKey
+  rateLimitKey,
+  seasonalitySampleDates
 } = require("../server.js");
+
+test("seasonality samples weekly across the whole year", () => {
+  const dates = seasonalitySampleDates(2025);
+  // Day 0 through day 364 in steps of seven: 53 dates.
+  assert.equal(dates.length, 53);
+  assert.deepEqual(dates[0], { month: 1, day: 1 });
+  assert.deepEqual(dates[1], { month: 1, day: 8 });
+  assert.deepEqual(dates[dates.length - 1], { month: 12, day: 31 });
+  const months = new Set(dates.map((date) => date.month));
+  assert.equal(months.size, 12);
+});
 
 const appSource = fs.readFileSync(path.join(__dirname, "../public/app.js"), "utf8");
 
@@ -319,7 +331,7 @@ test("concurrent cold seasonality requests share one upstream build", async () =
       buildSeasonality(region, "token-a"),
       buildSeasonality(region, "token-b")
     ]);
-    assert.equal(calls, 36);
+    assert.equal(calls, 53);
     assert.strictEqual(first, second);
   } finally {
     global.fetch = originalFetch;

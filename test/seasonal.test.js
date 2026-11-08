@@ -213,7 +213,7 @@ test("species timing: a species missing from the region build is absent", () => 
   assert.equal(timing.presence.length, 12);
   assert.equal(
     seasonal.speciesTimingSentence(timing, "Snowy Owl", "San Diego County"),
-    "Snowy Owl wasn't reported on enough sampled dates in San Diego County to show a pattern."
+    "Snowy Owl wasn't reported on any sampled date in San Diego County."
   );
 });
 

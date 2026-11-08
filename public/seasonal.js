@@ -92,8 +92,8 @@
   }
 
   // A species is too thinly reported for its months to read as a pattern when
-  // no month has it on more than one sampled date (with three samples a month,
-  // a single date is already a 33% rate) or its busiest month is below this.
+  // no month has it on more than one sampled date (with about four samples a
+  // month, a single date is already a 25% rate) or its busiest month is below this.
   const SPARSE_PEAK_RATE = 0.2;
   const MIN_PEAK_MONTH_DATES = 2;
   // Months at or above this fraction of the peak rate count as "in season".
@@ -130,8 +130,7 @@
   }
 
   // Classifies one species' sampled-date occurrence into a plain answer to
-  // "when is it here?". A missing entry means the region build dropped it for
-  // appearing on too few sampled dates.
+  // "when is it here?". A missing entry means it was not seen on any sampled date.
   function speciesTiming(entry, sampledDays) {
     const totalSampled = (sampledDays || []).reduce((sum, value) => sum + (Number(value) || 0), 0);
     if (!entry) {
@@ -163,7 +162,7 @@
     const inSeason = formatMonthRanges(timing.windowMonths);
     switch (timing.status) {
       case "absent":
-        return `${name} wasn't reported on enough sampled dates${where} to show a pattern.`;
+        return `${name} wasn't reported on any sampled date${where}.`;
       case "sparse":
         return `${name} is reported only occasionally${where}: on ${timing.reportedDays} of ${timing.totalSampled} sampled dates, in ${formatMonthRanges(timing.reportedMonths)}.`;
       case "yearRound":
