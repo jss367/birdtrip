@@ -21,8 +21,10 @@ const TRUST_PROXY = /^(1|true|yes)$/i.test(process.env.TRUST_PROXY || "");
 const TRUST_PROXY_HOPS = envInteger("TRUST_PROXY_HOPS", 1, 1);
 const SEASONALITY_TTL_MS = 24 * 60 * 60 * 1000;
 const SEASONALITY_CACHE_MAX_ENTRIES = 100;
-const SEASONALITY_SAMPLE_DAYS = [5, 15, 25];
-const SEASONALITY_MIN_SAMPLED_DAYS = 24;
+// One eBird historic request per sampled day, so this interval is the main cost
+// of a region build: 7 days gives about 53 requests a year.
+const SEASONALITY_SAMPLE_INTERVAL_DAYS = 7;
+const SEASONALITY_MIN_SAMPLED_DAYS = 35;
 const SEASONALITY_CHUNK_SIZE = 6;
 const SEASONALITY_MAX_CONCURRENT_BUILDS = 2;
 const SEASONALITY_MAX_QUEUED_BUILDS = 20;
@@ -975,11 +977,24 @@ async function runSeasonalityBuild(regionCode, token, year, cacheKey) {
   }
 }
 
-async function buildSeasonalityUncached(regionCode, token, year, cacheKey) {
-  const sampleDates = [];
-  for (let month = 1; month <= 12; month += 1) {
-    for (const day of SEASONALITY_SAMPLE_DAYS) sampleDates.push({ month, day });
+// Sample once per seven-day block, rotating offsets to cover every weekday
+// without long gaps. The final partial block stays within the requested year.
+function seasonalitySampleDates(year) {
+  const dates = [];
+  const dayMs = 24 * 60 * 60 * 1000;
+  const step = SEASONALITY_SAMPLE_INTERVAL_DAYS * dayMs;
+  const end = Date.UTC(year + 1, 0, 1);
+  const offsets = [0, 2, 4, 6, 5, 3, 1];
+  for (let time = Date.UTC(year, 0, 1); time < end; time += step) {
+    const offset = offsets[dates.length % offsets.length] * dayMs;
+    const date = new Date(Math.min(time + offset, end - dayMs));
+    dates.push({ month: date.getUTCMonth() + 1, day: date.getUTCDate() });
   }
+  return dates;
+}
+
+async function buildSeasonalityUncached(regionCode, token, year, cacheKey) {
+  const sampleDates = seasonalitySampleDates(year);
 
   const sampledDays = Array(12).fill(0);
   const species = new Map();
@@ -1032,11 +1047,11 @@ async function buildSeasonalityUncached(regionCode, token, year, cacheKey) {
   const value = {
     regionCode,
     year,
-    requestedSampleDaysPerMonth: SEASONALITY_SAMPLE_DAYS.length,
+    requestedSampleDays: sampleDates.length,
     sampledDays,
-    species: [...species.values()].filter(
-      (entry) => entry.months.reduce((sum, count) => sum + count, 0) >= 2
-    )
+    // Keep species seen on any sampled day so the client can say how rarely
+    // they showed up, rather than treating them as not reported at all.
+    species: [...species.values()]
   };
   setCachedSeasonality(cacheKey, value);
   return value;
@@ -1481,6 +1496,7 @@ function setTripStore(store) {
 module.exports = {
   acquireSeasonalityBuildSlot,
   buildSeasonality,
+  seasonalitySampleDates,
   clientAddress,
   consumeRateLimit,
   fetchJson,

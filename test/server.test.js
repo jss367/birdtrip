@@ -13,8 +13,35 @@ const {
   nearestHotspotRegion,
   pruneResponseCache,
   pruneSeasonalityCache,
-  rateLimitKey
+  rateLimitKey,
+  seasonalitySampleDates
 } = require("../server.js");
+
+test("seasonality samples roughly weekly across common and leap years", () => {
+  const dayMs = 24 * 60 * 60 * 1000;
+  for (const year of [2024, 2025, 2026]) {
+    const dates = seasonalitySampleDates(year);
+    assert.equal(dates.length, 53);
+    assert.deepEqual(dates[0], { month: 1, day: 1 });
+    assert.deepEqual(dates[dates.length - 1], { month: 12, day: 31 });
+    assert.equal(new Set(dates.map((date) => date.month)).size, 12);
+    const weekdayCounts = Array(7).fill(0);
+    let previousTime;
+    dates.forEach(({ month, day }, index) => {
+      const time = Date.UTC(year, month - 1, day);
+      const dayOfYear = (time - Date.UTC(year, 0, 1)) / dayMs;
+      assert.equal(Math.floor(dayOfYear / 7), index, "one sample per weekly block");
+      assert.equal(new Date(time).getUTCFullYear(), year);
+      if (previousTime !== undefined) {
+        const gap = (time - previousTime) / dayMs;
+        assert.ok(gap >= 3 && gap <= 9, `unexpected sampling gap: ${gap}`);
+      }
+      weekdayCounts[new Date(time).getUTCDay()] += 1;
+      previousTime = time;
+    });
+    for (const count of weekdayCounts) assert.ok(count >= 7 && count <= 9);
+  }
+});
 
 const appSource = fs.readFileSync(path.join(__dirname, "../public/app.js"), "utf8");
 
@@ -319,7 +346,7 @@ test("concurrent cold seasonality requests share one upstream build", async () =
       buildSeasonality(region, "token-a"),
       buildSeasonality(region, "token-b")
     ]);
-    assert.equal(calls, 36);
+    assert.equal(calls, 53);
     assert.strictEqual(first, second);
   } finally {
     global.fetch = originalFetch;

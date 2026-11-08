@@ -9,7 +9,6 @@ const SEASONALITY = {
   regionCode: "US-CA-073",
   regionName: "San Diego County",
   year: 2025,
-  requestedSampleDaysPerMonth: 3,
   sampledDays: Array(12).fill(3),
   species: [
     { ...BURROWING_OWL, months: [3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3] },

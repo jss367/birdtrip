@@ -9,7 +9,6 @@ const SEASONALITY = {
   regionCode: "US-CA-073",
   regionName: "San Diego County",
   year: 2025,
-  requestedSampleDaysPerMonth: 3,
   sampledDays: Array(12).fill(3),
   species: [
     { ...BURROWING_OWL, months: [3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3] },
@@ -102,7 +101,7 @@ test("an unknown species name fails with suggestions", async ({ page }) => {
   expect(new URL(page.url()).search).toBe("");
 });
 
-test("a species the region build dropped says so instead of charting nothing", async ({ page }) => {
+test("a species not seen on any sampled date says so instead of charting nothing", async ({ page }) => {
   await stubSeasonalApis(page);
   await page.route("**/api/ebird/seasonality**", (route) => route.fulfill({
     json: { ...SEASONALITY, species: SEASONALITY.species.filter((s) => s.speciesCode !== "burowl") }
@@ -110,7 +109,7 @@ test("a species the region build dropped says so instead of charting nothing", a
   await page.goto("/seasonal.html?q=Ramona&species=Burrowing+Owl");
   const card = page.locator(".seasonal-species-answer");
   await expect(card.locator(".seasonal-species-lead")).toHaveText(
-    "Burrowing Owl wasn't reported on enough sampled dates in San Diego County to show a pattern."
+    "Burrowing Owl wasn't reported on any sampled date in San Diego County."
   );
   await expect(card.locator(".seasonal-months")).toHaveCount(0);
   await expect(card.locator(".seasonal-recent")).toContainText("Reported at 2 locations");
