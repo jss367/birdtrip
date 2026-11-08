@@ -977,14 +977,17 @@ async function runSeasonalityBuild(regionCode, token, year, cacheKey) {
   }
 }
 
-// Every SEASONALITY_SAMPLE_INTERVAL_DAYS days from January 1 through the end of
-// the year. Each date is a month/day pair in UTC, so the counts are per month.
+// Sample once per seven-day block, rotating offsets to cover every weekday
+// without long gaps. The final partial block stays within the requested year.
 function seasonalitySampleDates(year) {
   const dates = [];
-  const step = SEASONALITY_SAMPLE_INTERVAL_DAYS * 24 * 60 * 60 * 1000;
+  const dayMs = 24 * 60 * 60 * 1000;
+  const step = SEASONALITY_SAMPLE_INTERVAL_DAYS * dayMs;
   const end = Date.UTC(year + 1, 0, 1);
+  const offsets = [0, 2, 4, 6, 5, 3, 1];
   for (let time = Date.UTC(year, 0, 1); time < end; time += step) {
-    const date = new Date(time);
+    const offset = offsets[dates.length % offsets.length] * dayMs;
+    const date = new Date(Math.min(time + offset, end - dayMs));
     dates.push({ month: date.getUTCMonth() + 1, day: date.getUTCDate() });
   }
   return dates;
